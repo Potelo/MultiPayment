@@ -1,0 +1,33 @@
+{
+    "name": "potelo/multi-payment",
+    "description": "Fornece uma interface para controlar pagamentos de múltiplos gateways",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Potelo\\MultiPayment\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "André Walker",
+            "email": "andrewalker@escavador.com"
+        }
+    ],
+    "extra": {
+      "laravel": {
+          "providers": [
+              "Potelo\\MultiPayment\\Providers\\MultiPaymentServiceProvider"
+          ],
+          "aliases": {
+              "MultiPayment": "Potelo\\MultiPayment\\Facades\\MultiPayment"
+          }
+      }
+  },
+  "minimum-stability": "dev",
+    "require": {
+        "iugu/iugu": "1.0.6",
+        "moip/moip-sdk-php": "^3.1",
+        "rmccue/requests": "v1.7.0"
+    }
+}
+ 
