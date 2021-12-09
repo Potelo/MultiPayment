@@ -39,6 +39,9 @@ class IuguGateway implements Gateway
     {
         $iuguInvoiceData = [];
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
+        $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
+        $iuguInvoiceData['email'] = $invoice->customer->email;
+
         $iuguInvoiceData['items'] = [];
         foreach ($invoice->items as $item) {
             $iuguInvoiceData['items'][] = [
@@ -68,12 +71,11 @@ class IuguGateway implements Gateway
         } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
             $iuguInvoiceData['due_date'] = $invoice->bankSlip->expirationDate->format('Y-m-d');
             $iuguInvoiceData['method'] = $invoice->paymentMethod;
-            $iuguInvoiceData = array_merge($iuguInvoiceData, $invoice->customer->address->toArrayWithoutEmpty());
+            $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
         }
 
         $iuguCharge = Iugu_Charge::create($iuguInvoiceData);
         $iuguInvoice = $iuguCharge->invoice();
-
         $invoice->id = $iuguInvoice->id;
         $invoice->gateway = 'iugu';
 

@@ -52,10 +52,9 @@ class MoipGateway implements Gateway
         foreach ($invoice->items as $item) {
             $order->addItem($item->description, $item->quantity, "", $item->price);
         }
-
         $customer = $this->moip->customers()->get($invoice->customer->id);
         $order->setCustomer($customer)->create();
-        $holder = $this->createHolderByCustomer($customer);
+        $holder = $this->createHolder($invoice->customer);
         $payment = $order->payments();
 
         if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
@@ -74,11 +73,15 @@ class MoipGateway implements Gateway
             }
         } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
             $logoUri = '';
-            $expirationDate = $invoice->bankSlip->expirationDate;
+            $expirationDate = $invoice->bankSlip->expirationDate->format('Y-m-d');
             $instructionLines = ['', '', ''];
             $payment->setBoleto($expirationDate, $logoUri, $instructionLines);
         }
-        $payment->execute();
+        try {
+            $payment->execute();
+        } catch (\Exception $exception) {
+            dd($exception);
+        }
 
         if (config('multi-payment.gateways.moip.sandbox')) {
             $payment->authorize();
@@ -225,10 +228,10 @@ class MoipGateway implements Gateway
     /**
      * Create holder by costumer data
      *
-     * @param  \Moip\Resource\Customer  $customer
+     * @param  Customer  $customer
      * @return \Moip\Resource\Holder
      */
-    private function createHolderByCustomer(\Moip\Resource\Customer $customer): \Moip\Resource\Holder
+    private function createHolder(Customer $customer): \Moip\Resource\Holder
     {
         $holder = $this->moip->holders()
             ->setFullname('')
@@ -236,22 +239,22 @@ class MoipGateway implements Gateway
             ->setTaxDocument('')
             ->setPhone('', '', '');
 
-        if (!is_null($customer->getFullname())) {
-            $holder->setFullname($customer->getFullname());
+        if (!is_null($customer->name)) {
+            $holder->setFullname($customer->name);
         }
-        if (!is_null($customer->getBirthDate())) {
-            $holder->setBirthDate($customer->getBirthDate());
+        if (!is_null($customer->birthDate)) {
+            $holder->setBirthDate($customer->birthDate);
         }
-        if (!is_null($customer->getTaxDocumentNumber())) {
-            $holder->setTaxDocument($customer->getTaxDocumentNumber());
+        if (!is_null($customer->taxDocument)) {
+            $holder->setTaxDocument($customer->taxDocument);
         }
-        if (!is_null($customer->getPhoneAreaCode()) && !is_null($customer->getPhoneNumber()) && !is_null($customer->getPhoneCountryCode())) {
-            $holder->setPhone($customer->getPhoneAreaCode(), $customer->getPhoneNumber(), $customer->getPhoneCountryCode());
+        if (!is_null($customer->phoneArea) && !is_null($customer->phoneNumber)) {
+            $holder->setPhone($customer->phoneArea, $customer->phoneNumber, $customer->phoneCountryCode ?? 55);
         }
-        if (!is_null($customer->getBillingAddress())) {
-            $address = $customer->getBillingAddress();
+        if (!is_null($customer->address)) {
+            $address = $customer->address;
             $holder->setAddress(
-                'BILLING',
+                $address->type,
                 $address->street,
                 $address->number,
                 $address->district,

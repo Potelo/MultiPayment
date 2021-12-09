@@ -86,10 +86,9 @@ class MultiPayment
             }
             if (!array_key_exists('id', $attributes['customer'])) {
                 $customer = $this->createCustomer($attributes['customer']);
-                $attributes['customer'] = $customer->id;
             } else {
                 $customer = new Customer();
-                $customer->id = $attributes['customer']['id'];
+                $customer->create($attributes['customer']);
             }
             return new Response(Response::STATUS_SUCCESS, $this->createInvoice($attributes, $customer));
         } catch (\Exception $e) {
