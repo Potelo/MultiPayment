@@ -60,9 +60,9 @@ class MoipGateway implements Gateway
 
         if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
             if (! is_null($invoice->creditCard->token)) {
-                $payment->setCreditCardHash($invoice->creditCard->token, $holder);
+                $moipCreditCard = $payment->setCreditCardHash($invoice->creditCard->token, $holder);
             } else {
-                $payment->setCreditCard(
+                $moipCreditCard = $payment->setCreditCard(
                     $invoice->creditCard->month,
                     substr($invoice->creditCard->year, -2),
                     $invoice->creditCard->number,
@@ -95,60 +95,20 @@ class MoipGateway implements Gateway
         $invoice->amount = $payment->getAmount()->total;
         $invoice->orderId = $payment->getOrder()->getId();
 
-        if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
+            $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
+            $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
+            $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
+        } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
             $invoice->bankSlip->number = $payment->getLineCodeBoleto();
         }
+
         $invoice->url = $payment->getLinks()->getSelf();
         $invoice->fee = $payment->getOrder()->getAmountFees() ?? null;
         $invoice->original = $payment;
         $invoice->createdAt = $payment->getCreatedAt();
 
-        return $invoice;
-    }
-
-    /**
-     * Create a MultiPayment invoice from a Moip payment.
-     *
-     * @param  Payment  $payment
-     * @return Invoice
-     */
-    private function createMultiPaymentInvoice(Payment $payment): Invoice
-    {
-        $invoice = new Invoice();
-        $invoice->id = $payment->getId();
-        $invoice->gateway = 'moip';
-
-        $invoice->status = $this->moipStatusToMultiPayment($payment->getStatus());
-        $invoice->amount = $payment->getAmount()->total;
-        $invoice->orderId = $payment->getOrder()->getId();
-        $invoice->customerId = $payment->getOrder()->getCustomer()->getId();
-        $invoice->paymentMethod = $payment->getFundingInstrument()->method == \Moip\Resource\Payment::METHOD_BOLETO
-            ? MultiPayment::PAYMENT_METHOD_BANK_SLIP
-            : MultiPayment::PAYMENT_METHOD_CREDIT_CARD;
-
-        $itensTemp = [];
-        foreach ($payment->getOrder()->getItemIterator() as $item) {
-            if (is_array($item)) {
-                $item = (object) $item;
-            }
-            $itensTemp[] = new InvoiceItem($item->product, $item->price, $item->quantity);
-        }
-        $invoice->items = $itensTemp;
-
-        if ($payment->getFundingInstrument()->method == \Moip\Resource\Payment::METHOD_BOLETO) {
-            $invoice->bankSlip = new BankSlip(
-                $payment->getExpirationDateBoleto(),
-                $payment->getHrefPrintBoleto(),
-                $payment->getLineCodeBoleto(),
-                null,
-                null
-            );
-        }
-        $invoice->url = $payment->getLinks()->getSelf();
-        $invoice->fee = $payment->getOrder()->getAmountFees() ?? null;
-        $invoice->original = $payment;
-        $invoice->createdAt = $payment->getCreatedAt();
         return $invoice;
     }
 

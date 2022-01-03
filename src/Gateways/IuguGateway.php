@@ -37,6 +37,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -54,7 +55,9 @@ class IuguGateway implements Gateway
             ];
         }
         if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
-            $invoice->creditCard = $this->createCreditCard($invoice->customer, $invoice->creditCard);
+            if (is_null($invoice->creditCard->id)) {
+                $invoice->creditCard = $this->createCreditCard($invoice->customer, $invoice->creditCard);
+            }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
         } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
             $iuguInvoiceData['due_date'] = $invoice->bankSlip->expirationDate->format('Y-m-d');
@@ -63,6 +66,9 @@ class IuguGateway implements Gateway
         }
 
         $iuguCharge = Iugu_Charge::create($iuguInvoiceData);
+        if ($iuguCharge->errors) {
+            throw new \Exception($iuguCharge->errors);
+        }
         $iuguInvoice = $iuguCharge->invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->gateway = 'iugu';
