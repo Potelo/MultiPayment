@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 
 class MoipGateway implements Gateway
@@ -80,7 +81,7 @@ class MoipGateway implements Gateway
         try {
             $payment->execute();
         } catch (\Exception $exception) {
-            dd($exception);
+            throw new InvalidArgumentException($exception->getMessage());
         }
 
         if (config('multi-payment.gateways.moip.sandbox')) {

@@ -14,20 +14,19 @@
         }
     ],
     "extra": {
-      "laravel": {
-          "providers": [
-              "Potelo\\MultiPayment\\Providers\\MultiPaymentServiceProvider"
-          ],
-          "aliases": {
-              "MultiPayment": "Potelo\\MultiPayment\\Facades\\MultiPayment"
-          }
-      }
-  },
-  "minimum-stability": "dev",
+        "laravel": {
+            "providers": [
+                "Potelo\\MultiPayment\\Providers\\MultiPaymentServiceProvider"
+            ],
+            "aliases": {
+                "MultiPayment": "Potelo\\MultiPayment\\Facades\\MultiPayment"
+            }
+        }
+    },
+    "minimum-stability": "dev",
     "require": {
         "iugu/iugu": "1.0.6",
         "moip/moip-sdk-php": "^3.1",
         "rmccue/requests": "v1.7.0"
     }
 }
- 
