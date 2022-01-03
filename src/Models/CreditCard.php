@@ -14,9 +14,9 @@ class CreditCard extends Model
     public $id;
 
     /**
-     * @var mixed
+     * @var string|null
      */
-    public $customerId;
+    public ?string $description = null;
 
     /**
      * @var string|null
@@ -46,6 +46,11 @@ class CreditCard extends Model
     /**
      * @var string|null
      */
+    public ?string $lastDigits = null;
+
+    /**
+     * @var string|null
+     */
     public ?string $firstName = null;
 
     /**
@@ -64,7 +69,7 @@ class CreditCard extends Model
     public ?string $gateway = null;
 
     /**
-     * @var DateTimeImmutable|null
+     * @var \DateTimeImmutable|null
      */
     public ?\DateTimeImmutable $createdAt = null;
 
@@ -75,12 +80,13 @@ class CreditCard extends Model
     {
         return [
             'id' => $this->id,
-            'customer_id' => $this->customerId,
+            'description' => $this->description,
             'number' => $this->number,
             'brand' => $this->brand,
             'month' => $this->month,
             'year' => $this->year,
             'cvv' => $this->cvv,
+            'last_digits' => $this->lastDigits,
             'first_name' => $this->firstName,
             'last_name' => $this->lastName,
             'token' => $this->token,
