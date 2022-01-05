@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
-class Invoice
+class Invoice extends Model
 {
     public const STATUS_PENDING = 'pending';
     public const STATUS_PAID = 'paid';
@@ -81,4 +81,27 @@ class Invoice
      * @var \DateTime|null
      */
     public ?\DateTime $createdAt = null;
+
+    /**
+     * @inerhitDoc
+     */
+    public function toArray()
+    {
+        return [
+            'id' => $this->id,
+            'status' => $this->status,
+            'amount' => $this->amount,
+            'orderId' => $this->orderId,
+            'customer' => $this->customer,
+            'items' => $this->items,
+            'paymentMethod' => $this->paymentMethod,
+            'creditCard' => $this->creditCard,
+            'bankSlip' => $this->bankSlip,
+            'fee' => $this->fee,
+            'gateway' => $this->gateway,
+            'url' => $this->url,
+            'original' => $this->original,
+            'createdAt' => $this->createdAt,
+        ];
+    }
 }

@@ -31,7 +31,7 @@ class MultiPayment
         if (is_null($gateway)) {
             $gateway = config('multi-payment.default');
         }
-        $this->gateway($gateway);
+        $this->setGateway($gateway);
     }
 
     /**
@@ -55,7 +55,7 @@ class MultiPayment
      * @return MultiPayment
      * @throws \Exception
      */
-    public function gateway(string $name): MultiPayment
+    public function setGateway(string $name): MultiPayment
     {
         if (is_null(config('multi-payment.gateways.'.$name))) {
             throw new \Exception("Gateway [{$name}] not found in config");
@@ -88,7 +88,7 @@ class MultiPayment
                 $customer = $this->createCustomer($attributes['customer']);
             } else {
                 $customer = new Customer();
-                $customer->create($attributes['customer']);
+                $customer->fill($attributes['customer']);
             }
             return new Response(Response::STATUS_SUCCESS, $this->createInvoice($attributes, $customer));
         } catch (\Exception $e) {
@@ -147,15 +147,15 @@ class MultiPayment
         ) {
             $attributes['items'] = [];
 
-            array_push($attributes['items'], [
+            $attributes['items'][] = [
                 'description' => 'Nova cobrança',
                 'quantity' => 1,
                 'price' => $attributes['amount'],
-            ]);
+            ];
             unset($attributes['amount']);
         }
 
-        $invoice = new Invoice();
+        $invoice = new Invoice($this->gateway);
         $invoice->items = [];
 
         foreach ($attributes['items'] as $item) {
@@ -163,7 +163,7 @@ class MultiPayment
             $invoiceItem->description = $item['description'];
             $invoiceItem->quantity = $item['quantity'];
             $invoiceItem->price = $item['price'];
-            array_push($invoice->items, $invoiceItem);
+            $invoice->items[] = $invoiceItem;
         }
 
         $invoice->customer = $customer;
@@ -179,7 +179,7 @@ class MultiPayment
                 $attributes['credit_card']['last_name'] = $names[array_key_last($names)];
             }
             $invoice->creditCard = new CreditCard();
-            $invoice->creditCard->create($attributes['credit_card']);
+            $invoice->creditCard->fill($attributes['credit_card']);
         } elseif ($attributes['payment_method'] == self::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip = new BankSlip();
             if (array_key_exists('bank_slip', $attributes) &&
@@ -189,7 +189,7 @@ class MultiPayment
                 $invoice->bankSlip->expirationDate = new \DateTime();
             }
         }
-        return $this->gateway->createInvoice($invoice);
+        return $invoice->save();
     }
 
     /**
@@ -207,8 +207,7 @@ class MultiPayment
         if (!array_key_exists('email', $attributes)) {
             throw new \Exception('The email is required.');
         }
-        $customer = new Customer();
-        $customer->create($attributes);
-        return $this->gateway->createCustomer($customer);
+        $customer = new Customer($this->gateway);
+        return $customer->create($attributes);
     }
 }

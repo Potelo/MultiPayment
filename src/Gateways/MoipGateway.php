@@ -4,15 +4,11 @@ namespace Potelo\MultiPayment\Gateways;
 
 use Moip\Moip;
 use Moip\Auth\BasicAuth;
-use Moip\Resource\Payment;
 use InvalidArgumentException;
 use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
-use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
-use Potelo\MultiPayment\Models\CreditCard;
-use Potelo\MultiPayment\Models\InvoiceItem;
 
 class MoipGateway implements Gateway
 {
@@ -30,16 +26,6 @@ class MoipGateway implements Gateway
     private function init()
     {
         $this->moip = new Moip(new BasicAuth(config('multi-payment.gateways.moip.api_token'), config('multi-payment.gateways.moip.api_key')), $this->getMoipEndpoint());
-    }
-
-    /**
-     * Get Moip endpoint depending on the environment.
-     *
-     * @return string
-     */
-    private function getMoipEndpoint()
-    {
-        return config('multi-payment.environment') != 'production' ? Moip::ENDPOINT_SANDBOX : Moip::ENDPOINT_PRODUCTION;
     }
 
     /**
@@ -113,31 +99,6 @@ class MoipGateway implements Gateway
     }
 
     /**
-     * Convert Moip status to MultiPayment status.
-     *
-     * @param $moipStatus
-     * @return string
-     */
-    private static function moipStatusToMultiPayment($moipStatus)
-    {
-        switch ($moipStatus) {
-            case \Moip\Resource\Payment::STATUS_AUTHORIZED:
-                return Invoice::STATUS_AUTHORIZED;
-            case \Moip\Resource\Payment::STATUS_CANCELLED:
-                return Invoice::STATUS_CANCELLED;
-            case \Moip\Resource\Payment::STATUS_REFUNDED:
-                return Invoice::STATUS_REFUNDED;
-//            case \Moip\Resource\Payment::STATUS_WAITING:
-//            case \Moip\Resource\Payment::STATUS_SETTLED:
-//            case \Moip\Resource\Payment::STATUS_IN_ANALYSIS:
-//            case \Moip\Resource\Payment::STATUS_CREATED:
-//            case \Moip\Resource\Payment::STATUS_PRE_AUTHORIZED:
-            default:
-                return Invoice::STATUS_PENDING;
-        }
-    }
-
-    /**
      * @inheritDoc
      */
     public function createCustomer(Customer $customer): Customer
@@ -184,6 +145,41 @@ class MoipGateway implements Gateway
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
+    }
+
+    /**
+     * Get Moip endpoint depending on the environment.
+     *
+     * @return string
+     */
+    private function getMoipEndpoint()
+    {
+        return config('multi-payment.environment') != 'production' ? Moip::ENDPOINT_SANDBOX : Moip::ENDPOINT_PRODUCTION;
+    }
+
+    /**
+     * Convert Moip status to MultiPayment status.
+     *
+     * @param $moipStatus
+     * @return string
+     */
+    private static function moipStatusToMultiPayment($moipStatus)
+    {
+        switch ($moipStatus) {
+            case \Moip\Resource\Payment::STATUS_AUTHORIZED:
+                return Invoice::STATUS_AUTHORIZED;
+            case \Moip\Resource\Payment::STATUS_CANCELLED:
+                return Invoice::STATUS_CANCELLED;
+            case \Moip\Resource\Payment::STATUS_REFUNDED:
+                return Invoice::STATUS_REFUNDED;
+//            case \Moip\Resource\Payment::STATUS_WAITING:
+//            case \Moip\Resource\Payment::STATUS_SETTLED:
+//            case \Moip\Resource\Payment::STATUS_IN_ANALYSIS:
+//            case \Moip\Resource\Payment::STATUS_CREATED:
+//            case \Moip\Resource\Payment::STATUS_PRE_AUTHORIZED:
+            default:
+                return Invoice::STATUS_PENDING;
+        }
     }
 
     /**

@@ -1,13 +1,22 @@
 ## Introdução
 
-MultiPayment permite gerenciar pagamentos de diversos gateways da pagamento. Atualmente suporta o Iugu e Moip.
+MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu e Moip.
 
 ## Instalação
 
-Instale esse pacote pelo composer:
+1. Adicione em `repositories` no composer.json o seguinte:
+```json
+"repositories": [
+    {
+        "type": "git",
+        "url": "https://github.com/Potelo/MultiPayment.git"
+    }
+]
+```
+2. Instale esse pacote pelo composer:
 
 ```
-composer require potelo/multi-payment
+composer require potelo/multi-payment "dev-main"
 ```
 
 Agora, configure as variáveis necessárias para cada gateway que deseja usar no seu `.env`:
@@ -56,7 +65,7 @@ $payment->charge($options);
 
 // ou
 $payment = new \Potelo\MultiPayment\MultiPayment();
-$payment->gateway('moip')->charge($options);
+$payment->setGateway('moip')->charge($options);
 
 ```
 

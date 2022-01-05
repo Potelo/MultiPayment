@@ -70,7 +70,7 @@ class Customer extends Model
     /**
      * @inerhitDoc
      */
-    public function create(array $data)
+    public function fill(array $data)
     {
 
         if (array_key_exists('address', $data)
@@ -79,7 +79,7 @@ class Customer extends Model
                 $data['address']['type'] = Address::TYPE_BILLING;
             }
             $address = new Address();
-            $address->create($data['address']);
+            $address->fill($data['address']);
             $data['address'] = $address;
         }
 

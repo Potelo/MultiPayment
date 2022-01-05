@@ -91,27 +91,6 @@ class IuguGateway implements Gateway
     }
 
     /**
-     * @param $iuguStatus
-     * @return string
-     */
-    private static function iuguStatusToMultiPayment($iuguStatus): string
-    {
-        switch ($iuguStatus) {
-            case self::STATUS_PAID:
-                return Invoice::STATUS_PAID;
-            case self::STATUS_CANCELED:
-                return Invoice::STATUS_CANCELLED;
-            case self::STATUS_REFUNDED:
-                return Invoice::STATUS_REFUNDED;
-//            case self::STATUS_EXPIRED:
-//            case self::STATUS_IN_PROTEST:
-//            case self::STATUS_CHARGEBACK:
-            default:
-                return Invoice::STATUS_PENDING;
-        }
-    }
-
-    /**
      * @inheritDoc
      */
     public function createCustomer(Customer $customer): Customer
@@ -136,6 +115,27 @@ class IuguGateway implements Gateway
         $customer->original = $iuguCustomer;
 
         return $customer;
+    }
+
+    /**
+     * @param $iuguStatus
+     * @return string
+     */
+    private static function iuguStatusToMultiPayment($iuguStatus): string
+    {
+        switch ($iuguStatus) {
+            case self::STATUS_PAID:
+                return Invoice::STATUS_PAID;
+            case self::STATUS_CANCELED:
+                return Invoice::STATUS_CANCELLED;
+            case self::STATUS_REFUNDED:
+                return Invoice::STATUS_REFUNDED;
+//            case self::STATUS_EXPIRED:
+//            case self::STATUS_IN_PROTEST:
+//            case self::STATUS_CHARGEBACK:
+            default:
+                return Invoice::STATUS_PENDING;
+        }
     }
 
     /**
