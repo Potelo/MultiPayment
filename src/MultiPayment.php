@@ -124,13 +124,16 @@ class MultiPayment
             if (! array_key_exists('credit_card', $attributes)) {
                 throw new \Exception('The credit_card is required for credit card payment.');
             }
-            if (!array_key_exists('token', $attributes['credit_card']) &&
-                !array_key_exists('year', $attributes['credit_card']) &&
-                !array_key_exists('month', $attributes['credit_card']) &&
-                !array_key_exists('number', $attributes['credit_card']) &&
-                !array_key_exists('cvv', $attributes['credit_card'])
+            if (!array_key_exists('id', $attributes['credit_card']) &&
+                !array_key_exists('token', $attributes['credit_card']) &&
+                (
+                    !array_key_exists('year', $attributes['credit_card']) ||
+                    !array_key_exists('month', $attributes['credit_card']) ||
+                    !array_key_exists('number', $attributes['credit_card']) ||
+                    !array_key_exists('cvv', $attributes['credit_card'])
+                )
             ) {
-                throw new \Exception('The token or number, month, year, cvv are required for credit card payment.');
+                throw new \Exception('The id or token or number, month, year, cvv are required for credit card payment.');
             }
         }
 

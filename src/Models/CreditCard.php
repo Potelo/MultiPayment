@@ -9,9 +9,24 @@ class CreditCard extends Model
 {
 
     /**
+     * @var mixed
+     */
+    public $id;
+
+    /**
+     * @var string|null
+     */
+    public ?string $description = null;
+
+    /**
      * @var string|null
      */
     public ?string $number = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $brand = null;
 
     /**
      * @var string|null
@@ -31,6 +46,11 @@ class CreditCard extends Model
     /**
      * @var string|null
      */
+    public ?string $lastDigits = null;
+
+    /**
+     * @var string|null
+     */
     public ?string $firstName = null;
 
     /**
@@ -44,18 +64,34 @@ class CreditCard extends Model
     public ?string $token = null;
 
     /**
+     * @var string|null
+     */
+    public ?string $gateway = null;
+
+    /**
+     * @var \DateTimeImmutable|null
+     */
+    public ?\DateTimeImmutable $createdAt = null;
+
+    /**
      * @inerhitDoc
      */
     public function toArray()
     {
         return [
+            'id' => $this->id,
+            'description' => $this->description,
             'number' => $this->number,
+            'brand' => $this->brand,
             'month' => $this->month,
             'year' => $this->year,
             'cvv' => $this->cvv,
-            'firstName' => $this->firstName,
-            'lastName' => $this->lastName,
+            'last_digits' => $this->lastDigits,
+            'first_name' => $this->firstName,
+            'last_name' => $this->lastName,
             'token' => $this->token,
+            'gateway' => $this->gateway,
+            'created_at' => $this->createdAt,
         ];
     }
 }

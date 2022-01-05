@@ -4,6 +4,7 @@ namespace  Potelo\MultiPayment\Contracts;
 
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\CreditCard;
 
 interface Gateway
 {
@@ -23,5 +24,5 @@ interface Gateway
      * @return Invoice
      */
     public function createInvoice(Invoice $invoice): Invoice;
-
+    
 }
