@@ -2,11 +2,13 @@
 
 namespace Potelo\MultiPayment;
 
-use Potelo\MultiPayment\Models\BankSlip;
-use Potelo\MultiPayment\Models\CreditCard;
-use Potelo\MultiPayment\Models\Customer;
+use DateTime;
+use Exception;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\BankSlip;
+use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Resources\Response;
 
@@ -20,11 +22,12 @@ class MultiPayment
 
     public Gateway $gateway;
 
+
     /**
      * MultiPayment constructor.
      *
      * @param  string|null  $gateway
-     * @throws \Exception
+     * @throws Exception
      */
     public function __construct(?string $gateway = null)
     {
@@ -35,7 +38,7 @@ class MultiPayment
     }
 
     /**
-     * Verify if has the payment method
+     * Verify if it has the payment method
      *
      * @param $paymentMethod
      * @return bool
@@ -53,20 +56,20 @@ class MultiPayment
      *
      * @param  string  $name
      * @return MultiPayment
-     * @throws \Exception
+     * @throws Exception
      */
     public function setGateway(string $name): MultiPayment
     {
         if (is_null(config('multi-payment.gateways.'.$name))) {
-            throw new \Exception("Gateway [{$name}] not found in config");
+            throw new Exception("Gateway [$name] not found in config");
         }
         $className = config("multi-payment.gateways.$name.class");
         if (!class_exists($className)) {
-            throw new \Exception("Gateway [$name] not found");
+            throw new Exception("Gateway [$name] not found");
         }
         $gatewayClass = new $className;
         if (!$gatewayClass instanceof Gateway) {
-            throw new \Exception("Gateway [$className] must implement " . Gateway::class . " interface");
+            throw new Exception("Gateway [$className] must implement " . Gateway::class . " interface");
         }
         $this->gateway = new $className();
         return $this;
@@ -82,7 +85,7 @@ class MultiPayment
     {
         try {
             if (!array_key_exists('customer', $attributes)) {
-                throw new \Exception('The customer is required.');
+                throw new Exception('The customer is required.');
             }
             if (!array_key_exists('id', $attributes['customer'])) {
                 $customer = $this->createCustomer($attributes['customer']);
@@ -91,7 +94,7 @@ class MultiPayment
                 $customer->fill($attributes['customer']);
             }
             return new Response(Response::STATUS_SUCCESS, $this->createInvoice($attributes, $customer));
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             return new Response(Response::STATUS_FAILED, $e->getMessage());
         }
     }
@@ -102,27 +105,27 @@ class MultiPayment
      * @param  array  $attributes
      * @param  Customer|null  $customer
      * @return Invoice
-     * @throws \Exception
+     * @throws Exception
      */
     public function createInvoice(array $attributes, ?Customer $customer = null): Invoice
     {
         if (! array_key_exists('amount', $attributes)
             && ! array_key_exists('items', $attributes)) {
-            throw new \Exception('The amount or items are required.');
+            throw new Exception('The amount or items are required.');
         }
         if (!array_key_exists('payment_method', $attributes)) {
-            throw new \Exception('The payment_method are required.');
+            throw new Exception('The payment_method are required.');
         }
         if (! $this->hasPaymentMethod($attributes['payment_method'])) {
-            throw new \Exception('The payment_method is invalid.');
+            throw new Exception('The payment_method is invalid.');
         }
         if (!array_key_exists('customer', $attributes)) {
-            throw new \Exception('The customer is required.');
+            throw new Exception('The customer is required.');
         }
 
         if ($attributes['payment_method'] == 'credit_card') {
             if (! array_key_exists('credit_card', $attributes)) {
-                throw new \Exception('The credit_card is required for credit card payment.');
+                throw new Exception('The credit_card is required for credit card payment.');
             }
             if (!array_key_exists('id', $attributes['credit_card']) &&
                 !array_key_exists('token', $attributes['credit_card']) &&
@@ -133,14 +136,14 @@ class MultiPayment
                     !array_key_exists('cvv', $attributes['credit_card'])
                 )
             ) {
-                throw new \Exception('The id or token or number, month, year, cvv are required for credit card payment.');
+                throw new Exception('The id or token or number, month, year, cvv are required for credit card payment.');
             }
         }
 
         if ($attributes['payment_method'] == 'bank_slip' &&
             is_null($customer->address)
         ) {
-            throw new \Exception('The customer address is required for bank slip payment.');
+            throw new Exception('The customer address is required for bank slip payment.');
         }
 
         if (! array_key_exists('items', $attributes)
@@ -184,9 +187,9 @@ class MultiPayment
             $invoice->bankSlip = new BankSlip();
             if (array_key_exists('bank_slip', $attributes) &&
                 array_key_exists('expiration_date', $attributes['bank_slip'])) {
-                $invoice->bankSlip->expirationDate = new \DateTime($attributes['bank_slip']['expiration_date']);
+                $invoice->bankSlip->expirationDate = new DateTime($attributes['bank_slip']['expiration_date']);
             } else {
-                $invoice->bankSlip->expirationDate = new \DateTime();
+                $invoice->bankSlip->expirationDate = new DateTime();
             }
         }
         return $invoice->save();
@@ -197,15 +200,15 @@ class MultiPayment
      *
      * @param  array  $attributes
      * @return Customer
-     * @throws \Exception
+     * @throws Exception
      */
     public function createCustomer(array $attributes): Customer
     {
         if (!array_key_exists('name', $attributes)) {
-            throw new \Exception('The name is required.');
+            throw new Exception('The name is required.');
         }
         if (!array_key_exists('email', $attributes)) {
-            throw new \Exception('The email is required.');
+            throw new Exception('The email is required.');
         }
         $customer = new Customer($this->gateway);
         return $customer->create($attributes);
