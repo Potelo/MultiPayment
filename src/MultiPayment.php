@@ -114,22 +114,22 @@ class MultiPayment
      */
     public function createInvoice(array $attributes, ?Customer $customer = null): Invoice
     {
-        if (! array_key_exists('amount', $attributes)
-            && ! array_key_exists('items', $attributes)) {
+        if (!array_key_exists('amount', $attributes)
+            && !array_key_exists('items', $attributes)) {
             throw new Exception('The amount or items are required.');
         }
         if (!array_key_exists('payment_method', $attributes)) {
             throw new Exception('The payment_method are required.');
         }
-        if (! $this->hasPaymentMethod($attributes['payment_method'])) {
+        if (!$this->hasPaymentMethod($attributes['payment_method'])) {
             throw new Exception('The payment_method is invalid.');
         }
         if (!array_key_exists('customer', $attributes)) {
             throw new Exception('The customer is required.');
         }
 
-        if ($attributes['payment_method'] == 'credit_card') {
-            if (! array_key_exists('credit_card', $attributes)) {
+        if ($attributes['payment_method'] == self::PAYMENT_METHOD_CREDIT_CARD) {
+            if (!array_key_exists('credit_card', $attributes)) {
                 throw new Exception('The credit_card is required for credit card payment.');
             }
             if (!array_key_exists('id', $attributes['credit_card']) &&
@@ -145,14 +145,11 @@ class MultiPayment
             }
         }
 
-        if ($attributes['payment_method'] == 'bank_slip' &&
-            is_null($customer->address)
-        ) {
+        if ($attributes['payment_method'] == self::PAYMENT_METHOD_BANK_SLIP && is_null($customer->address)) {
             throw new Exception('The customer address is required for bank slip payment.');
         }
 
-        if (! array_key_exists('items', $attributes)
-        ) {
+        if (!array_key_exists('items', $attributes)) {
             $attributes['items'] = [];
 
             $attributes['items'][] = [
@@ -180,8 +177,8 @@ class MultiPayment
 
         if ($attributes['payment_method'] == self::PAYMENT_METHOD_CREDIT_CARD) {
             if (array_key_exists('name', $attributes) &&
-                ! array_key_exists('first_name', $attributes['credit_card']) &&
-                ! array_key_exists('last_name', $attributes['credit_card'])) {
+                !array_key_exists('first_name', $attributes['credit_card']) &&
+                !array_key_exists('last_name', $attributes['credit_card'])) {
                 $names = explode(' ', $attributes['name']);
                 $attributes['credit_card']['first_name'] = $names[0];
                 $attributes['credit_card']['last_name'] = $names[array_key_last($names)];

@@ -104,7 +104,7 @@ class IuguGateway implements Gateway
 
         $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
 
-        if (! is_null($customer->address)) {
+        if (!is_null($customer->address)) {
             $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
         }
         $iuguCustomer = Iugu_Customer::create($iuguCustomerData);

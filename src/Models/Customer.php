@@ -78,7 +78,7 @@ class Customer extends Model
 
         if (array_key_exists('address', $data)
         ) {
-            if (! array_key_exists('type', $data['address'])) {
+            if (!array_key_exists('type', $data['address'])) {
                 $data['address']['type'] = Address::TYPE_BILLING;
             }
             $address = new Address();

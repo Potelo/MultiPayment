@@ -48,7 +48,7 @@ class MoipGateway implements Gateway
         $payment = $order->payments();
 
         if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
-            if (! is_null($invoice->creditCard->token)) {
+            if (!is_null($invoice->creditCard->token)) {
                 $payment->setCreditCardHash($invoice->creditCard->token, $holder);
             } else {
                 $payment->setCreditCard(
