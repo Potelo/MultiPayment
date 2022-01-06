@@ -31,6 +31,8 @@ class Response
      *
      * @param string $status
      * @param $response
+     *
+     * @return void
      */
     public function __construct(string $status, $response)
     {
@@ -43,6 +45,8 @@ class Response
     }
 
     /**
+     * Get status
+     *
      * @return string
      */
     public function getStatus(): string
@@ -51,6 +55,8 @@ class Response
     }
 
     /**
+     * Get data
+     *
      * @return mixed
      */
     public function getData()
@@ -59,6 +65,8 @@ class Response
     }
 
     /**
+     * Get error
+     *
      * @return mixed
      */
     public function getError()
@@ -67,6 +75,8 @@ class Response
     }
 
     /**
+     * Check if status is success
+     *
      * @return bool
      */
     public function success(): bool
@@ -75,6 +85,8 @@ class Response
     }
 
     /**
+     * Check if status is failed
+     *
      * @return bool
      */
     public function failed(): bool

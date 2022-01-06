@@ -27,6 +27,7 @@ class MultiPayment
      * MultiPayment constructor.
      *
      * @param  string|null  $gateway
+     *
      * @throws Exception
      */
     public function __construct(?string $gateway = null)
@@ -41,6 +42,7 @@ class MultiPayment
      * Verify if it has the payment method
      *
      * @param $paymentMethod
+     *
      * @return bool
      */
     public function hasPaymentMethod($paymentMethod): bool
@@ -55,6 +57,7 @@ class MultiPayment
      * Set the gateway
      *
      * @param  string  $name
+     *
      * @return MultiPayment
      * @throws Exception
      */
@@ -79,6 +82,7 @@ class MultiPayment
      * Charge a customer
      *
      * @param  array  $attributes
+     *
      * @return Response
      */
     public function charge(array $attributes): Response
@@ -104,6 +108,7 @@ class MultiPayment
      *
      * @param  array  $attributes
      * @param  Customer|null  $customer
+     *
      * @return Invoice
      * @throws Exception
      */
@@ -199,6 +204,7 @@ class MultiPayment
      * Create a Customer
      *
      * @param  array  $attributes
+     *
      * @return Customer
      * @throws Exception
      */

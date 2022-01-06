@@ -3,8 +3,11 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Moip\Moip;
+use Exception;
+use DateTimeImmutable;
 use Moip\Auth\BasicAuth;
-use InvalidArgumentException;
+use Moip\Resource\Holder;
+use Moip\Resource\Payment;
 use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
@@ -18,7 +21,7 @@ class MoipGateway implements Gateway
      *
      * @var Moip
      */
-    protected $moip;
+    protected Moip $moip;
 
     /**
      * Initialize Moip gateway.
@@ -46,9 +49,9 @@ class MoipGateway implements Gateway
 
         if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
             if (! is_null($invoice->creditCard->token)) {
-                $moipCreditCard = $payment->setCreditCardHash($invoice->creditCard->token, $holder);
+                $payment->setCreditCardHash($invoice->creditCard->token, $holder);
             } else {
-                $moipCreditCard = $payment->setCreditCard(
+                $payment->setCreditCard(
                     $invoice->creditCard->month,
                     substr($invoice->creditCard->year, -2),
                     $invoice->creditCard->number,
@@ -66,8 +69,8 @@ class MoipGateway implements Gateway
         }
         try {
             $payment->execute();
-        } catch (\Exception $exception) {
-            throw new InvalidArgumentException($exception->getMessage());
+        } catch (Exception $exception) {
+            throw new Exception($exception->getMessage());
         }
 
         if (config('multi-payment.gateways.moip.sandbox')) {
@@ -93,7 +96,7 @@ class MoipGateway implements Gateway
         $invoice->url = $payment->getLinks()->getSelf();
         $invoice->fee = $payment->getOrder()->getAmountFees() ?? null;
         $invoice->original = $payment;
-        $invoice->createdAt = $payment->getCreatedAt();
+        $invoice->createdAt = new DateTimeImmutable($payment->getCreatedAt());
 
         return $invoice;
     }
@@ -104,13 +107,13 @@ class MoipGateway implements Gateway
     public function createCustomer(Customer $customer): Customer
     {
         if (is_null($customer->name)) {
-            throw new InvalidArgumentException('The name of Costumer is required.');
+            throw new Exception('The name of Costumer is required.');
         }
         if (is_null($customer->email)) {
-            throw new InvalidArgumentException('The email of Costumer is required.');
+            throw new Exception('The email of Costumer is required.');
         }
         if (is_null($customer->taxDocument)) {
-            throw new InvalidArgumentException('The taxDocument of Costumer is required.');
+            throw new Exception('The taxDocument of Costumer is required.');
         }
 
         $this->init();
@@ -141,7 +144,7 @@ class MoipGateway implements Gateway
         }
         $moipCustomer = $moipCustomer->create();
         $customer->id = $moipCustomer->getId();
-        $customer->createdAt = new \DateTimeImmutable();
+        $customer->createdAt = new DateTimeImmutable();
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
@@ -152,7 +155,7 @@ class MoipGateway implements Gateway
      *
      * @return string
      */
-    private function getMoipEndpoint()
+    private function getMoipEndpoint(): string
     {
         return config('multi-payment.environment') != 'production' ? Moip::ENDPOINT_SANDBOX : Moip::ENDPOINT_PRODUCTION;
     }
@@ -161,22 +164,23 @@ class MoipGateway implements Gateway
      * Convert Moip status to MultiPayment status.
      *
      * @param $moipStatus
+     *
      * @return string
      */
-    private static function moipStatusToMultiPayment($moipStatus)
+    private static function moipStatusToMultiPayment($moipStatus): string
     {
         switch ($moipStatus) {
-            case \Moip\Resource\Payment::STATUS_AUTHORIZED:
+            case Payment::STATUS_AUTHORIZED:
                 return Invoice::STATUS_AUTHORIZED;
-            case \Moip\Resource\Payment::STATUS_CANCELLED:
+            case Payment::STATUS_CANCELLED:
                 return Invoice::STATUS_CANCELLED;
-            case \Moip\Resource\Payment::STATUS_REFUNDED:
+            case Payment::STATUS_REFUNDED:
                 return Invoice::STATUS_REFUNDED;
-//            case \Moip\Resource\Payment::STATUS_WAITING:
-//            case \Moip\Resource\Payment::STATUS_SETTLED:
-//            case \Moip\Resource\Payment::STATUS_IN_ANALYSIS:
-//            case \Moip\Resource\Payment::STATUS_CREATED:
-//            case \Moip\Resource\Payment::STATUS_PRE_AUTHORIZED:
+//            case Payment::STATUS_WAITING:
+//            case Payment::STATUS_SETTLED:
+//            case Payment::STATUS_IN_ANALYSIS:
+//            case Payment::STATUS_CREATED:
+//            case Payment::STATUS_PRE_AUTHORIZED:
             default:
                 return Invoice::STATUS_PENDING;
         }
@@ -186,9 +190,10 @@ class MoipGateway implements Gateway
      * Create holder by costumer data
      *
      * @param  Customer  $customer
-     * @return \Moip\Resource\Holder
+     *
+     * @return Holder
      */
-    private function createHolder(Customer $customer): \Moip\Resource\Holder
+    private function createHolder(Customer $customer): Holder
     {
         $holder = $this->moip->holders()
             ->setFullname('')

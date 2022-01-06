@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use DateTimeImmutable;
+
 class Invoice extends Model
 {
     public const STATUS_PENDING = 'pending';
@@ -73,19 +75,20 @@ class Invoice extends Model
 
     /**
      * The original invoice response of the gateway, in case need additional information.
+     *
      * @var mixed|null
      */
     public $original = null;
 
     /**
-     * @var \DateTime|null
+     * @var DateTimeImmutable|null
      */
-    public ?\DateTime $createdAt = null;
+    public ?DateTimeImmutable $createdAt = null;
 
     /**
      * @inerhitDoc
      */
-    public function toArray()
+    public function toArray(): array
     {
         return [
             'id' => $this->id,

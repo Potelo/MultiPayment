@@ -9,17 +9,34 @@ abstract class Model
 
     protected ?Gateway $gatewayClass = null;
 
+    /**
+     * Create a new instance of the model.
+     *
+     * @param  Gateway|null  $gatewayClass
+     */
     public function __construct(?Gateway $gatewayClass = null)
     {
         $this->gatewayClass = $gatewayClass;
     }
 
+    /**
+     * Create a new instance of the model with an array of attributes.
+     *
+     * @param  array  $data
+     *
+     * @return mixed
+     */
     public function create(array $data)
     {
         $this->fill($data);
         return $this->save();
     }
 
+    /**
+     * If gateway is set, then we will use it to save the model
+     *
+     * @return mixed
+     */
     public function save()
     {
         $class = substr(strrchr(get_class($this), '\\'), 1);
@@ -31,7 +48,14 @@ abstract class Model
         return null;
     }
 
-    public function fill(array $data)
+    /**
+     * Fill the model with an array of attributes.
+     *
+     * @param  array  $data
+     *
+     * @return void
+     */
+    public function fill(array $data): void
     {
         foreach ($data as $key => $value) {
             $key = lcfirst(str_replace('_', '', ucwords($key, '_')));
@@ -41,10 +65,17 @@ abstract class Model
         }
     }
 
-    abstract public function toArray();
+    /**
+     * Convert the model instance to an array.
+     *
+     * @return array
+     */
+    abstract public function toArray(): array;
 
     /**
-     * to array without null values.
+     * toArray without null values and empty values.
+     *
+     * @return array
      */
     public function toArrayWithoutEmpty(): array
     {

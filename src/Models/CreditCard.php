@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use DateTimeImmutable;
+
 /**
  * Class CreditCard
  */
@@ -69,14 +71,14 @@ class CreditCard extends Model
     public ?string $gateway = null;
 
     /**
-     * @var \DateTimeImmutable|null
+     * @var DateTimeImmutable|null
      */
-    public ?\DateTimeImmutable $createdAt = null;
+    public ?DateTimeImmutable $createdAt = null;
 
     /**
      * @inerhitDoc
      */
-    public function toArray()
+    public function toArray(): array
     {
         return [
             'id' => $this->id,

@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use DateTime;
+
 /**
  * Class BankSlip
  */
@@ -14,9 +16,9 @@ class BankSlip extends Model
     public ?string $url = null;
 
     /**
-     * @var \DateTime|null
+     * @var DateTime|null
      */
-    public ?\DateTime $expirationDate = null;
+    public ?DateTime $expirationDate = null;
 
     /**
      * @var string|null
@@ -36,7 +38,7 @@ class BankSlip extends Model
     /**
      * @inerhitDoc
      */
-    public function toArray()
+    public function toArray(): array
     {
         return [
             'url' => $this->url,

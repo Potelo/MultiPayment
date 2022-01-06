@@ -56,10 +56,9 @@ class Address extends Model
     public ?string $country = null;
 
     /**
-     * to array.
+     * @inerhitDoc
      */
-
-    public function toArray()
+    public function toArray(): array
     {
         return [
             'type' => $this->type,
