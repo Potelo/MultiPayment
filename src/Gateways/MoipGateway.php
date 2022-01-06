@@ -8,7 +8,6 @@ use DateTimeImmutable;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
 use Moip\Resource\Payment;
-use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
@@ -28,7 +27,13 @@ class MoipGateway implements Gateway
      */
     private function init()
     {
-        $this->moip = new Moip(new BasicAuth(config('multi-payment.gateways.moip.api_token'), config('multi-payment.gateways.moip.api_key')), $this->getMoipEndpoint());
+        $this->moip = new Moip(
+            new BasicAuth(
+                config('multi-payment.gateways.moip.api_token'),
+                config('multi-payment.gateways.moip.api_key')
+            ),
+            $this->getMoipEndpoint()
+        );
     }
 
     /**
@@ -47,7 +52,7 @@ class MoipGateway implements Gateway
         $holder = $this->createHolder($invoice->customer);
         $payment = $order->payments();
 
-        if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
+        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (!is_null($invoice->creditCard->token)) {
                 $payment->setCreditCardHash($invoice->creditCard->token, $holder);
             } else {
@@ -61,7 +66,7 @@ class MoipGateway implements Gateway
                     ->setInstallmentCount(1)
                     ->setStatementDescriptor('Nova cobrança');
             }
-        } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $logoUri = '';
             $expirationDate = $invoice->bankSlip->expirationDate->format('Y-m-d');
             $instructionLines = ['', '', ''];
@@ -84,11 +89,11 @@ class MoipGateway implements Gateway
         $invoice->amount = $payment->getAmount()->total;
         $invoice->orderId = $payment->getOrder()->getId();
 
-        if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
+        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
             $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
             $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
-        } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
             $invoice->bankSlip->number = $payment->getLineCodeBoleto();
         }
@@ -96,7 +101,7 @@ class MoipGateway implements Gateway
         $invoice->url = $payment->getLinks()->getSelf();
         $invoice->fee = $payment->getOrder()->getAmountFees() ?? null;
         $invoice->original = $payment;
-        $invoice->createdAt = new DateTimeImmutable($payment->getCreatedAt());
+        $invoice->createdAt = new DateTimeImmutable($payment->getCreatedAt()->format('Y-m-d H:i:s'));
 
         return $invoice;
     }
@@ -125,7 +130,11 @@ class MoipGateway implements Gateway
         if (array_key_exists('phone_area', $customerData) &&
             array_key_exists('phone_number', $customerData)
         ) {
-            $moipCustomer->setPhone($customerData['phone_area'], $customerData['phone_number'], $customerData['phone_country_code'] ?? 55);
+            $moipCustomer->setPhone(
+                $customerData['phone_area'],
+                $customerData['phone_number'],
+                $customerData['phone_country_code'] ?? 55
+            );
         }
         if (array_key_exists('birthDate', $customerData)) {
             $moipCustomer->setBirthDate($customerData['birthDate']);
@@ -157,7 +166,9 @@ class MoipGateway implements Gateway
      */
     private function getMoipEndpoint(): string
     {
-        return config('multi-payment.environment') != 'production' ? Moip::ENDPOINT_SANDBOX : Moip::ENDPOINT_PRODUCTION;
+        return config('multi-payment.environment') != 'production'
+            ? Moip::ENDPOINT_SANDBOX
+            : Moip::ENDPOINT_PRODUCTION;
     }
 
     /**
@@ -211,7 +222,11 @@ class MoipGateway implements Gateway
             $holder->setTaxDocument($customer->taxDocument);
         }
         if (!is_null($customer->phoneArea) && !is_null($customer->phoneNumber)) {
-            $holder->setPhone($customer->phoneArea, $customer->phoneNumber, $customer->phoneCountryCode ?? 55);
+            $holder->setPhone(
+                $customer->phoneArea,
+                $customer->phoneNumber,
+                $customer->phoneCountryCode ?? 55
+            );
         }
         if (!is_null($customer->address)) {
             $address = $customer->address;

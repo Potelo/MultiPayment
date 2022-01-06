@@ -1,6 +1,8 @@
 <?php
 
-namespace   Potelo\MultiPayment\Resources;
+namespace Potelo\MultiPayment\Resources;
+
+use Exception;
 
 /**
  * Class Response
@@ -22,9 +24,9 @@ class Response
     private $data;
 
     /**
-     * @var mixed
+     * @var Exception
      */
-    private $error;
+    private Exception $error;
 
     /**
      * Response constructor.
@@ -67,9 +69,9 @@ class Response
     /**
      * Get error
      *
-     * @return mixed
+     * @return Exception
      */
-    public function getError()
+    public function getError(): Exception
     {
         return $this->error;
     }

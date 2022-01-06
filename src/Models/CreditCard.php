@@ -16,6 +16,11 @@ class CreditCard extends Model
     public $id;
 
     /**
+     * @var Customer|null
+     */
+    public ?Customer $customer;
+
+    /**
      * @var string|null
      */
     public ?string $description = null;
@@ -75,13 +80,36 @@ class CreditCard extends Model
      */
     public ?DateTimeImmutable $createdAt = null;
 
+    public function fill(array $data): void
+    {
+        if (!empty($data['customer']) && is_array($data['customer'])) {
+            $customer = new Customer();
+            $customer->fill($data['customer']);
+            $this->customer = $customer;
+            unset($data['customer']);
+        }
+
+        if (
+            !empty($this->customer) &&
+            !empty($this->customer->name) &&
+            empty($data['first_name']) &&
+            empty($data['last_name'])
+        ) {
+            $names = explode(' ', $this->customer->name);
+            $data['first_name'] = $names[0];
+            $data['last_name'] = $names[array_key_last($names)];
+        }
+        parent::fill($data);
+    }
+
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
     public function toArray(): array
     {
         return [
             'id' => $this->id,
+            'customer' => $this->customer,
             'description' => $this->description,
             'number' => $this->number,
             'brand' => $this->brand,

@@ -81,7 +81,7 @@ abstract class Model
     {
         $data = $this->toArray();
         foreach ($data as $key => $value) {
-            if (is_null($value) || $value === '' || (is_array($value) && empty($value))) {
+            if (empty($value)) {
                 unset($data[$key]);
             }
         }

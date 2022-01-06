@@ -71,31 +71,20 @@ class Customer extends Model
     public ?DateTimeImmutable $createdAt = null;
 
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
     public function fill(array $data): void
     {
-
-        if (array_key_exists('address', $data)
-        ) {
-            if (!array_key_exists('type', $data['address'])) {
-                $data['address']['type'] = Address::TYPE_BILLING;
-            }
+        if (!empty($data['address']) && is_array($data['address'])) {
             $address = new Address();
             $address->fill($data['address']);
             $data['address'] = $address;
         }
-
-        foreach ($data as $key => $value) {
-            $key = lcfirst(str_replace('_', '', ucwords($key, '_')));
-            if (property_exists($this, $key)) {
-                $this->{$key} = $value;
-            }
-        }
+        parent::fill($data);
     }
 
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
     public function toArray(): array
     {

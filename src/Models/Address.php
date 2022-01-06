@@ -56,7 +56,18 @@ class Address extends Model
     public ?string $country = null;
 
     /**
-     * @inerhitDoc
+     * @inheritDoc
+     */
+    public function fill(array $data): void
+    {
+        if (empty($data['type'])) {
+            $data['type'] = Address::TYPE_BILLING;
+        }
+        parent::fill($data);
+    }
+
+    /**
+     * @inheritDoc
      */
     public function toArray(): array
     {

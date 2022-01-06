@@ -13,6 +13,9 @@ class Invoice extends Model
     public const STATUS_FAILED = 'failed';
     public const STATUS_AUTHORIZED = 'authorized';
 
+    public const PAYMENT_METHOD_CREDIT_CARD = 'credit_card';
+    public const PAYMENT_METHOD_BANK_SLIP = 'bank_slip';
+
     /**
      * @var string|null
      */
@@ -85,8 +88,45 @@ class Invoice extends Model
      */
     public ?DateTimeImmutable $createdAt = null;
 
+    public function fill(array $data): void
+    {
+        $this->items = [];
+
+        foreach ($data['items'] as $item) {
+            if (!empty($item) && is_array($item)) {
+                $invoiceItem = new InvoiceItem();
+                $invoiceItem->fill($item);
+            } else {
+                $invoiceItem = $item;
+            }
+            $this->items[] = $invoiceItem;
+        }
+        unset($data['items']);
+
+        if (!empty($data['customer']) && is_array($data['customer'])) {
+            $this->customer = new Customer();
+            $this->customer->fill($data['customer']);
+            unset($data['customer']);
+        }
+
+        if ($data['payment_method'] == self::PAYMENT_METHOD_CREDIT_CARD) {
+            if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
+                $this->creditCard = new CreditCard();
+                $this->creditCard->fill($data['credit_card']);
+                unset($data['credit_card']);
+            }
+        } elseif ($data['payment_method'] == self::PAYMENT_METHOD_BANK_SLIP) {
+            if (!empty($data['bank_slip']) && is_array($data['bank_slip'])) {
+                $this->bankSlip = new BankSlip();
+                $this->bankSlip->fill($data['bank_slip']);
+                unset($data['bank_slip']);
+            }
+        }
+        parent::fill($data);
+    }
+
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
     public function toArray(): array
     {

@@ -9,7 +9,6 @@ use Iugu_Customer;
 use Iugu_PaymentToken;
 use DateTimeImmutable;
 use Iugu_PaymentMethod;
-use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
@@ -54,12 +53,12 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
-        if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
+        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (is_null($invoice->creditCard->id)) {
-                $invoice->creditCard = $this->createCreditCard($invoice->customer, $invoice->creditCard);
+                $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-        } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $iuguInvoiceData['due_date'] = $invoice->bankSlip->expirationDate->format('Y-m-d');
             $iuguInvoiceData['method'] = $invoice->paymentMethod;
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
@@ -77,7 +76,7 @@ class IuguGateway implements Gateway
         $invoice->amount = $iuguInvoice->total_cents;
         $invoice->orderId = $iuguInvoice->order_id;
 
-        if ($iuguCharge->method == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        if ($iuguCharge->method == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
@@ -176,13 +175,12 @@ class IuguGateway implements Gateway
     /**
      * Create a new Credit Card
      *
-     * @param  Customer  $customer
      * @param  CreditCard  $creditCard
      *
      * @return CreditCard
      * @throws Exception
      */
-    public function createCreditCard(Customer $customer, CreditCard $creditCard): CreditCard
+    public function createCreditCard(CreditCard $creditCard): CreditCard
     {
         if (is_null($creditCard->token) &&
             is_null($creditCard->number) &&
@@ -194,7 +192,7 @@ class IuguGateway implements Gateway
             ) {
             throw new Exception('The token or the credit card data is required.');
         }
-        if (is_null($customer->id)) {
+        if (is_null($creditCard->customer) || is_null($creditCard->customer->id)) {
             throw new Exception('The customer id is required.');
         }
 
@@ -215,7 +213,7 @@ class IuguGateway implements Gateway
         }
         $iuguCreditCard = Iugu_PaymentMethod::create([
             'token' => $creditCard->token,
-            'customer_id' => $customer->id,
+            'customer_id' => $creditCard->customer->id,
             'description' => $creditCard->description ?? 'CREDIT CARD',
         ]);
         $creditCard->id = $iuguCreditCard->id;

@@ -23,7 +23,7 @@ class InvoiceItem extends Model
     public int $quantity;
 
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
     public function toArray(): array
     {
