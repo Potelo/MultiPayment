@@ -2,10 +2,10 @@
 
 namespace Potelo\MultiPayment\Providers;
 
-use Illuminate\Support\ServiceProvider;
-use Potelo\MultiPayment\Gateways\IuguGateway;
-use Potelo\MultiPayment\Gateways\MoipGateway;
 use Potelo\MultiPayment\MultiPayment;
+use Illuminate\Support\ServiceProvider;
+use Potelo\MultiPayment\Gateways\MoipGateway;
+use Potelo\MultiPayment\Gateways\IuguGateway;
 
 class MultiPaymentServiceProvider extends ServiceProvider
 {
@@ -14,9 +14,11 @@ class MultiPaymentServiceProvider extends ServiceProvider
      *
      * @var bool
      */
-    protected $defer = false;
+    protected bool $defer = false;
 
     /**
+     * Bootstrap the application services.
+     *
      * @return void
      */
     public function boot()

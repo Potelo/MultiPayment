@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use DateTime;
+
 /**
  * Class BankSlip
  */
@@ -14,9 +16,9 @@ class BankSlip extends Model
     public ?string $url = null;
 
     /**
-     * @var \DateTime|null
+     * @var DateTime|null
      */
-    public ?\DateTime $expirationDate = null;
+    public ?DateTime $expirationDate = null;
 
     /**
      * @var string|null
@@ -34,9 +36,30 @@ class BankSlip extends Model
     public ?string $barcodeImage = null;
 
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
-    public function toArray()
+    public function __construct($gatewayClass = null)
+    {
+        $this->expirationDate = new DateTime();
+        parent::__construct($gatewayClass);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function fill(array $data): void
+    {
+        if (!empty($data['expiration_date'])) {
+            $this->expirationDate = DateTime::createFromFormat('Y-m-d', $data['expiration_date']);
+            unset($data['expiration_date']);
+        }
+        parent::fill($data);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function toArray(): array
     {
         return [
             'url' => $this->url,

@@ -3,12 +3,12 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Iugu;
+use Exception;
 use Iugu_Charge;
 use Iugu_Customer;
 use Iugu_PaymentToken;
+use DateTimeImmutable;
 use Iugu_PaymentMethod;
-use InvalidArgumentException;
-use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
@@ -18,14 +18,14 @@ class IuguGateway implements Gateway
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
-    private const STATUS_DRAF = 'draft';
+    private const STATUS_DRAFT = 'draft';
     private const STATUS_CANCELED = 'canceled';
     private const STATUS_PARTIALLY_PAID = 'partially_paid';
     private const STATUS_REFUNDED = 'refunded';
     private const STATUS_EXPIRED = 'expired';
     private const STATUS_IN_PROTEST = 'in_protest';
     private const STATUS_CHARGEBACK = 'chargeback';
-    private const STATUS_IN_ANALISYS = 'in_analysis';
+    private const STATUS_IN_ANALYSIS = 'in_analysis';
 
     /**
      * Set iugu api key.
@@ -37,7 +37,6 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -54,12 +53,12 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
-        if ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_CREDIT_CARD) {
+        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (is_null($invoice->creditCard->id)) {
-                $invoice->creditCard = $this->createCreditCard($invoice->customer, $invoice->creditCard);
+                $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-        } elseif ($invoice->paymentMethod == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $iuguInvoiceData['due_date'] = $invoice->bankSlip->expirationDate->format('Y-m-d');
             $iuguInvoiceData['method'] = $invoice->paymentMethod;
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
@@ -67,7 +66,7 @@ class IuguGateway implements Gateway
 
         $iuguCharge = Iugu_Charge::create($iuguInvoiceData);
         if ($iuguCharge->errors) {
-            throw new \Exception($iuguCharge->errors);
+            throw new Exception($iuguCharge->errors);
         }
         $iuguInvoice = $iuguCharge->invoice();
         $invoice->id = $iuguInvoice->id;
@@ -77,7 +76,7 @@ class IuguGateway implements Gateway
         $invoice->amount = $iuguInvoice->total_cents;
         $invoice->orderId = $iuguInvoice->order_id;
 
-        if ($iuguCharge->method == MultiPayment::PAYMENT_METHOD_BANK_SLIP) {
+        if ($iuguCharge->method == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
@@ -86,12 +85,42 @@ class IuguGateway implements Gateway
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguCharge;
-        $invoice->createdAt = new \DateTime($iuguInvoice->created_at_iso);
+        $invoice->createdAt = new DateTimeImmutable($iuguInvoice->created_at_iso);
         return $invoice;
     }
 
     /**
+     * @inheritDoc
+     */
+    public function createCustomer(Customer $customer): Customer
+    {
+        if (is_null($customer->name)) {
+            throw new Exception('The name os Costumer is required.');
+        }
+        if (is_null($customer->email)) {
+            throw new Exception('The email os Costumer is required.');
+        }
+
+        $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
+
+        if (!is_null($customer->address)) {
+            $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
+        }
+        $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
+
+        $customer->id = $iuguCustomer->id;
+        $customer->gateway = 'iugu';
+        $customer->createdAt = new DateTimeImmutable($iuguCustomer->created_at_iso);
+        $customer->original = $iuguCustomer;
+
+        return $customer;
+    }
+
+    /**
+     * Convert Iugu status to MultiPayment status.
+     *
      * @param $iuguStatus
+     *
      * @return string
      */
     private static function iuguStatusToMultiPayment($iuguStatus): string
@@ -112,34 +141,10 @@ class IuguGateway implements Gateway
     }
 
     /**
-     * @inheritDoc
-     */
-    public function createCustomer(Customer $customer): Customer
-    {
-        if (is_null($customer->name)) {
-            throw new InvalidArgumentException('The name os Costumer is required.');
-        }
-        if (is_null($customer->email)) {
-            throw new InvalidArgumentException('The email os Costumer is required.');
-        }
-
-        $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
-
-        if (! is_null($customer->address)) {
-            $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
-        }
-        $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-
-        $customer->id = $iuguCustomer->id;
-        $customer->gateway = 'iugu';
-        $customer->createdAt = new \DateTimeImmutable($iuguCustomer->created_at_iso);
-        $customer->original = $iuguCustomer;
-
-        return $customer;
-    }
-
-    /**
+     * Convert MultiPayment data to Iugu data
+     *
      * @param  array  $data
+     *
      * @return array
      */
     private function multiPaymentToIuguData(array $data): array
@@ -168,9 +173,14 @@ class IuguGateway implements Gateway
     }
 
     /**
-     * @inheritDoc
+     * Create a new Credit Card
+     *
+     * @param  CreditCard  $creditCard
+     *
+     * @return CreditCard
+     * @throws Exception
      */
-    public function createCreditCard(Customer $customer, CreditCard $creditCard): CreditCard
+    public function createCreditCard(CreditCard $creditCard): CreditCard
     {
         if (is_null($creditCard->token) &&
             is_null($creditCard->number) &&
@@ -180,10 +190,10 @@ class IuguGateway implements Gateway
             is_null($creditCard->month) &&
             is_null($creditCard->year)
             ) {
-            throw new InvalidArgumentException('The token or the credit card data is required.');
+            throw new Exception('The token or the credit card data is required.');
         }
-        if (is_null($customer->id)) {
-            throw new InvalidArgumentException('The customer id is required.');
+        if (is_null($creditCard->customer) || is_null($creditCard->customer->id)) {
+            throw new Exception('The customer id is required.');
         }
 
         if (is_null($creditCard->token)) {
@@ -203,19 +213,19 @@ class IuguGateway implements Gateway
         }
         $iuguCreditCard = Iugu_PaymentMethod::create([
             'token' => $creditCard->token,
-            'customer_id' => $customer->id,
+            'customer_id' => $creditCard->customer->id,
             'description' => $creditCard->description ?? 'CREDIT CARD',
         ]);
-        $creditCard->id = $iuguCreditCard->id;
-        $creditCard->brand = $iuguCreditCard->data->brand;
-        $creditCard->year = $iuguCreditCard->data->year;
-        $creditCard->month = $iuguCreditCard->data->month;
+        $creditCard->id = $iuguCreditCard->id ?? null;
+        $creditCard->brand = $iuguCreditCard->data->brand ?? null;
+        $creditCard->year = $iuguCreditCard->data->year ?? null;
+        $creditCard->month = $iuguCreditCard->data->month ?? null;
         $names = explode(' ', $iuguCreditCard->data->holder_name);
-        $creditCard->firstName = $names[0];
-        $creditCard->lastName = $names[array_key_last($names)];
-        $creditCard->lastDigits = $iuguCreditCard->data->last_digits;
+        $creditCard->firstName = $names[0] ?? null;
+        $creditCard->lastName = $names[array_key_last($names)] ?? null;
+        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
-        $creditCard->createdAt = new \DateTimeImmutable($iuguCreditCard->created_at_iso);
+        $creditCard->createdAt = new DateTimeImmutable($iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
     }
 }

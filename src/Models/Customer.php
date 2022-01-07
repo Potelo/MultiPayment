@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use DateTimeImmutable;
+
 /**
  * Class Customer
  */
@@ -64,34 +66,27 @@ class Customer extends Model
     public $original = null;
 
     /**
-     * @var \DateTimeImmutable|null
+     * @var DateTimeImmutable|null
      */
-    public ?\DateTimeImmutable $createdAt = null;
-    /**
-     * @inerhitDoc
-     */
-    public function create(array $data)
-    {
+    public ?DateTimeImmutable $createdAt = null;
 
-        if (array_key_exists('address', $data)
-        ) {
-            if (! array_key_exists('type', $data['address'])) {
-                $data['address']['type'] = Address::TYPE_BILLING;
-            }
+    /**
+     * @inheritDoc
+     */
+    public function fill(array $data): void
+    {
+        if (!empty($data['address']) && is_array($data['address'])) {
             $address = new Address();
-            $address->create($data['address']);
+            $address->fill($data['address']);
             $data['address'] = $address;
         }
-
-        foreach ($data as $key => $value) {
-            $key = lcfirst(str_replace('_', '', ucwords($key, '_')));
-            if (property_exists($this, $key)) {
-                $this->{$key} = $value;
-            }
-        }
+        parent::fill($data);
     }
 
-    public function toArray()
+    /**
+     * @inheritDoc
+     */
+    public function toArray(): array
     {
         return [
             'id' => $this->id,

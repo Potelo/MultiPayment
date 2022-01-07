@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use DateTimeImmutable;
+
 /**
  * Class CreditCard
  */
@@ -12,6 +14,11 @@ class CreditCard extends Model
      * @var mixed
      */
     public $id;
+
+    /**
+     * @var Customer|null
+     */
+    public ?Customer $customer;
 
     /**
      * @var string|null
@@ -69,17 +76,41 @@ class CreditCard extends Model
     public ?string $gateway = null;
 
     /**
-     * @var \DateTimeImmutable|null
+     * @var DateTimeImmutable|null
      */
-    public ?\DateTimeImmutable $createdAt = null;
+    public ?DateTimeImmutable $createdAt = null;
+
+    public function fill(array $data): void
+    {
+        if (!empty($data['customer']) && is_array($data['customer'])) {
+            $customer = new Customer();
+            $customer->fill($data['customer']);
+            $data['customer'] = $customer;
+        }
+
+        parent::fill($data);
+
+        if (
+            !empty($this->customer) &&
+            !empty($this->customer->name) &&
+            is_string($this->customer->name) &&
+            is_null($this->firstName) &&
+            is_null($this->lastName)
+        ) {
+            $names = explode(' ', $this->customer->name);
+            $this->firstName = $names[0];
+            $this->lastName = $names[array_key_last($names)];
+        }
+    }
 
     /**
-     * @inerhitDoc
+     * @inheritDoc
      */
-    public function toArray()
+    public function toArray(): array
     {
         return [
             'id' => $this->id,
+            'customer' => $this->customer,
             'description' => $this->description,
             'number' => $this->number,
             'brand' => $this->brand,

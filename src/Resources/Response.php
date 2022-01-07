@@ -1,6 +1,8 @@
 <?php
 
-namespace   Potelo\MultiPayment\Resources;
+namespace Potelo\MultiPayment\Resources;
+
+use Exception;
 
 /**
  * Class Response
@@ -22,15 +24,17 @@ class Response
     private $data;
 
     /**
-     * @var mixed
+     * @var Exception
      */
-    private $error;
+    private Exception $error;
 
     /**
      * Response constructor.
      *
      * @param string $status
      * @param $response
+     *
+     * @return void
      */
     public function __construct(string $status, $response)
     {
@@ -43,6 +47,8 @@ class Response
     }
 
     /**
+     * Get status
+     *
      * @return string
      */
     public function getStatus(): string
@@ -51,6 +57,8 @@ class Response
     }
 
     /**
+     * Get data
+     *
      * @return mixed
      */
     public function getData()
@@ -59,14 +67,18 @@ class Response
     }
 
     /**
-     * @return mixed
+     * Get error
+     *
+     * @return Exception
      */
-    public function getError()
+    public function getError(): Exception
     {
         return $this->error;
     }
 
     /**
+     * Check if status is success
+     *
      * @return bool
      */
     public function success(): bool
@@ -75,6 +87,8 @@ class Response
     }
 
     /**
+     * Check if status is failed
+     *
      * @return bool
      */
     public function failed(): bool
