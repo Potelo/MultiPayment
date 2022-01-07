@@ -25,7 +25,7 @@
     },
     "minimum-stability": "dev",
     "require": {
-        "iugu/iugu": "1.0.6",
+        "iugu/iugu": "9999999-dev",
         "moip/moip-sdk-php": "^3.1",
         "rmccue/requests": "v1.7.0"
     }
