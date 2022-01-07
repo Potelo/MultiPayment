@@ -8,19 +8,29 @@ use Potelo\MultiPayment\Contracts\Gateway;
 abstract class Model
 {
 
+    /**
+     * The gateway instance.
+     * @var Gateway|null
+     */
     protected ?Gateway $gatewayClass = null;
+
+    /**
+     * The error encountered during saving.
+     * @var Exception
+     */
+    protected Exception $errors;
 
     /**
      * Create a new instance of the model.
      *
-     * @param  Gateway|string|null  $gatewayClass
+     * @param  Gateway|string|null  $gateway
      *
      * @throws Exception
      */
-    public function __construct($gatewayClass = null)
+    public function __construct($gateway = null)
     {
-        if (!is_null($gatewayClass)) {
-            $this->setGatewayClass($gatewayClass);
+        if (!is_null($gateway)) {
+            $this->setGatewayClass($gateway);
         }
     }
 
@@ -55,9 +65,9 @@ abstract class Model
      *
      * @param  array  $data
      *
-     * @return mixed
+     * @return bool
      */
-    public function create(array $data)
+    public function create(array $data): bool
     {
         $this->fill($data);
         return $this->save();
@@ -66,17 +76,32 @@ abstract class Model
     /**
      * If gateway is set, then we will use it to save the model
      *
-     * @return mixed
+     * @return bool
      */
-    public function save()
+    public function save(): bool
     {
-        $class = substr(strrchr(get_class($this), '\\'), 1);
-        $method = 'create' . $class;
-        $contracts = class_implements($this->gatewayClass);
-        if (in_array(Gateway::class, $contracts) && method_exists($this->gatewayClass, $method)) {
-            return $this->gatewayClass->$method($this);
+        try {
+            $class = substr(strrchr(get_class($this), '\\'), 1);
+            if (property_exists($this, 'id') && !empty($this->id)) {
+                $method = 'update';
+            } else {
+                $method = 'create';
+            }
+            $method = $method . $class;
+            $contracts = class_implements($this->gatewayClass);
+            if (!in_array(Gateway::class, $contracts)) {
+                throw new Exception("Gateway [" . get_class($this->gatewayClass) . "] must implement " . Gateway::class . " interface");
+            }
+            if (!method_exists($this->gatewayClass, $method)) {
+                throw new Exception("Gateway [" . get_class($this->gatewayClass) . "] does not have method [$method]");
+            }
+            $this->gatewayClass->$method($this);
+            return true;
         }
-        return null;
+        catch (Exception $e) {
+            $this->errors = $e;
+            return false;
+        }
     }
 
     /**
@@ -117,5 +142,15 @@ abstract class Model
             }
         }
         return $data;
+    }
+
+    /**
+     * Get the error encountered during saving.
+     *
+     * @return Exception
+     */
+    public function getErrors(): Exception
+    {
+        return $this->errors;
     }
 }

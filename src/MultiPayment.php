@@ -32,21 +32,6 @@ class MultiPayment
     }
 
     /**
-     * Verify if it has the payment method
-     *
-     * @param $paymentMethod
-     *
-     * @return bool
-     */
-    private function hasPaymentMethod($paymentMethod): bool
-    {
-        return in_array($paymentMethod, [
-            Invoice::PAYMENT_METHOD_CREDIT_CARD,
-            Invoice::PAYMENT_METHOD_BANK_SLIP,
-        ]);
-    }
-
-    /**
      * Set the gateway
      *
      * @param  string  $name
@@ -82,7 +67,7 @@ class MultiPayment
     {
         try {
             $this->validateAttributes($attributes);
-            if (!array_key_exists('items', $attributes)) {
+            if (empty($attributes['items'])) {
                 $attributes['items'] = [];
 
                 $attributes['items'][] = [
@@ -97,7 +82,9 @@ class MultiPayment
             $customer->fill($attributes['customer']);
             $attributes['customer'] = $customer;
             if (empty($customer->id)) {
-                $customer->save();
+                if (!$customer->save()) {
+                    return new Response(Response::STATUS_FAILED, $customer->getErrors());
+                }
             }
 
             if ($attributes['payment_method'] === Invoice::PAYMENT_METHOD_CREDIT_CARD) {
@@ -105,9 +92,13 @@ class MultiPayment
             }
 
             $invoice = new Invoice($this->gateway);
-            $invoice->create($attributes);
+            $invoice->fill($attributes);
 
-            return new Response(Response::STATUS_SUCCESS, $invoice->save());
+            if (!$invoice->save()) {
+                return new Response(Response::STATUS_FAILED, $invoice->getErrors());
+            } else {
+                return new Response(Response::STATUS_SUCCESS, $invoice);
+            }
         } catch (Exception $e) {
             return new Response(Response::STATUS_FAILED, $e);
         }
@@ -121,31 +112,34 @@ class MultiPayment
      */
     private function validateAttributes(array $attributes): void
     {
-        if (!array_key_exists('customer', $attributes)) {
+        if (empty($attributes['customer'])) {
             throw new Exception('The customer is required.');
         }
-        if (!array_key_exists('amount', $attributes)
-            && !array_key_exists('items', $attributes)) {
+        if (empty($attributes['amount'])
+            && empty($attributes['items'])) {
             throw new Exception('The amount or items are required.');
         }
-        if (!array_key_exists('payment_method', $attributes)) {
+        if (empty($attributes['payment_method'])) {
             throw new Exception('The payment_method are required.');
         }
-        if (!$this->hasPaymentMethod($attributes['payment_method'])) {
+        if (!in_array($attributes['payment_method'], [
+            Invoice::PAYMENT_METHOD_CREDIT_CARD,
+            Invoice::PAYMENT_METHOD_BANK_SLIP,
+        ])) {
             throw new Exception('The payment_method is invalid.');
         }
 
         if ($attributes['payment_method'] == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            if (!array_key_exists('credit_card', $attributes)) {
+            if (empty($attributes['credit_card'])) {
                 throw new Exception('The credit_card is required for credit card payment.');
             }
-            if (!array_key_exists('id', $attributes['credit_card']) &&
-                !array_key_exists('token', $attributes['credit_card']) &&
+            if (empty($attributes['credit_card']['id']) &&
+                empty($attributes['credit_card']['token']) &&
                 (
-                    !array_key_exists('year', $attributes['credit_card']) ||
-                    !array_key_exists('month', $attributes['credit_card']) ||
-                    !array_key_exists('number', $attributes['credit_card']) ||
-                    !array_key_exists('cvv', $attributes['credit_card'])
+                    empty($attributes['credit_card']['year']) ||
+                    empty($attributes['credit_card']['month']) ||
+                    empty($attributes['credit_card']['number']) ||
+                    empty($attributes['credit_card']['cvv'])
                 )
             ) {
                 throw new Exception('The id or token or number, month, year, cvv are required.');

@@ -220,9 +220,11 @@ class IuguGateway implements Gateway
         $creditCard->brand = $iuguCreditCard->data->brand ?? null;
         $creditCard->year = $iuguCreditCard->data->year ?? null;
         $creditCard->month = $iuguCreditCard->data->month ?? null;
-        $names = explode(' ', $iuguCreditCard->data->holder_name);
-        $creditCard->firstName = $names[0] ?? null;
-        $creditCard->lastName = $names[array_key_last($names)] ?? null;
+        if (!empty($iuguCreditCard->data->holder_name)) {
+            $names = explode(' ', $iuguCreditCard->data->holder_name);
+            $creditCard->firstName = $names[0] ?? null;
+            $creditCard->lastName = $names[array_key_last($names)] ?? null;
+        }
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
         $creditCard->createdAt = new DateTimeImmutable($iuguCreditCard->created_at_iso) ?? null;
