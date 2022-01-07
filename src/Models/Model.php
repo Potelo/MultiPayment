@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Exception;
 use Potelo\MultiPayment\Contracts\Gateway;
 
 abstract class Model
@@ -12,10 +13,40 @@ abstract class Model
     /**
      * Create a new instance of the model.
      *
-     * @param  Gateway|null  $gatewayClass
+     * @param  Gateway|string|null  $gatewayClass
+     *
+     * @throws Exception
      */
-    public function __construct(?Gateway $gatewayClass = null)
+    public function __construct($gatewayClass = null)
     {
+        if (!is_null($gatewayClass)) {
+            $this->setGatewayClass($gatewayClass);
+        }
+    }
+
+    /**
+     * Set the gateway class.
+     *
+     * @param Gateway|string $gatewayClass
+     *
+     * @return void
+     * @throws Exception
+     */
+    private function setGatewayClass($gatewayClass): void
+    {
+        if (is_string($gatewayClass)) {
+            if (is_null(config('multi-payment.gateways.'.$gatewayClass))) {
+                throw new Exception("Gateway [$gatewayClass] not found");
+            }
+            $className = config("multi-payment.gateways.$gatewayClass.class");
+            if (!class_exists($className)) {
+                throw new Exception("Gateway [$gatewayClass] not found");
+            }
+            $gatewayClass = new $className;
+        }
+        if (!$gatewayClass instanceof Gateway) {
+            throw new Exception("Gateway [" . get_class($gatewayClass) . "] must implement " . Gateway::class . " interface");
+        }
         $this->gatewayClass = $gatewayClass;
     }
 

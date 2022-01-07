@@ -116,8 +116,8 @@ class Invoice extends Model
                 unset($data['credit_card']);
             }
         } elseif ($data['payment_method'] == self::PAYMENT_METHOD_BANK_SLIP) {
+            $this->bankSlip = new BankSlip();
             if (!empty($data['bank_slip']) && is_array($data['bank_slip'])) {
-                $this->bankSlip = new BankSlip();
                 $this->bankSlip->fill($data['bank_slip']);
                 unset($data['bank_slip']);
             }

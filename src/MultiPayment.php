@@ -2,14 +2,10 @@
 
 namespace Potelo\MultiPayment;
 
-use DateTime;
 use Exception;
 use Potelo\MultiPayment\Models\Invoice;
-use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
-use Potelo\MultiPayment\Models\CreditCard;
-use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Resources\Response;
 
 /**
@@ -18,8 +14,7 @@ use Potelo\MultiPayment\Resources\Response;
 class MultiPayment
 {
 
-    public Gateway $gateway;
-
+    private Gateway $gateway;
 
     /**
      * MultiPayment constructor.
@@ -43,7 +38,7 @@ class MultiPayment
      *
      * @return bool
      */
-    public function hasPaymentMethod($paymentMethod): bool
+    private function hasPaymentMethod($paymentMethod): bool
     {
         return in_array($paymentMethod, [
             Invoice::PAYMENT_METHOD_CREDIT_CARD,
@@ -62,17 +57,17 @@ class MultiPayment
     public function setGateway(string $name): MultiPayment
     {
         if (is_null(config('multi-payment.gateways.'.$name))) {
-            throw new Exception("Gateway [$name] not found in config");
+            throw new Exception("Gateway [$name] not found");
         }
         $className = config("multi-payment.gateways.$name.class");
         if (!class_exists($className)) {
             throw new Exception("Gateway [$name] not found");
         }
-        $gatewayClass = new $className;
+        $gatewayClass = new $className();
         if (!$gatewayClass instanceof Gateway) {
             throw new Exception("Gateway [$className] must implement " . Gateway::class . " interface");
         }
-        $this->gateway = new $className();
+        $this->gateway = $gatewayClass;
         return $this;
     }
 
@@ -100,7 +95,7 @@ class MultiPayment
 
             $customer = new Customer($this->gateway);
             $customer->fill($attributes['customer']);
-
+            $attributes['customer'] = $customer;
             if (empty($customer->id)) {
                 $customer->save();
             }

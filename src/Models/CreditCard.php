@@ -85,21 +85,22 @@ class CreditCard extends Model
         if (!empty($data['customer']) && is_array($data['customer'])) {
             $customer = new Customer();
             $customer->fill($data['customer']);
-            $this->customer = $customer;
-            unset($data['customer']);
+            $data['customer'] = $customer;
         }
+
+        parent::fill($data);
 
         if (
             !empty($this->customer) &&
             !empty($this->customer->name) &&
-            empty($data['first_name']) &&
-            empty($data['last_name'])
+            is_string($this->customer->name) &&
+            is_null($this->firstName) &&
+            is_null($this->lastName)
         ) {
             $names = explode(' ', $this->customer->name);
-            $data['first_name'] = $names[0];
-            $data['last_name'] = $names[array_key_last($names)];
+            $this->firstName = $names[0];
+            $this->lastName = $names[array_key_last($names)];
         }
-        parent::fill($data);
     }
 
     /**

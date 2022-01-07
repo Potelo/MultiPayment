@@ -38,14 +38,21 @@ class BankSlip extends Model
     /**
      * @inheritDoc
      */
+    public function __construct($gatewayClass = null)
+    {
+        $this->expirationDate = new DateTime();
+        parent::__construct($gatewayClass);
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function fill(array $data): void
     {
         if (!empty($data['expiration_date'])) {
             $this->expirationDate = DateTime::createFromFormat('Y-m-d', $data['expiration_date']);
-        } else {
-            $this->expirationDate = new DateTime();
+            unset($data['expiration_date']);
         }
-        unset($data['expiration_date']);
         parent::fill($data);
     }
 
