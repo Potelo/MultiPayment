@@ -1,13 +1,13 @@
 
-1. [Introdução](#introdução)
-2. [Instalação](#instalação)
-3. [Exemplos](#exemplos)
-4. [Documentação](#documentação)
-   1. [MultiPayment](#multipayment)
-      1. [charge](#charge)
-   2. [Models](#models)
-      1. [Customer](#customer)
-      2. [Invoice](#invoice)
+- [Introdução](#introdução)
+- [Instalação](#instalação)
+- [Exemplos](#exemplos)
+- [Documentação](#documentação)
+  - [MultiPayment:](#multipayment)
+    - [charge](#charge)
+  - [Models](#models)
+    - [Customer](#customer)
+    - [Invoice](#invoice)
 
 
 
@@ -17,12 +17,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
 
 ## Instalação
 
-1. Adicione em `repositories` no composer.json o seguinte:
-```json  
-"repositories": [  
- { "type": "git", "url": "https://github.com/Potelo/MultiPayment.git" }]  
-```  
-2. Instale esse pacote pelo composer:
+Instale esse pacote pelo composer:
 
 ```  
 composer require potelo/multi-payment "dev-main"  
@@ -42,6 +37,7 @@ MOIP_APITOKEN=
 MOIP_APIKEY=  
 ```  
 
+Rode o comando abaixo para publicar as configurações no projeto Laravel
 ```  
 php artisan vendor:publish --provider="Potelo\MultiPayment\Providers\MultiPaymentServiceProvider"  
 ```  
@@ -54,7 +50,8 @@ use Potelo\MultiPayment\MultiPaymentTrait;
   
 class User extends Authenticatable  
 {  
- use MultiPaymentTrait;}  
+    use MultiPaymentTrait;
+}
 ```  
 
 ## Exemplos
