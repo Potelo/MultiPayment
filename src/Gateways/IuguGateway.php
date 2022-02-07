@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Iugu;
-use Exception;
 use Iugu_Charge;
 use Iugu_Customer;
 use Iugu_PaymentToken;
@@ -13,6 +12,8 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\PropertyValidationException;
 
 class IuguGateway implements Gateway
 {
@@ -37,6 +38,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -64,9 +66,13 @@ class IuguGateway implements Gateway
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
         }
 
-        $iuguCharge = Iugu_Charge::create($iuguInvoiceData);
+        try {
+            $iuguCharge = Iugu_Charge::create($iuguInvoiceData);
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
         if ($iuguCharge->errors) {
-            throw new Exception($iuguCharge->errors);
+            throw new GatewayException($iuguCharge->errors);
         }
         $iuguInvoice = $iuguCharge->invoice();
         $invoice->id = $iuguInvoice->id;
@@ -91,14 +97,16 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws PropertyValidationException
+     * @throws \Exception
      */
     public function createCustomer(Customer $customer): Customer
     {
         if (is_null($customer->name)) {
-            throw new Exception('The name os Costumer is required.');
+            throw new PropertyValidationException('The Costumer name is required.');
         }
         if (is_null($customer->email)) {
-            throw new Exception('The email os Costumer is required.');
+            throw new PropertyValidationException('The Costumer email is required.');
         }
 
         $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
@@ -106,8 +114,11 @@ class IuguGateway implements Gateway
         if (!is_null($customer->address)) {
             $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
         }
-        $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-
+        try {
+            $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
         $customer->id = $iuguCustomer->id;
         $customer->gateway = 'iugu';
         $customer->createdAt = new DateTimeImmutable($iuguCustomer->created_at_iso);
@@ -178,7 +189,7 @@ class IuguGateway implements Gateway
      * @param  CreditCard  $creditCard
      *
      * @return CreditCard
-     * @throws Exception
+     * @throws PropertyValidationException|GatewayException|\Exception
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
@@ -190,10 +201,10 @@ class IuguGateway implements Gateway
             is_null($creditCard->month) &&
             is_null($creditCard->year)
             ) {
-            throw new Exception('The token or the credit card data is required.');
+            throw new PropertyValidationException('The token or the credit card data is required.');
         }
         if (is_null($creditCard->customer) || is_null($creditCard->customer->id)) {
-            throw new Exception('The customer id is required.');
+            throw new PropertyValidationException('The customer id is required.');
         }
 
         if (is_null($creditCard->token)) {
@@ -211,11 +222,15 @@ class IuguGateway implements Gateway
                 ],
             ]);
         }
-        $iuguCreditCard = Iugu_PaymentMethod::create([
-            'token' => $creditCard->token,
-            'customer_id' => $creditCard->customer->id,
-            'description' => $creditCard->description ?? 'CREDIT CARD',
-        ]);
+        try {
+            $iuguCreditCard = Iugu_PaymentMethod::create([
+                'token' => $creditCard->token,
+                'customer_id' => $creditCard->customer->id,
+                'description' => $creditCard->description ?? 'CREDIT CARD',
+            ]);
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
         $creditCard->id = $iuguCreditCard->id ?? null;
         $creditCard->brand = $iuguCreditCard->data->brand ?? null;
         $creditCard->year = $iuguCreditCard->data->year ?? null;
