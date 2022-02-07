@@ -72,7 +72,7 @@ class IuguGateway implements Gateway
             throw new GatewayException($e->getMessage());
         }
         if ($iuguCharge->errors) {
-            throw new GatewayException($iuguCharge->errors);
+            throw new GatewayException('Error creating invoice', 0, null, $iuguCharge->errors);
         }
         $iuguInvoice = $iuguCharge->invoice();
         $invoice->id = $iuguInvoice->id;
@@ -118,6 +118,9 @@ class IuguGateway implements Gateway
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
+        }
+        if ($iuguCustomer->errors) {
+            throw new GatewayException('Error creating customer', 0, null, $iuguCustomer->errors);
         }
         $customer->id = $iuguCustomer->id;
         $customer->gateway = 'iugu';

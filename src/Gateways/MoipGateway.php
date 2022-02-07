@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Moip\Moip;
-use Exception;
 use DateTimeImmutable;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
@@ -40,7 +39,7 @@ class MoipGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws Exception
+     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -77,7 +76,7 @@ class MoipGateway implements Gateway
         }
         try {
             $payment->execute();
-        } catch (Exception $exception) {
+        } catch (\Exception $exception) {
             throw new GatewayException($exception->getMessage());
         }
 
@@ -157,7 +156,7 @@ class MoipGateway implements Gateway
         }
         try {
             $moipCustomer = $moipCustomer->create();
-        } catch (Exception $exception) {
+        } catch (\Exception $exception) {
             throw new GatewayException($exception->getMessage());
         }
         $customer->id = $moipCustomer->getId();

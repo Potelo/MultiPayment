@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use DateTimeImmutable;
+use Potelo\MultiPayment\Exceptions\GatewayException;
 
 class Invoice extends Model
 {
@@ -144,7 +145,7 @@ class Invoice extends Model
     private function validate(): bool
     {
         if (!$this->hasPaymentMethod($this->paymentMethod)) {
-            $this->errors = new \Exception('Invalid payment method');
+            $this->errors = new GatewayException('Invalid payment method.');
             return false;
         }
         return true;

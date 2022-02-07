@@ -17,9 +17,9 @@ abstract class Model
 
     /**
      * The error encountered during saving.
-     * @var Exception
+     * @var GatewayException
      */
-    protected Exception $errors;
+    protected GatewayException $errors;
 
     /**
      * Create a new instance of the model.
@@ -149,9 +149,9 @@ abstract class Model
     /**
      * Get the error encountered during saving.
      *
-     * @return Exception
+     * @return GatewayException
      */
-    public function getErrors(): Exception
+    public function getErrors(): GatewayException
     {
         return $this->errors;
     }
