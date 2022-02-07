@@ -2,11 +2,12 @@
 
 namespace Potelo\MultiPayment;
 
-use Exception;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Resources\Response;
+use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\PropertyValidationException;
 
 /**
  * Class MultiPayment
@@ -21,7 +22,7 @@ class MultiPayment
      *
      * @param  string|null  $gateway
      *
-     * @throws Exception
+     * @throws GatewayException
      */
     public function __construct(?string $gateway = null)
     {
@@ -37,20 +38,20 @@ class MultiPayment
      * @param  string  $name
      *
      * @return MultiPayment
-     * @throws Exception
+     * @throws GatewayException
      */
     public function setGateway(string $name): MultiPayment
     {
         if (is_null(config('multi-payment.gateways.'.$name))) {
-            throw new Exception("Gateway [$name] not found");
+            throw GatewayException::notConfigured($name);
         }
         $className = config("multi-payment.gateways.$name.class");
         if (!class_exists($className)) {
-            throw new Exception("Gateway [$name] not found");
+            throw GatewayException::notFound($name);
         }
         $gatewayClass = new $className();
         if (!$gatewayClass instanceof Gateway) {
-            throw new Exception("Gateway [$className] must implement " . Gateway::class . " interface");
+            throw GatewayException::invalidInterface($className);
         }
         $this->gateway = $gatewayClass;
         return $this;
@@ -62,45 +63,42 @@ class MultiPayment
      * @param  array  $attributes
      *
      * @return Response
+     * @throws PropertyValidationException|Exceptions\GatewayException
      */
     public function charge(array $attributes): Response
     {
-        try {
-            $this->validateAttributes($attributes);
-            if (empty($attributes['items'])) {
-                $attributes['items'] = [];
+        $this->validateAttributes($attributes);
+        if (empty($attributes['items'])) {
+            $attributes['items'] = [];
 
-                $attributes['items'][] = [
-                    'description' => 'Nova cobrança',
-                    'quantity' => 1,
-                    'price' => $attributes['amount'],
-                ];
-                unset($attributes['amount']);
+            $attributes['items'][] = [
+                'description' => 'Nova cobrança',
+                'quantity' => 1,
+                'price' => $attributes['amount'],
+            ];
+            unset($attributes['amount']);
+        }
+
+        $customer = new Customer($this->gateway);
+        $customer->fill($attributes['customer']);
+        $attributes['customer'] = $customer;
+        if (empty($customer->id)) {
+            if (!$customer->save()) {
+                return new Response(Response::STATUS_FAILED, $customer->getErrors());
             }
+        }
 
-            $customer = new Customer($this->gateway);
-            $customer->fill($attributes['customer']);
-            $attributes['customer'] = $customer;
-            if (empty($customer->id)) {
-                if (!$customer->save()) {
-                    return new Response(Response::STATUS_FAILED, $customer->getErrors());
-                }
-            }
+        if ($attributes['payment_method'] === Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+            $attributes['credit_card']['customer'] = $customer;
+        }
 
-            if ($attributes['payment_method'] === Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-                $attributes['credit_card']['customer'] = $customer;
-            }
+        $invoice = new Invoice($this->gateway);
+        $invoice->fill($attributes);
 
-            $invoice = new Invoice($this->gateway);
-            $invoice->fill($attributes);
-
-            if (!$invoice->save()) {
-                return new Response(Response::STATUS_FAILED, $invoice->getErrors());
-            } else {
-                return new Response(Response::STATUS_SUCCESS, $invoice);
-            }
-        } catch (Exception $e) {
-            return new Response(Response::STATUS_FAILED, $e);
+        if (!$invoice->save()) {
+            return new Response(Response::STATUS_FAILED, $invoice->getErrors());
+        } else {
+            return new Response(Response::STATUS_SUCCESS, $invoice);
         }
     }
 
@@ -108,30 +106,30 @@ class MultiPayment
      * @param  array  $attributes
      *
      * @return void
-     * @throws Exception
+     * @throws PropertyValidationException
      */
     private function validateAttributes(array $attributes): void
     {
         if (empty($attributes['customer'])) {
-            throw new Exception('The customer is required.');
+            throw new PropertyValidationException('The customer is required.');
         }
         if (empty($attributes['amount'])
             && empty($attributes['items'])) {
-            throw new Exception('The amount or items are required.');
+            throw new PropertyValidationException('The amount or items are required.');
         }
         if (empty($attributes['payment_method'])) {
-            throw new Exception('The payment_method are required.');
+            throw new PropertyValidationException('The payment_method are required.');
         }
         if (!in_array($attributes['payment_method'], [
             Invoice::PAYMENT_METHOD_CREDIT_CARD,
             Invoice::PAYMENT_METHOD_BANK_SLIP,
         ])) {
-            throw new Exception('The payment_method is invalid.');
+            throw new PropertyValidationException('The payment_method is invalid.');
         }
 
         if ($attributes['payment_method'] == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($attributes['credit_card'])) {
-                throw new Exception('The credit_card is required for credit card payment.');
+                throw new PropertyValidationException('The credit_card is required for credit card payment.');
             }
             if (empty($attributes['credit_card']['id']) &&
                 empty($attributes['credit_card']['token']) &&
@@ -142,7 +140,7 @@ class MultiPayment
                     empty($attributes['credit_card']['cvv'])
                 )
             ) {
-                throw new Exception('The id or token or number, month, year, cvv are required.');
+                throw new PropertyValidationException('The id or token or number, month, year, cvv are required.');
             }
         }
 
@@ -150,7 +148,7 @@ class MultiPayment
             $attributes['payment_method'] == Invoice::PAYMENT_METHOD_BANK_SLIP &&
             empty($attributes['customer']['address'])
         ) {
-            throw new Exception('The customer address is required for bank slip payment.');
+            throw new PropertyValidationException('The customer address is required for bank slip payment.');
         }
     }
 }

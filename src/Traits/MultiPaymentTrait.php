@@ -17,30 +17,28 @@ trait MultiPaymentTrait
      * @param  int|null  $amount
      *
      * @return Response
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\PropertyValidationException
      */
     public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Response
     {
-        try {
-            $gatewayName = $gatewayName ?? config('multi-payment.default');
+        $gatewayName = $gatewayName ?? config('multi-payment.default');
 
-            $payment = new MultiPayment($gatewayName);
+        $payment = new MultiPayment($gatewayName);
 
-            $customerId = $this->getGatewayCustomerId($gatewayName);
-            if (!is_null($customerId)) {
-                $options['customer']['id'] = $customerId;
-            }
-            if (!is_null($amount)) {
-                $options['amount'] = $amount;
-            }
-            $response = $payment->charge($options);
-            if ($response->success() && is_null($customerId)) {
-                $this->setCustomerId($gatewayName, $response->getData()->customer->id);
-                $this->save();
-            }
-            return $response;
-        } catch (Exception $e) {
-            return new Response(Response::STATUS_FAILED, $e);
+        $customerId = $this->getGatewayCustomerId($gatewayName);
+        if (!is_null($customerId)) {
+            $options['customer']['id'] = $customerId;
         }
+        if (!is_null($amount)) {
+            $options['amount'] = $amount;
+        }
+        $response = $payment->charge($options);
+        if ($response->success() && is_null($customerId)) {
+            $this->setCustomerId($gatewayName, $response->getData()->customer->id);
+            $this->save();
+        }
+        return $response;
     }
 
     /**

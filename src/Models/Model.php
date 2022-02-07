@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Models;
 
 use Exception;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Exceptions\GatewayException;
 
 abstract class Model
 {
@@ -16,16 +17,16 @@ abstract class Model
 
     /**
      * The error encountered during saving.
-     * @var Exception
+     * @var GatewayException
      */
-    protected Exception $errors;
+    protected GatewayException $errors;
 
     /**
      * Create a new instance of the model.
      *
      * @param  Gateway|string|null  $gateway
      *
-     * @throws Exception
+     * @throws GatewayException
      */
     public function __construct($gateway = null)
     {
@@ -37,25 +38,25 @@ abstract class Model
     /**
      * Set the gateway class.
      *
-     * @param Gateway|string $gatewayClass
+     * @param  Gateway|string  $gatewayClass
      *
      * @return void
-     * @throws Exception
+     * @throws GatewayException
      */
     private function setGatewayClass($gatewayClass): void
     {
         if (is_string($gatewayClass)) {
             if (is_null(config('multi-payment.gateways.'.$gatewayClass))) {
-                throw new Exception("Gateway [$gatewayClass] not found");
+                throw GatewayException::notConfigured($gatewayClass);
             }
             $className = config("multi-payment.gateways.$gatewayClass.class");
             if (!class_exists($className)) {
-                throw new Exception("Gateway [$gatewayClass] not found");
+                throw GatewayException::notFound($className);
             }
             $gatewayClass = new $className;
         }
         if (!$gatewayClass instanceof Gateway) {
-            throw new Exception("Gateway [" . get_class($gatewayClass) . "] must implement " . Gateway::class . " interface");
+            throw GatewayException::invalidInterface(get_class($gatewayClass));
         }
         $this->gatewayClass = $gatewayClass;
     }
@@ -66,6 +67,7 @@ abstract class Model
      * @param  array  $data
      *
      * @return bool
+     * @throws GatewayException
      */
     public function create(array $data): bool
     {
@@ -77,28 +79,28 @@ abstract class Model
      * If gateway is set, then we will use it to save the model
      *
      * @return bool
+     * @throws GatewayException
      */
     public function save(): bool
     {
+        if (is_null($this->gatewayClass)) {
+            throw new GatewayException("Gateway not set");
+        }
+        $class = substr(strrchr(get_class($this), '\\'), 1);
+        if (property_exists($this, 'id') && !empty($this->id)) {
+            $method = 'update';
+        } else {
+            $method = 'create';
+        }
+        $method = $method . $class;
+        if (!method_exists($this->gatewayClass, $method)) {
+            throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
+        }
         try {
-            $class = substr(strrchr(get_class($this), '\\'), 1);
-            if (property_exists($this, 'id') && !empty($this->id)) {
-                $method = 'update';
-            } else {
-                $method = 'create';
-            }
-            $method = $method . $class;
-            $contracts = class_implements($this->gatewayClass);
-            if (!in_array(Gateway::class, $contracts)) {
-                throw new Exception("Gateway [" . get_class($this->gatewayClass) . "] must implement " . Gateway::class . " interface");
-            }
-            if (!method_exists($this->gatewayClass, $method)) {
-                throw new Exception("Gateway [" . get_class($this->gatewayClass) . "] does not have method [$method]");
-            }
             $this->gatewayClass->$method($this);
             return true;
         }
-        catch (Exception $e) {
+        catch (GatewayException $e) {
             $this->errors = $e;
             return false;
         }
@@ -147,9 +149,9 @@ abstract class Model
     /**
      * Get the error encountered during saving.
      *
-     * @return Exception
+     * @return GatewayException
      */
-    public function getErrors(): Exception
+    public function getErrors(): GatewayException
     {
         return $this->errors;
     }

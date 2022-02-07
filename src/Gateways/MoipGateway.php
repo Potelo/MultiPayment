@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Moip\Moip;
-use Exception;
 use DateTimeImmutable;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
@@ -11,6 +10,8 @@ use Moip\Resource\Payment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\PropertyValidationException;
 
 class MoipGateway implements Gateway
 {
@@ -38,6 +39,7 @@ class MoipGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -74,8 +76,8 @@ class MoipGateway implements Gateway
         }
         try {
             $payment->execute();
-        } catch (Exception $exception) {
-            throw new Exception($exception->getMessage());
+        } catch (\Exception $exception) {
+            throw new GatewayException($exception->getMessage());
         }
 
         if (config('multi-payment.gateways.moip.sandbox')) {
@@ -108,17 +110,18 @@ class MoipGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws PropertyValidationException
      */
     public function createCustomer(Customer $customer): Customer
     {
         if (is_null($customer->name)) {
-            throw new Exception('The name of Costumer is required.');
+            throw new PropertyValidationException('The Costumer name is required.');
         }
         if (is_null($customer->email)) {
-            throw new Exception('The email of Costumer is required.');
+            throw new PropertyValidationException('The Costumer email is required.');
         }
         if (is_null($customer->taxDocument)) {
-            throw new Exception('The taxDocument of Costumer is required.');
+            throw new PropertyValidationException('The Costumer taxDocument is required.');
         }
 
         $this->init();
@@ -151,7 +154,11 @@ class MoipGateway implements Gateway
                 $customerData['address']['complement']
             );
         }
-        $moipCustomer = $moipCustomer->create();
+        try {
+            $moipCustomer = $moipCustomer->create();
+        } catch (\Exception $exception) {
+            throw new GatewayException($exception->getMessage());
+        }
         $customer->id = $moipCustomer->getId();
         $customer->createdAt = new DateTimeImmutable();
         $customer->original = $customer;

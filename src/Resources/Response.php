@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Resources;
 
-use Exception;
+use Potelo\MultiPayment\Exceptions\GatewayException;
 
 /**
  * Class Response
@@ -24,9 +24,9 @@ class Response
     private $data;
 
     /**
-     * @var Exception
+     * @var GatewayException
      */
-    private Exception $error;
+    private GatewayException $error;
 
     /**
      * Response constructor.
@@ -69,9 +69,9 @@ class Response
     /**
      * Get error
      *
-     * @return Exception
+     * @return GatewayException
      */
-    public function getError(): Exception
+    public function getError(): GatewayException
     {
         return $this->error;
     }
