@@ -42,6 +42,9 @@ class MoipGateway implements Gateway
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
+        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
+            throw new GatewayException('Moip gateway does not support pix payment method.');
+        }
         $this->init();
 
         $order = $this->moip->orders()->setOwnId(uniqid());

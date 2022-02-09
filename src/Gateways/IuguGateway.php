@@ -8,6 +8,7 @@ use Iugu_Customer;
 use Carbon\Carbon;
 use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
+use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
@@ -38,6 +39,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws PropertyValidationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -59,7 +61,7 @@ class IuguGateway implements Gateway
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP || $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
             $iuguInvoiceData['due_date'] = $invoice->bankSlip->expirationDate->format('Y-m-d');
             $iuguInvoiceData['method'] = $invoice->paymentMethod;
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
@@ -86,6 +88,10 @@ class IuguGateway implements Gateway
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
             $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
+        } elseif ($iuguCharge->method == Invoice::PAYMENT_METHOD_PIX) {
+            $invoice->pix = new Pix();
+            $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
+            $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
@@ -190,7 +196,7 @@ class IuguGateway implements Gateway
      * @param  CreditCard  $creditCard
      *
      * @return CreditCard
-     * @throws PropertyValidationException|GatewayException|\Exception
+     * @throws PropertyValidationException|GatewayException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {

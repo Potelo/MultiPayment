@@ -98,8 +98,7 @@ abstract class Model
         try {
             $this->gatewayClass->$method($this);
             return true;
-        }
-        catch (GatewayException $e) {
+        } catch (GatewayException $e) {
             $this->errors = $e;
             return false;
         }

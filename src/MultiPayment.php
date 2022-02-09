@@ -123,6 +123,7 @@ class MultiPayment
         if (!in_array($attributes['payment_method'], [
             Invoice::PAYMENT_METHOD_CREDIT_CARD,
             Invoice::PAYMENT_METHOD_BANK_SLIP,
+            Invoice::PAYMENT_METHOD_PIX,
         ])) {
             throw new PropertyValidationException('The payment_method is invalid.');
         }
@@ -144,11 +145,8 @@ class MultiPayment
             }
         }
 
-        if (
-            $attributes['payment_method'] == Invoice::PAYMENT_METHOD_BANK_SLIP &&
-            empty($attributes['customer']['address'])
-        ) {
-            throw new PropertyValidationException('The customer address is required for bank slip payment.');
+        if (($attributes['payment_method'] == Invoice::PAYMENT_METHOD_BANK_SLIP || $attributes['payment_method'] == Invoice::PAYMENT_METHOD_PIX) && empty($attributes['customer']['address'])) {
+            throw new PropertyValidationException('The customer address is required for bank slip and pix payment method');
         }
     }
 }

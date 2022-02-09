@@ -16,6 +16,7 @@ class Invoice extends Model
 
     public const PAYMENT_METHOD_CREDIT_CARD = 'credit_card';
     public const PAYMENT_METHOD_BANK_SLIP = 'bank_slip';
+    public const PAYMENT_METHOD_PIX = 'pix';
 
     /**
      * @var string|null
@@ -61,6 +62,11 @@ class Invoice extends Model
      * @var BankSlip|null
      */
     public ?BankSlip $bankSlip = null;
+
+    /**
+     * @var Pix|null
+     */
+    public ?Pix $pix = null;
 
     /**
      * @var int|null
@@ -162,6 +168,7 @@ class Invoice extends Model
         return in_array($paymentMethod, [
             Invoice::PAYMENT_METHOD_CREDIT_CARD,
             Invoice::PAYMENT_METHOD_BANK_SLIP,
+            Invoice::PAYMENT_METHOD_PIX,
         ]);
     }
 
@@ -180,6 +187,7 @@ class Invoice extends Model
             'paymentMethod' => $this->paymentMethod,
             'creditCard' => $this->creditCard,
             'bankSlip' => $this->bankSlip,
+            'pix' => $this->pix,
             'fee' => $this->fee,
             'gateway' => $this->gateway,
             'url' => $this->url,
