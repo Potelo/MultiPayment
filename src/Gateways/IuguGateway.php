@@ -96,7 +96,7 @@ class IuguGateway implements Gateway
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguCharge;
-        $invoice->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $iuguInvoice->created_at_iso);
+        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         return $invoice;
     }
 
@@ -128,7 +128,7 @@ class IuguGateway implements Gateway
         }
         $customer->id = $iuguCustomer->id;
         $customer->gateway = 'iugu';
-        $customer->createdAt = Carbon::now();
+        $customer->createdAt = new Carbon($iuguCustomer->created_at);
         $customer->original = $iuguCustomer;
 
         return $customer;
@@ -249,7 +249,7 @@ class IuguGateway implements Gateway
         }
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
-        $creditCard->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $iuguCreditCard->created_at_iso) ?? null;
+        $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
     }
 }
