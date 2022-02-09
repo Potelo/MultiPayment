@@ -128,7 +128,7 @@ class IuguGateway implements Gateway
         }
         $customer->id = $iuguCustomer->id;
         $customer->gateway = 'iugu';
-        $customer->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $iuguCustomer->created_at_iso);
+        $customer->createdAt = Carbon::now();
         $customer->original = $iuguCustomer;
 
         return $customer;
