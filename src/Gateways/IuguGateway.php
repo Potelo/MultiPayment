@@ -5,8 +5,8 @@ namespace Potelo\MultiPayment\Gateways;
 use Iugu;
 use Iugu_Charge;
 use Iugu_Customer;
+use Carbon\Carbon;
 use Iugu_PaymentToken;
-use DateTimeImmutable;
 use Iugu_PaymentMethod;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
@@ -38,7 +38,6 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -91,14 +90,13 @@ class IuguGateway implements Gateway
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguCharge;
-        $invoice->createdAt = new DateTimeImmutable($iuguInvoice->created_at_iso);
+        $invoice->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $iuguInvoice->created_at_iso);
         return $invoice;
     }
 
     /**
      * @inheritDoc
      * @throws PropertyValidationException
-     * @throws \Exception
      */
     public function createCustomer(Customer $customer): Customer
     {
@@ -124,7 +122,7 @@ class IuguGateway implements Gateway
         }
         $customer->id = $iuguCustomer->id;
         $customer->gateway = 'iugu';
-        $customer->createdAt = new DateTimeImmutable($iuguCustomer->created_at_iso);
+        $customer->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $iuguCustomer->created_at_iso);
         $customer->original = $iuguCustomer;
 
         return $customer;
@@ -245,7 +243,7 @@ class IuguGateway implements Gateway
         }
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
-        $creditCard->createdAt = new DateTimeImmutable($iuguCreditCard->created_at_iso) ?? null;
+        $creditCard->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
     }
 }

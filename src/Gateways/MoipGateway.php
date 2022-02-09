@@ -3,7 +3,7 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Moip\Moip;
-use DateTimeImmutable;
+use Carbon\Carbon;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
 use Moip\Resource\Payment;
@@ -39,7 +39,6 @@ class MoipGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws \Exception
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -103,7 +102,7 @@ class MoipGateway implements Gateway
         $invoice->url = $payment->getLinks()->getSelf();
         $invoice->fee = $payment->getOrder()->getAmountFees() ?? null;
         $invoice->original = $payment;
-        $invoice->createdAt = new DateTimeImmutable($payment->getCreatedAt()->format('Y-m-d H:i:s'));
+        $invoice->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $payment->getCreatedAt()->format('Y-m-d H:i:s'));
 
         return $invoice;
     }
@@ -160,7 +159,7 @@ class MoipGateway implements Gateway
             throw new GatewayException($exception->getMessage());
         }
         $customer->id = $moipCustomer->getId();
-        $customer->createdAt = new DateTimeImmutable();
+        $customer->createdAt = Carbon::now();
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;

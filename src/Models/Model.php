@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use Exception;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 

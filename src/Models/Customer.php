@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use DateTimeImmutable;
+use Carbon\Carbon;
 
 /**
  * Class Customer
@@ -66,9 +66,9 @@ class Customer extends Model
     public $original = null;
 
     /**
-     * @var DateTimeImmutable|null
+     * @var Carbon|null
      */
-    public ?DateTimeImmutable $createdAt = null;
+    public ?Carbon $createdAt = null;
 
     /**
      * @inheritDoc

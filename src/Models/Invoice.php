@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use DateTimeImmutable;
+use Carbon\Carbon;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 
 class Invoice extends Model
@@ -85,9 +85,9 @@ class Invoice extends Model
     public $original = null;
 
     /**
-     * @var DateTimeImmutable|null
+     * @var Carbon|null
      */
-    public ?DateTimeImmutable $createdAt = null;
+    public ?Carbon $createdAt = null;
 
     public function fill(array $data): void
     {

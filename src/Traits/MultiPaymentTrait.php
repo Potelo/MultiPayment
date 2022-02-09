@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment\Traits;
 
-use Exception;
 use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Resources\Response;
 

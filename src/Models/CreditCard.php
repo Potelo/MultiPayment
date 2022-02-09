@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use DateTimeImmutable;
+use Carbon\Carbon;
 
 /**
  * Class CreditCard
@@ -76,9 +76,9 @@ class CreditCard extends Model
     public ?string $gateway = null;
 
     /**
-     * @var DateTimeImmutable|null
+     * @var Carbon|null
      */
-    public ?DateTimeImmutable $createdAt = null;
+    public ?Carbon $createdAt = null;
 
     public function fill(array $data): void
     {
