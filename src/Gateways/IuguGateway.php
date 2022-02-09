@@ -66,7 +66,7 @@ class IuguGateway implements Gateway
             $iuguInvoiceData['due_date'] = !is_null($invoice->expirationDate)
                 ? $invoice->expirationDate->format('Y-m-d')
                 : Carbon::now()->format('Y-m-d');
-            $iuguInvoiceData['method'] = $invoice->paymentMethod;
+            $iuguInvoiceData['method'] = 'bank_slip';;
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
         }
 
