@@ -9,6 +9,7 @@ use Moip\Resource\Holder;
 use Moip\Resource\Payment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\PropertyValidationException;
@@ -72,7 +73,9 @@ class MoipGateway implements Gateway
             }
         } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $logoUri = '';
-            $expirationDate = $invoice->bankSlip->expirationDate->format('Y-m-d');
+            $expirationDate = !is_null($invoice->expirationDate)
+                ? $invoice->expirationDate->format('Y-m-d')
+                : Carbon::now()->format('Y-m-d');
             $instructionLines = ['', '', ''];
             $payment->setBoleto($expirationDate, $logoUri, $instructionLines);
         }
@@ -98,6 +101,7 @@ class MoipGateway implements Gateway
             $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
             $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
         } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+            $invoice->bankSlip = new BankSlip();
             $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
             $invoice->bankSlip->number = $payment->getLineCodeBoleto();
         }

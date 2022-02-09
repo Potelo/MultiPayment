@@ -69,6 +69,11 @@ class Invoice extends Model
     public ?Pix $pix = null;
 
     /**
+     * @var Carbon|null
+     */
+    public ?Carbon $expirationDate = null;
+
+    /**
      * @var int|null
      */
     public ?int $fee = null;
@@ -116,17 +121,16 @@ class Invoice extends Model
             unset($data['customer']);
         }
 
+        if (!empty($data['expiration_date'])) {
+            $this->expirationDate = Carbon::createFromFormat('Y-m-d', $data['expiration_date']);
+            unset($data['expiration_date']);
+        }
+
         if ($data['payment_method'] == self::PAYMENT_METHOD_CREDIT_CARD) {
             if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
                 $this->creditCard = new CreditCard();
                 $this->creditCard->fill($data['credit_card']);
                 unset($data['credit_card']);
-            }
-        } elseif ($data['payment_method'] == self::PAYMENT_METHOD_BANK_SLIP) {
-            $this->bankSlip = new BankSlip();
-            if (!empty($data['bank_slip']) && is_array($data['bank_slip'])) {
-                $this->bankSlip->fill($data['bank_slip']);
-                unset($data['bank_slip']);
             }
         }
         parent::fill($data);
@@ -181,18 +185,19 @@ class Invoice extends Model
             'id' => $this->id,
             'status' => $this->status,
             'amount' => $this->amount,
-            'orderId' => $this->orderId,
+            'order_id' => $this->orderId,
             'customer' => $this->customer,
             'items' => $this->items,
-            'paymentMethod' => $this->paymentMethod,
-            'creditCard' => $this->creditCard,
-            'bankSlip' => $this->bankSlip,
+            'payment_method' => $this->paymentMethod,
+            'credit_card' => $this->creditCard,
+            'bank_slip' => $this->bankSlip,
             'pix' => $this->pix,
+            'expiration_date' => $this->expirationDate,
             'fee' => $this->fee,
             'gateway' => $this->gateway,
             'url' => $this->url,
             'original' => $this->original,
-            'createdAt' => $this->createdAt,
+            'created_at' => $this->createdAt,
         ];
     }
 }

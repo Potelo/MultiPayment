@@ -41,7 +41,7 @@ Rode o comando abaixo para publicar as configurações no projeto Laravel
 ```  
 php artisan vendor:publish --provider="Potelo\MultiPayment\Providers\MultiPaymentServiceProvider"  
 ```  
-Verifique se o arquivo `multi-payment.php` foi criado no diretório `config/app`.
+Verifique se o arquivo `multi-payment.php` foi criado no diretório `config/`.
 
 Opcionalmente você pode configurar o Trait, para facilitar o uso do metodo `charge` junto a um usuário.
 
@@ -97,8 +97,9 @@ $options = [
     'customer' => [
         'name' => 'Nome do cliente',
         'email' => 'email@example.com',
-        'cpf' => '12345678901',
-        'phone_number' => '11 99999-9999',
+        'tax_document' => '12345678901',
+        'phone_area' => '71',
+        'phone_number' => '999999999',
         'address' => [ 
             'street' => 'Rua do cliente',
             'number' => '123',
@@ -106,7 +107,7 @@ $options = [
             'district' => 'Bairro do cliente',
             'city' => 'Cidade do cliente',
             'state' => 'SP',
-            'zip_code' => '12345-678',
+            'zip_code' => '12345678',
         ],
     ],
     'items' => [
@@ -133,39 +134,39 @@ $options = [
 ];  
 ```  
 
-| atributo                      | obrigatório                                                | tipo                           | descrição                                 | exemplo                                  |
-|-------------------------------|------------------------------------------------------------|--------------------------------|-------------------------------------------|------------------------------------------|
-| `amount`                      | **obrigatório** caso `items` não seja informado            | int                            | valor em centavos                         | `10000`                                  |
-| `customer`                    | **obrigatório**                                            | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`       |
-| `customer.name`               | **obrigatório**                                            | string                         | nome do cliente                           | `'Nome do cliente'`                      |
-| `customer.email`              | **obrigatório**                                            | string                         | email do cliente                          | `'joaomaria@email.com'`                  |
-| `customer.tax_document`       | **obrigatório** no gateway moip                            | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                          |
-| `birth_date`                  |                                                            | string formato `yyyy-mm-dd`    | data de nascimento                        | `'01/01/1990'`                           |
-| `customer.phone_number`       |                                                            | string                         | telefone                                  | `'999999999'`                            |
-| `customer.phone_area`         |                                                            | string                         | DDD                                       | `'999999999'`                            |
-| `customer.address`            | **obrigatório** para o método de pagamento `bank_slip`     | array                          | array com os dados do endereço do cliente | `['street' => 'Rua do cliente'...]`      |
-| `customer.address.street`     | **obrigatório**                                            | string                         | nome da rua                               | `'Nome da rua'`                          |
-| `customer.address.number`     | **obrigatório**                                            | string                         | número da casa                            | `'123'`                                  |
-| `customer.address.district`   | **obrigatório**                                            | string                         | bairro                                    | `'Bairro do cliente'`                    |
-| `customer.address.city`       | **obrigatório**                                            | string                         | cidade                                    | `'Salvador'`                             |
-| `customer.address.state`      | **obrigatório**                                            | string                         | estado                                    | `'Bahia'`                                |
-| `customer.address.complement` | **obrigatório**                                            | string                         | complemento                               | `'Apto. 123'`                            |
-| `customer.address.zip_code`   | **obrigatório**                                            | string                         | cep                                       | `'12345678'`                             |
-| `items`                       | **obrigatório** caso `amount` não tenha sido informado     | array                          | array com os itens da compra              | `[['description' => 'Produto 1',...`     |
-| `items.description`           | **obrigatório**                                            | string                         | descrição do item                         | `'Produto 1'`                            |
-| `items.quantity`              | **obrigatório**                                            | int                            | quantidade do item                        | `1`                                      |
-| `items.price`                 | **obrigatório**                                            | int                            | valor do item                             | `10000`                                  |
-| `payment_method`              | **obrigatório**                                            | `'credit_card'`,`'bank_slip'`  | método de pagamento                       | `'credit_card'`                          |
-| `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'` | array                          | array com os dados do cartão de crédito   | `['number' => '1234567890123456',...`    |
-| `credit_card.token`           |                                                            | string                         | token do cartão para o gateway escolhido  | `'abcdefghijklmnopqrstuvwxyz'`           |
-| `credit_card.number`          | **obrigatório** caso `token` não tenha sido informado      | string                         | número do cartão de crédito               | `'1234567890123456'`                     |
-| `credit_card.month`           | **obrigatório** caso `token` não tenha sido informado      | string                         | mês de expiração do cartão de crédito     | `'12'`                                   |
-| `credit_card.year`            | **obrigatório** caso `token` não tenha sido informado      | string                         | ano de expiração do cartão de crédito     | `'2022'`                                 |
-| `credit_card.cvv`             | **obrigatório** caso `token` não tenha sido informado      | string                         | código de segurança do cartão de crédito  | `'123'`                                  |
-| `credit_card.first_name`      |                                                            | string                         | primeiro nome no cartão de crédito        | `'João'`                                 |
-| `credit_card.last_name`       |                                                            | string                         | último nome no cartão de crédito          | `'Maria'`                                |
-| `bank_slip`                   |                                                            | array                          | array com os dados do boleto              | `['expiration_date' => '2022-12-31',...` |
-| `bank_slip.expiration_date`   |                                                            | string no formato `yyyy-mm-dd` | data de expiração do boleto               | `2021-10-10`                             |
+| atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                                  |
+|-------------------------------|---------------------------------------------------------------------|--------------------------------|-------------------------------------------|------------------------------------------|
+| `amount`                      | **obrigatório** caso `items` não seja informado                     | int                            | valor em centavos                         | `10000`                                  |
+| `customer`                    | **obrigatório**                                                     | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`       |
+| `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                      |
+| `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`                  |
+| `customer.tax_document`       | **obrigatório** no gateway moip                                     | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                          |
+| `birth_date`                  |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'01/01/1990'`                           |
+| `customer.phone_number`       |                                                                     | string                         | telefone                                  | `'999999999'`                            |
+| `customer.phone_area`         |                                                                     | string                         | DDD                                       | `'999999999'`                            |
+| `customer.address`            | **obrigatório** para o método de pagamento `bank_slip`              | array                          | array com os dados do endereço do cliente | `['street' => 'Rua do cliente'...]`      |
+| `customer.address.street`     | **obrigatório**                                                     | string                         | nome da rua                               | `'Nome da rua'`                          |
+| `customer.address.number`     | **obrigatório**                                                     | string                         | número da casa                            | `'123'`                                  |
+| `customer.address.district`   | **obrigatório**                                                     | string                         | bairro                                    | `'Bairro do cliente'`                    |
+| `customer.address.city`       | **obrigatório**                                                     | string                         | cidade                                    | `'Salvador'`                             |
+| `customer.address.state`      | **obrigatório**                                                     | string                         | estado                                    | `'Bahia'`                                |
+| `customer.address.complement` | **obrigatório**                                                     | string                         | complemento                               | `'Apto. 123'`                            |
+| `customer.address.zip_code`   | **obrigatório**                                                     | string                         | cep                                       | `'12345678'`                             |
+| `items`                       | **obrigatório** caso `amount` não tenha sido informado              | array                          | array com os itens da compra              | `[['description' => 'Produto 1',...`     |
+| `items.description`           | **obrigatório**                                                     | string                         | descrição do item                         | `'Produto 1'`                            |
+| `items.quantity`              | **obrigatório**                                                     | int                            | quantidade do item                        | `1`                                      |
+| `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                                  |
+| `payment_method`              | **obrigatório**                                                     | `'credit_card'`,`'bank_slip'`  | método de pagamento                       | `'credit_card'`                          |
+| `expiration_date`             | **obrigatório** caso `payment_method` seja `'bank_slip'` ou `'pix'` | string no formato `yyyy-mm-dd` | data de expiração da fatura               | `2021-10-10`                             |
+| `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'`          | array                          | array com os dados do cartão de crédito   | `['number' => '1234567890123456',...`    |
+| `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abcdefghijklmnopqrstuvwxyz'`           |
+| `credit_card.number`          | **obrigatório** caso `token` não tenha sido informado               | string                         | número do cartão de crédito               | `'1234567890123456'`                     |
+| `credit_card.month`           | **obrigatório** caso `token` não tenha sido informado               | string                         | mês de expiração do cartão de crédito     | `'12'`                                   |
+| `credit_card.year`            | **obrigatório** caso `token` não tenha sido informado               | string                         | ano de expiração do cartão de crédito     | `'2022'`                                 |
+| `credit_card.cvv`             | **obrigatório** caso `token` não tenha sido informado               | string                         | código de segurança do cartão de crédito  | `'123'`                                  |
+| `credit_card.first_name`      |                                                                     | string                         | primeiro nome no cartão de crédito        | `'João'`                                 |
+| `credit_card.last_name`       |                                                                     | string                         | último nome no cartão de crédito          | `'Maria'`                                |
+| `bank_slip`                   |                                                                     | array                          | array com os dados do boleto              | `['expiration_date' => '2022-12-31',...` |
 
 
 ### Models

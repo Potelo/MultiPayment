@@ -11,6 +11,7 @@ use Iugu_PaymentMethod;
 use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -62,7 +63,9 @@ class IuguGateway implements Gateway
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
         } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP || $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
-            $iuguInvoiceData['due_date'] = $invoice->bankSlip->expirationDate->format('Y-m-d');
+            $iuguInvoiceData['due_date'] = !is_null($invoice->expirationDate)
+                ? $invoice->expirationDate->format('Y-m-d')
+                : Carbon::now()->format('Y-m-d');
             $iuguInvoiceData['method'] = $invoice->paymentMethod;
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
         }
@@ -84,6 +87,7 @@ class IuguGateway implements Gateway
         $invoice->orderId = $iuguInvoice->order_id;
 
         if ($iuguCharge->method == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+            $invoice->bankSlip = new BankSlip();
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
