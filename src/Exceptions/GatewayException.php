@@ -2,25 +2,22 @@
 
 namespace Potelo\MultiPayment\Exceptions;
 
-use Throwable;
 use Potelo\MultiPayment\Contracts\Gateway;
 
 class GatewayException extends \Exception
 {
-    /** @var array */
-    private array $errors;
+    /** @var mixed */
+    private $errors;
 
     /**
      * GatewayException constructor.
      *
      * @param  string  $message
-     * @param  int  $code
-     * @param  Throwable|null  $previous
-     * @param  array  $errors
+     * @param $errors
      */
-    public function __construct(string $message = "", int $code = 0, Throwable $previous = null, array $errors = [])
+    public function __construct(string $message = "", $errors = null)
     {
-        parent::__construct($message, $code, $previous);
+        parent::__construct($message);
         $this->errors = $errors;
     }
 
