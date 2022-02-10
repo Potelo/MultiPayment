@@ -71,14 +71,14 @@ class IuguGateway implements Gateway
         }
 
         try {
-            $iuguCharge = Iugu_Charge::create($iuguInvoiceData);
+            $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
         }
-        if ($iuguCharge->errors) {
-            throw new GatewayException('Error creating invoice', 0, null, $iuguCharge->errors);
+        if ($iuguInvoice->errors) {
+            throw new GatewayException('Error creating invoice', 0, null, $iuguInvoice->errors);
         }
-        $iuguInvoice = $iuguCharge->invoice();
+//        $iuguInvoice = $iuguCharge->invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->gateway = 'iugu';
 
@@ -99,7 +99,7 @@ class IuguGateway implements Gateway
         }
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
-        $invoice->original = $iuguCharge;
+        $invoice->original = $iuguInvoice;
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         return $invoice;
     }
