@@ -36,7 +36,7 @@ class Invoice extends Model
     /**
      * @var string|null
      */
-    public ?string $orderId;
+    public ?string $orderId = null;
 
     /**
      * @var Customer|null
@@ -132,31 +132,6 @@ class Invoice extends Model
             unset($data['credit_card']);
         }
         parent::fill($data);
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function save(): bool
-    {
-        if (!$this->validate()){
-            return false;
-        }
-        return parent::save();
-    }
-
-    /**
-     * Validate the model.
-     *
-     * @return bool
-     */
-    private function validate(): bool
-    {
-        if (!$this->hasPaymentMethod($this->paymentMethod)) {
-            $this->errors = new GatewayException('Invalid payment method.');
-            return false;
-        }
-        return true;
     }
 
     /**

@@ -77,10 +77,12 @@ abstract class Model
     /**
      * If gateway is set, then we will use it to save the model
      *
+     * @param  bool  $validate
+     *
      * @return bool
      * @throws GatewayException
      */
-    public function save(): bool
+    public function save(bool $validate = true): bool
     {
         if (is_null($this->gatewayClass)) {
             throw new GatewayException("Gateway not set");
@@ -88,8 +90,12 @@ abstract class Model
         $class = substr(strrchr(get_class($this), '\\'), 1);
         if (property_exists($this, 'id') && !empty($this->id)) {
             $method = 'update';
+            $validate = false;
         } else {
             $method = 'create';
+        }
+        if ($validate) {
+            $this->validate();
         }
         $method = $method . $class;
         if (!method_exists($this->gatewayClass, $method)) {
@@ -101,6 +107,26 @@ abstract class Model
         } catch (GatewayException $e) {
             $this->errors = $e;
             return false;
+        }
+    }
+
+    /**
+     * Validate the model.
+     *
+     * @param  array  $attributes
+     *
+     * @return void
+     */
+    public function validate(array $attributes = []): void
+    {
+        if (empty($attributes)) {
+            $attributes = array_keys(get_object_vars($this));
+        }
+        foreach ($attributes as $attribute) {
+            $method = 'validate' . ucfirst($attribute). 'Attribute';
+            if (property_exists($this, $attribute) && !is_null($this->$attribute) && method_exists($this, $method)) {
+                $this->$method();
+            }
         }
     }
 
