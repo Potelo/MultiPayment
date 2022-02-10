@@ -82,10 +82,8 @@ class MultiPayment
         $customer = new Customer($this->gateway);
         $customer->fill($attributes['customer']);
         $attributes['customer'] = $customer;
-        if (empty($customer->id)) {
-            if (!$customer->save()) {
-                return new Response(Response::STATUS_FAILED, $customer->getErrors());
-            }
+        if (empty($customer->id) && !$customer->save()) {
+            return new Response(Response::STATUS_FAILED, $customer->getErrors());
         }
 
         if ($attributes['payment_method'] === Invoice::PAYMENT_METHOD_CREDIT_CARD) {
