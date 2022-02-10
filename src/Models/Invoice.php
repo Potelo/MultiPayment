@@ -126,12 +126,10 @@ class Invoice extends Model
             unset($data['expiration_date']);
         }
 
-        if ($data['payment_method'] == self::PAYMENT_METHOD_CREDIT_CARD) {
-            if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
-                $this->creditCard = new CreditCard();
-                $this->creditCard->fill($data['credit_card']);
-                unset($data['credit_card']);
-            }
+        if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
+            $this->creditCard = new CreditCard();
+            $this->creditCard->fill($data['credit_card']);
+            unset($data['credit_card']);
         }
         parent::fill($data);
     }
