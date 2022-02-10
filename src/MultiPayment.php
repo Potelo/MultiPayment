@@ -120,7 +120,7 @@ class MultiPayment
         if (empty($attributes['payment_method'])) {
             throw new PropertyValidationException('The payment_method are required.');
         }
-        if (Invoice::hasPaymentMethod($attributes['payment_method'])) {
+        if (!Invoice::hasPaymentMethod($attributes['payment_method'])) {
             throw new PropertyValidationException('The payment_method is invalid.');
         }
 
