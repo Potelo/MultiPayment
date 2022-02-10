@@ -158,6 +158,7 @@ class Invoice extends Model
         }
         return true;
     }
+
     /**
      * Verify if it has the payment method
      *

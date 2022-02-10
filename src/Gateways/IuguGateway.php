@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Iugu;
-use Iugu_Charge;
 use Iugu_Customer;
 use Carbon\Carbon;
 use Iugu_PaymentToken;

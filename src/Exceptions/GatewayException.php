@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment\Exceptions;
 
-use Throwable;
 use Potelo\MultiPayment\Contracts\Gateway;
 
 class GatewayException extends \Exception
