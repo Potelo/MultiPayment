@@ -75,7 +75,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validateNameAttribute()
+    protected function validateNameAttribute()
     {
         $regex = '/^[A-z\s.-]+$/';
         preg_match($regex, $this->name, $matches);
@@ -88,7 +88,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validateEmailAttribute()
+    protected function validateEmailAttribute()
     {
         if (!filter_var($this->email, FILTER_VALIDATE_EMAIL)) {
             throw ModelAttributeValidationException::invalid('Customer', 'email', 'The email must be a valid email.');
@@ -99,7 +99,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validateTaxDocumentAttribute()
+    protected function validateTaxDocumentAttribute()
     {
         //regex for 11 or 14 digits
         $regex = '/^[0-9]{11,14}$/';
@@ -113,7 +113,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validateBirthDateAttribute()
+    protected function validateBirthDateAttribute()
     {
         $regex = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/';
         preg_match($regex, $this->birthDate, $matches);
@@ -126,7 +126,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validatePhoneCountryCodeAttribute()
+    protected function validatePhoneCountryCodeAttribute()
     {
         $regex = '/^[0-9]{2}$/';
         preg_match($regex, $this->phoneCountryCode, $matches);
@@ -139,7 +139,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validatePhoneAreaAttribute()
+    protected function validatePhoneAreaAttribute()
     {
         $regex = '/^[0-9]{2}$/';
         preg_match($regex, $this->phoneArea, $matches);
@@ -152,7 +152,7 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    private function validatePhoneNumberAttribute()
+    protected function validatePhoneNumberAttribute()
     {
         $regex = '/^[0-9]{8,9}$/';
         preg_match($regex, $this->phoneNumber, $matches);
@@ -165,7 +165,7 @@ class Customer extends Model
      * @return bool
      * @throws ModelAttributeValidationException
      */
-    private function validateAddressAttribute()
+    protected function validateAddressAttribute()
     {
         if ($this->address instanceof Address) {
             $this->address->validate();
