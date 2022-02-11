@@ -22,86 +22,86 @@ class Invoice extends Model
     public const PAYMENT_METHOD_PIX = 'pix';
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $id = null;
+    public string $id;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $status = null;
+    public string $status;
 
     /**
-     * @var int|null
+     * @var int
      */
-    public ?int $amount = null;
+    public int $amount;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $orderId = null;
+    public string $orderId;
 
     /**
-     * @var Customer|null
+     * @var Customer
      */
-    public ?Customer $customer = null;
+    public Customer $customer;
 
     /**
-     * @var InvoiceItem[]|null
+     * @var InvoiceItem[]
      */
-    public ?array $items = null;
+    public ?array$items;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $paymentMethod = null;
+    public string $paymentMethod;
 
     /**
-     * @var CreditCard|null
+     * @var CreditCard
      */
-    public ?CreditCard $creditCard = null;
+    public CreditCard $creditCard;
 
     /**
-     * @var BankSlip|null
+     * @var BankSlip
      */
-    public ?BankSlip $bankSlip = null;
+    public BankSlip $bankSlip;
 
     /**
-     * @var Pix|null
+     * @var Pix
      */
-    public ?Pix $pix = null;
+    public Pix $pix;
 
     /**
-     * @var Carbon|null
+     * @var Carbon
      */
-    public ?Carbon $expirationDate = null;
+    public Carbon $expirationDate;
 
     /**
-     * @var int|null
+     * @var int
      */
-    public ?int $fee = null;
+    public int $fee;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $gateway = null;
+    public string $gateway;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $url = null;
+    public string $url;
 
     /**
      * The original invoice response of the gateway, in case need additional information.
      *
-     * @var mixed|null
+     * @var mixed
      */
-    public $original = null;
+    public $original;
 
     /**
-     * @var Carbon|null
+     * @var Carbon
      */
-    public ?Carbon $createdAt = null;
+    public Carbon $createdAt;
 
     /**
      * @inheritDoc
@@ -152,17 +152,16 @@ class Invoice extends Model
     }
 
     /**
-     * @param  array  $attributes
-     *
-     * @return void
-     * @throws ModelAttributeValidationException
+     * @inheritDoc
      */
-    public function validate(array $attributes = []): void
+    public function validate(array $attributes = [], array $excludedAttributes = []): void
     {
         parent::validate($attributes);
         if (empty($attributes)) {
             $attributes = array_keys(get_object_vars($this));
         }
+        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
+
         $model = 'Invoice';
 
         if (in_array('customer', $attributes) && empty($this->customer)) {

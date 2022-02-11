@@ -11,24 +11,24 @@ class BankSlip extends Model
 {
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $url = null;
+    public string $url;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $number = null;
+    public string $number;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $barcodeData = null;
+    public string $barcodeData;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $barcodeImage = null;
+    public string $barcodeImage;
 
     /**
      * @inheritDoc

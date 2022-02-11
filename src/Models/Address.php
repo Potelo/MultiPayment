@@ -13,49 +13,49 @@ class Address extends Model
     public const TYPE_SHIPPING = 'SHIPPING';
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $type = self::TYPE_BILLING;
+    public string $type = self::TYPE_BILLING;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $street = null;
+    public string $street;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $number = null;
+    public string $number;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $district = null;
+    public string $district;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $city = null;
+    public string $city;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $state = null;
+    public string $state;
 
     /**
-     * @var int|null
+     * @var int
      */
-    public ?int $zipCode = null;
+    public?int $zipCode;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $complement = null;
+    public string $complement;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $country = null;
+    public string $country;
 
     /**
      * @return void

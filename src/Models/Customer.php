@@ -12,64 +12,64 @@ class Customer extends Model
 {
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $id = null;
+    public string $id;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $name = null;
+    public string $name;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $email = null;
+    public string $email;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $taxDocument = null;
+    public string $taxDocument;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $birthDate = null;
+    public string $birthDate;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $phoneCountryCode = null;
+    public string $phoneCountryCode;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $phoneArea = null;
+    public string $phoneArea;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $phoneNumber = null;
+    public string $phoneNumber;
 
     /**
-     * @var Address|null
+     * @var Address
      */
-    public ?Address $address = null;
+    public Address $address;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $gateway = null;
+    public string $gateway;
 
     /**
-     * @var mixed|null
+     * @var mixed
      */
-    public $original = null;
+    public $original;
 
     /**
-     * @var Carbon|null
+     * @var Carbon
      */
-    public ?Carbon $createdAt = null;
+    public Carbon $createdAt;
 
     /**
      * @return void
@@ -195,7 +195,7 @@ class Customer extends Model
             'phone_country_code' => $this->phoneCountryCode,
             'phone_area' => $this->phoneArea,
             'phone_number' => $this->phoneNumber,
-            'address' => !is_null($this->address) ? $this->address->toArray() : null,
+            'address' => !empty($this->address) ? $this->address->toArray() : null,
             'gateway' => $this->gateway,
             'original' => $this->original,
             'created_at' => $this->createdAt

@@ -12,9 +12,9 @@ abstract class Model
 
     /**
      * The gateway instance.
-     * @var Gateway|null
+     * @var Gateway
      */
-    protected ?Gateway $gatewayClass = null;
+    protected Gateway $gatewayClass;
 
     /**
      * Create a new instance of the model.
@@ -25,7 +25,7 @@ abstract class Model
      */
     public function __construct($gateway = null)
     {
-        if (!is_null($gateway)) {
+        if (!empty($gateway)) {
             $this->setGatewayClass($gateway);
         }
     }
@@ -41,7 +41,7 @@ abstract class Model
     private function setGatewayClass($gatewayClass): void
     {
         if (is_string($gatewayClass)) {
-            if (is_null(config('multi-payment.gateways.'.$gatewayClass))) {
+            if (empty(config('multi-payment.gateways.'.$gatewayClass))) {
                 throw GatewayException::notConfigured($gatewayClass);
             }
             $className = config("multi-payment.gateways.$gatewayClass.class");
@@ -81,7 +81,7 @@ abstract class Model
      */
     public function save(bool $validate = true): void
     {
-        if (is_null($this->gatewayClass)) {
+        if (empty($this->gatewayClass)) {
             throw new GatewayException("Gateway not set");
         }
         $class = $this->getClassName();
@@ -105,18 +105,21 @@ abstract class Model
      * Validate the model.
      *
      * @param  array  $attributes
+     * @param  array  $excludedAttributes
      *
      * @return void
      * @throws ModelAttributeValidationException
      */
-    public function validate(array $attributes = []): void
+    public function validate(array $attributes = [], array $excludedAttributes = []): void
     {
         if (empty($attributes)) {
             $attributes = array_keys(get_object_vars($this));
         }
+        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
+
         foreach ($attributes as $attribute) {
             $validateAttributeMethod = 'validate' . ucfirst($attribute). 'Attribute';
-            if (property_exists($this, $attribute) && !is_null($this->$attribute) && method_exists($this, $validateAttributeMethod)) {
+            if (property_exists($this, $attribute) && !empty($this->$attribute) && method_exists($this, $validateAttributeMethod)) {
                 $this->$validateAttributeMethod();
             }
         }
@@ -125,7 +128,7 @@ abstract class Model
         if (!empty($this->gatewayClass) && method_exists($this->gatewayClass, $requiredAttributesMethod)) {
             $requiredAttributes = $this->gatewayClass->$requiredAttributesMethod();
             foreach ($requiredAttributes as $attribute) {
-                if (in_array($attribute, $attributes) && is_null($this->$attribute)) {
+                if (in_array($attribute, $attributes) && empty($this->$attribute)) {
                     throw ModelAttributeValidationException::required($this->getClassName(), $attribute);
                 }
             }

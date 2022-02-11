@@ -54,7 +54,7 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
-        $iuguInvoiceData['due_date'] = !is_null($invoice->expirationDate)
+        $iuguInvoiceData['due_date'] = !empty($invoice->expirationDate)
             ? $invoice->expirationDate->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
 
@@ -76,7 +76,7 @@ class IuguGateway implements Gateway
                 throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
             }
         } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            if (is_null($invoice->creditCard->id)) {
+            if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
@@ -90,7 +90,7 @@ class IuguGateway implements Gateway
             }
             $iuguInvoice = $iuguCharge->invoice();
         }
-        if (is_null($iuguInvoice)) {
+        if (empty($iuguInvoice)) {
             throw new GatewayException('Error creating invoice');
         }
         $invoice->id = $iuguInvoice->id;
@@ -137,7 +137,7 @@ class IuguGateway implements Gateway
     {
         $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
 
-        if (!is_null($customer->address)) {
+        if (!empty($customer->address)) {
             $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
             if (empty($customer->address->number)) {
                 $iuguCustomerData['number'] = 'S/N';
@@ -236,7 +236,7 @@ class IuguGateway implements Gateway
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
-        if (is_null($creditCard->token)) {
+        if (empty($creditCard->token)) {
             $creditCard->token = Iugu_PaymentToken::create([
                 'account_id' => config('multi-payment.gateways.iugu.id'),
                 'method' => 'credit_card',

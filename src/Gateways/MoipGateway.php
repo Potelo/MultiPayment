@@ -57,7 +57,7 @@ class MoipGateway implements Gateway
         $payment = $order->payments();
 
         if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            if (!is_null($invoice->creditCard->token)) {
+            if (!empty($invoice->creditCard->token)) {
                 $payment->setCreditCardHash($invoice->creditCard->token, $holder);
             } else {
                 $payment->setCreditCard(
@@ -72,7 +72,7 @@ class MoipGateway implements Gateway
             }
         } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $logoUri = '';
-            $expirationDate = !is_null($invoice->expirationDate)
+            $expirationDate = !empty($invoice->expirationDate)
                 ? $invoice->expirationDate->format('Y-m-d')
                 : Carbon::now()->format('Y-m-d');
             $instructionLines = ['', '', ''];
@@ -237,23 +237,23 @@ class MoipGateway implements Gateway
             ->setTaxDocument('')
             ->setPhone('', '', '');
 
-        if (!is_null($customer->name)) {
+        if (!empty($customer->name)) {
             $holder->setFullname($customer->name);
         }
-        if (!is_null($customer->birthDate)) {
+        if (!empty($customer->birthDate)) {
             $holder->setBirthDate($customer->birthDate);
         }
-        if (!is_null($customer->taxDocument)) {
+        if (!empty($customer->taxDocument)) {
             $holder->setTaxDocument($customer->taxDocument);
         }
-        if (!is_null($customer->phoneArea) && !is_null($customer->phoneNumber)) {
+        if (!empty($customer->phoneArea) && !empty($customer->phoneNumber)) {
             $holder->setPhone(
                 $customer->phoneArea,
                 $customer->phoneNumber,
                 $customer->phoneCountryCode ?? 55
             );
         }
-        if (!is_null($customer->address)) {
+        if (!empty($customer->address)) {
             $address = $customer->address;
             $holder->setAddress(
                 $address->type,

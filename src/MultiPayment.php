@@ -25,7 +25,7 @@ class MultiPayment
      */
     public function __construct(?string $gateway = null)
     {
-        if (is_null($gateway)) {
+        if (empty($gateway)) {
             $gateway = config('multi-payment.default');
         }
         $this->setGateway($gateway);
@@ -41,7 +41,7 @@ class MultiPayment
      */
     public function setGateway(string $name): MultiPayment
     {
-        if (is_null(config('multi-payment.gateways.'.$name))) {
+        if (empty(config('multi-payment.gateways.'.$name))) {
             throw GatewayException::notConfigured($name);
         }
         $className = config("multi-payment.gateways.$name.class");

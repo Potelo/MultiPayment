@@ -27,14 +27,14 @@ trait MultiPaymentTrait
         $payment = new MultiPayment($gatewayName);
 
         $customerId = $this->getGatewayCustomerId($gatewayName);
-        if (!is_null($customerId)) {
+        if (!empty($customerId)) {
             $options['customer']['id'] = $customerId;
         }
-        if (!is_null($amount)) {
+        if (!empty($amount)) {
             $options['amount'] = $amount;
         }
         $invoice = $payment->charge($options);
-        if (is_null($customerId)) {
+        if (empty($customerId)) {
             $this->setCustomerId($gatewayName, $invoice->customer->id);
             $this->save();
         }

@@ -17,69 +17,69 @@ class CreditCard extends Model
     public $id;
 
     /**
-     * @var Customer|null
+     * @var Customer
      */
-    public ?Customer $customer;
+    public Customer $customer;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $description = null;
+    public string $description;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $number = null;
+    public string $number;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $brand = null;
+    public string $brand;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $month = null;
+    public string $month;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $year = null;
+    public string $year;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $cvv = null;
+    public string $cvv;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $lastDigits = null;
+    public string $lastDigits;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $firstName = null;
+    public string $firstName;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $lastName = null;
+    public string $lastName;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $token = null;
+    public string $token;
 
     /**
-     * @var string|null
+     * @var string
      */
-    public ?string $gateway = null;
+    public string $gateway;
 
     /**
-     * @var Carbon|null
+     * @var Carbon
      */
-    public ?Carbon $createdAt = null;
+    public Carbon $createdAt;
 
     /**
      * @return void
@@ -132,12 +132,14 @@ class CreditCard extends Model
     /**
      * @inheritDoc
      */
-    public function validate(array $attributes = []): void
+    public function validate(array $attributes = [], array $excludedAttributes = []): void
     {
         parent::validate($attributes);
         if (empty($attributes)) {
             $attributes = array_keys(get_object_vars($this));
         }
+        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
+
         if (in_array('id', $attributes) &&
             in_array('token', $attributes) &&
             in_array('year', $attributes) &&
@@ -165,7 +167,7 @@ class CreditCard extends Model
                 throw ModelAttributeValidationException::invalid('CreditCard', 'month and year', 'CreditCard month and year must be in the future.');
             }
         }
-        if (in_array('customer', $attributes) && is_null($this->customer) || is_null($this->customer->id)) {
+        if (in_array('customer', $attributes) && empty($this->customer) || empty($this->customer->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
     }
@@ -187,8 +189,8 @@ class CreditCard extends Model
             !empty($this->customer) &&
             !empty($this->customer->name) &&
             is_string($this->customer->name) &&
-            is_null($this->firstName) &&
-            is_null($this->lastName)
+            empty($this->firstName) &&
+            empty($this->lastName)
         ) {
             $names = explode(' ', $this->customer->name);
             $this->firstName = $names[0];
