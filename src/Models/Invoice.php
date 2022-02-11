@@ -190,11 +190,7 @@ class Invoice extends Model
      */
     public function validateCustomerAttribute()
     {
-        if ($this->customer instanceof Customer) {
-            $this->customer->validate();
-        } else {
-            throw ModelAttributeValidationException::invalid('Invoice', 'customer', 'customer must be an instance of Customer');
-        }
+        $this->customer->validate();
     }
 
     /**
@@ -241,11 +237,7 @@ class Invoice extends Model
      */
     public function validateCreditCardAttribute()
     {
-        if ($this->creditCard instanceof CreditCard) {
-            $this->creditCard->validate();
-        } else {
-            throw ModelAttributeValidationException::invalid('Invoice', 'creditCard', 'creditCard must be an instance of CreditCard');
-        }
+        $this->creditCard->validate();
     }
 
 }

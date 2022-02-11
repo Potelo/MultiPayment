@@ -161,11 +161,7 @@ class Customer extends Model
      */
     protected function validateAddressAttribute(): void
     {
-        if ($this->address instanceof Address) {
-            $this->address->validate();
-        } else {
-            throw ModelAttributeValidationException::invalid('Customer', 'address', 'The address must be an instance of Address.');
-        }
+        $this->address->validate();
     }
 
     /**
