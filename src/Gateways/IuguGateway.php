@@ -137,7 +137,7 @@ class IuguGateway implements Gateway
         if (!is_null($customer->address)) {
             $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
             if (empty($customer->address->number)) {
-                $iuguCustomerData['address']['number'] = 'S/N';
+                $iuguCustomerData['number'] = 'S/N';
             }
         }
         try {
