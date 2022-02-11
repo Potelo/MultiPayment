@@ -75,8 +75,8 @@ class Address extends Model
     protected function validateNumberAttribute(): void
     {
         //regex for number and letter or the string "S/N"
-        $regex = '/^([0-9]+[a-zA-Z]*|S/N)$/';
-        if (! preg_match($regex, $this->number)) {
+        $pattern = '/^([0-9]+[a-zA-Z]*|S/N)$/';
+        if (! preg_match($pattern, $this->number)) {
             throw ModelAttributeValidationException::invalid('Address', 'number', 'Must be a valid number or "S/N"');
         }
 
@@ -88,8 +88,8 @@ class Address extends Model
      */
     protected function validateZipCodeAttribute(): void
     {
-        $regex = '/^[0-9]{8}$/';
-        if (! preg_match($regex, $this->zipCode)) {
+        $pattern = '/^[0-9]{8}$/';
+        if (! preg_match($pattern, $this->zipCode)) {
             throw ModelAttributeValidationException::invalid('Address', 'zipCode', 'Must contain 8 digits without spaces or dashes');
         }
     }

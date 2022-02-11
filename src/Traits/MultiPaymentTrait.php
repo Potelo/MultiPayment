@@ -17,7 +17,7 @@ trait MultiPaymentTrait
      *
      * @return Response
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
-     * @throws \Potelo\MultiPayment\Exceptions\PropertyValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\PropertyValidationException|\Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
     public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Response
     {

@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
  * Class CreditCard
@@ -80,6 +81,82 @@ class CreditCard extends Model
      */
     public ?Carbon $createdAt = null;
 
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateNumberAttribute()
+    {
+        $pattern = '/^[0-9]{16}$/';
+        if (!preg_match($pattern, $this->number)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'number', 'CreditCard number must contain only numbers and must be 16 digits long.');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateMonthAttribute()
+    {
+        $pattern = '/^[0-9]{2}$/';
+        if (!preg_match($pattern, $this->month)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month must contain only numbers and must be 2 digits long.');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateYearAttribute()
+    {
+        $pattern = '/^[0-9]{4}$/';
+        if (!preg_match($pattern, $this->year)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'year', 'CreditCard year must contain only numbers and must be 4 digits long.');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateCvvAttribute()
+    {
+        $pattern = '/^[0-9]{3,4}$/';
+        if (!preg_match($pattern, $this->cvv)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'cvv', 'CreditCard cvv must contain only numbers and must be 3 or 4 digits long.');
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function validate(array $attributes = []): void
+    {
+        parent::validate($attributes);
+        if (empty($this->id) &&
+            empty($this->token) &&
+            (
+                empty($this->year) ||
+                empty($this->month) ||
+                empty($this->number) ||
+                empty($this->cvv)
+            )
+        ) {
+            throw new ModelAttributeValidationException('The id or token or number, month, year, cvv are required.');
+        }
+        if (!empty($this->month) && !empty($this->year)) {
+            $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year);
+            if ($date->isPast()) {
+                throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month and year must be in the future.');
+            }
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function fill(array $data): void
     {
         if (!empty($data['customer']) && is_array($data['customer'])) {

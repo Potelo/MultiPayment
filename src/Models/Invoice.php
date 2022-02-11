@@ -3,8 +3,11 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
-use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
+/**
+ * Invoice class
+ */
 class Invoice extends Model
 {
     public const STATUS_PENDING = 'pending';
@@ -100,20 +103,34 @@ class Invoice extends Model
      */
     public ?Carbon $createdAt = null;
 
+    /**
+     * @inheritDoc
+     */
     public function fill(array $data): void
     {
-        $this->items = [];
-
-        foreach ($data['items'] as $item) {
-            if (!empty($item) && is_array($item)) {
-                $invoiceItem = new InvoiceItem();
-                $invoiceItem->fill($item);
-            } else {
-                $invoiceItem = $item;
-            }
+        if (empty($data['items']) && !empty($data['amount'])) {
+            $invoiceItem = new InvoiceItem();
+            $data['items'] = [];
+            $invoiceItem->fill([
+                'description' => 'Nova cobrança',
+                'quantity' => 1,
+                'price' => $data['amount'],
+            ]);
             $this->items[] = $invoiceItem;
+            unset($data['amount']);
         }
-        unset($data['items']);
+        elseif (!empty($data['items'])) {
+            $this->items = [];
+            foreach ($data['items'] as $item) {
+                $invoiceItem = $item;
+                if (!empty($item) && is_array($item)) {
+                    $invoiceItem = new InvoiceItem();
+                    $invoiceItem->fill($item);
+                }
+                $this->items[] = $invoiceItem;
+            }
+            unset($data['items']);
+        }
 
         if (!empty($data['customer']) && is_array($data['customer'])) {
             $this->customer = new Customer();
@@ -135,19 +152,99 @@ class Invoice extends Model
     }
 
     /**
-     * Verify if it has the payment method
+     * @param  array  $attributes
      *
-     * @param $paymentMethod
-     *
-     * @return bool
+     * @return void
+     * @throws ModelAttributeValidationException
      */
-    public static function hasPaymentMethod($paymentMethod): bool
+    public function validate(array $attributes = []): void
     {
-        return in_array($paymentMethod, [
+        parent::validate($attributes);
+
+        $model = 'Invoice';
+
+        if (empty($this->customer)) {
+            throw ModelAttributeValidationException::required($model, 'customer');
+        }
+
+        if (empty($this->amount) && empty($this->items)) {
+            throw ModelAttributeValidationException::required($model, 'amount or items');
+        }
+        if (empty($this->paymentMethod)) {
+            throw ModelAttributeValidationException::required($model, 'paymentMethod');
+        }
+        if ($this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+            if (empty($this->creditCard)) {
+                throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
+            }
+        }
+        if (($this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) && empty($this->customer->address)) {
+            throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validateCustomerAttribute()
+    {
+        if ($this->customer instanceof Customer) {
+            $this->customer->validate();
+        } else {
+            throw ModelAttributeValidationException::invalid('Invoice', 'customer', 'customer must be an instance of Customer');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validateItemsAttribute()
+    {
+        foreach ($this->items as $item) {
+            if ($item instanceof InvoiceItem) {
+                $item->validate();
+            } else {
+                throw ModelAttributeValidationException::invalid('Invoice', 'items', 'items must be an array of InvoiceItem');
+            }
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validatePaymentMethodAttribute()
+    {
+        if (!in_array($this->paymentMethod, [
             Invoice::PAYMENT_METHOD_CREDIT_CARD,
             Invoice::PAYMENT_METHOD_BANK_SLIP,
             Invoice::PAYMENT_METHOD_PIX,
-        ]);
+        ])) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'paymentMethod' ,
+                'paymentMethod must be one of: ' . implode(', ', [
+                    Invoice::PAYMENT_METHOD_CREDIT_CARD,
+                    Invoice::PAYMENT_METHOD_BANK_SLIP,
+                    Invoice::PAYMENT_METHOD_PIX,
+                ])
+            );
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validateCreditCardAttribute()
+    {
+        if ($this->creditCard instanceof CreditCard) {
+            $this->creditCard->validate();
+        } else {
+            throw ModelAttributeValidationException::invalid('Invoice', 'creditCard', 'creditCard must be an instance of CreditCard');
+        }
     }
 
     /**

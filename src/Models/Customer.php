@@ -77,9 +77,8 @@ class Customer extends Model
      */
     protected function validateNameAttribute(): void
     {
-        $regex = '/^[A-z\s.-]+$/';
-        preg_match($regex, $this->name, $matches);
-        if (count($matches) === 0) {
+        $pattern = '/^[A-z\s.-]+$/';
+        if (!preg_match($pattern, $this->name)) {
             throw ModelAttributeValidationException::invalid('Customer', 'name', 'The name must be a string with only letters, spaces, dots and dashes.');
         }
     }
@@ -102,9 +101,8 @@ class Customer extends Model
     protected function validateTaxDocumentAttribute(): void
     {
         //regex for 11 or 14 digits
-        $regex = '/^[0-9]{11,14}$/';
-        preg_match($regex, $this->taxDocument, $matches);
-        if (count($matches) === 0) {
+        $pattern = '/^[0-9]{11,14}$/';
+        if (!preg_match($pattern, $this->taxDocument)) {
             throw ModelAttributeValidationException::invalid('Customer', 'taxDocument', 'The taxDocument must be a string with 11 or 14 digits.');
         }
     }
@@ -115,9 +113,8 @@ class Customer extends Model
      */
     protected function validateBirthDateAttribute(): void
     {
-        $regex = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/';
-        preg_match($regex, $this->birthDate, $matches);
-        if (count($matches) === 0) {
+        $pattern = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/';
+        if (!preg_match($pattern, $this->birthDate)) {
             throw ModelAttributeValidationException::invalid('Customer', 'birthDate', 'The birthDate must be a string with the format YYYY-MM-DD.');
         }
     }
@@ -128,9 +125,8 @@ class Customer extends Model
      */
     protected function validatePhoneCountryCodeAttribute(): void
     {
-        $regex = '/^[0-9]{2}$/';
-        preg_match($regex, $this->phoneCountryCode, $matches);
-        if (count($matches) === 0) {
+        $pattern = '/^[0-9]{2}$/';
+        if (!preg_match($pattern, $this->phoneCountryCode)) {
             throw ModelAttributeValidationException::invalid('Customer', 'phoneCountryCode', 'The phoneCountryCode must be a string with 2 digits.');
         }
     }
@@ -141,9 +137,8 @@ class Customer extends Model
      */
     protected function validatePhoneAreaAttribute(): void
     {
-        $regex = '/^[0-9]{2}$/';
-        preg_match($regex, $this->phoneArea, $matches);
-        if (count($matches) === 0) {
+        $pattern = '/^[0-9]{2}$/';
+        if (!preg_match($pattern, $this->phoneArea)) {
             throw ModelAttributeValidationException::invalid('Customer', 'phoneArea', 'The phoneArea must be a string with 2 digits.');
         }
     }
@@ -154,9 +149,8 @@ class Customer extends Model
      */
     protected function validatePhoneNumberAttribute(): void
     {
-        $regex = '/^[0-9]{8,9}$/';
-        preg_match($regex, $this->phoneNumber, $matches);
-        if (count($matches) === 0) {
+        $pattern = '/^[0-9]{8,9}$/';
+        if (!preg_match($pattern, $this->phoneNumber)) {
             throw ModelAttributeValidationException::invalid('Customer', 'phoneNumber', 'The phoneNumber must be a string with 8 or 9 digits.');
         }
     }

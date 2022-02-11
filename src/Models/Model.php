@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Models;
 
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 abstract class Model
 {
@@ -116,6 +117,7 @@ abstract class Model
      * @param  array  $attributes
      *
      * @return void
+     * @throws ModelAttributeValidationException
      */
     public function validate(array $attributes = []): void
     {
