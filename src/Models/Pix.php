@@ -9,23 +9,12 @@ class Pix extends Model
 {
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $qrCodeImageUrl;
+    public ?string $qrCodeImageUrl;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $qrCodeText;
-
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'qr_code_image_url' => $this->qrCodeImageUrl,
-            'qr_code_text' => $this->qrCodeText,
-        ];
-    }
+    public ?string $qrCodeText;
 }

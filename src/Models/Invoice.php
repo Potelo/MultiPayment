@@ -3,8 +3,11 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
-use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
+/**
+ * Invoice class
+ */
 class Invoice extends Model
 {
     public const STATUS_PENDING = 'pending';
@@ -21,17 +24,17 @@ class Invoice extends Model
     /**
      * @var string|null
      */
-    public ?string $id = null;
+    public ?string $id;
 
     /**
      * @var string|null
      */
-    public ?string $status = null;
+    public ?string $status;
 
     /**
      * @var int|null
      */
-    public ?int $amount = null;
+    public ?int $amount;
 
     /**
      * @var string|null
@@ -41,79 +44,93 @@ class Invoice extends Model
     /**
      * @var Customer|null
      */
-    public ?Customer $customer = null;
+    public ?Customer $customer;
 
     /**
      * @var InvoiceItem[]|null
      */
-    public ?array $items = null;
+    public ?array$items;
 
     /**
      * @var string|null
      */
-    public ?string $paymentMethod = null;
+    public ?string $paymentMethod;
 
     /**
      * @var CreditCard|null
      */
-    public ?CreditCard $creditCard = null;
+    public ?CreditCard $creditCard;
 
     /**
      * @var BankSlip|null
      */
-    public ?BankSlip $bankSlip = null;
+    public ?BankSlip $bankSlip;
 
     /**
      * @var Pix|null
      */
-    public ?Pix $pix = null;
+    public ?Pix $pix;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $expirationDate = null;
+    public ?Carbon $expirationDate;
 
     /**
      * @var int|null
      */
-    public ?int $fee = null;
+    public ?int $fee;
 
     /**
      * @var string|null
      */
-    public ?string $gateway = null;
+    public ?string $gateway;
 
     /**
      * @var string|null
      */
-    public ?string $url = null;
+    public ?string $url;
 
     /**
      * The original invoice response of the gateway, in case need additional information.
      *
      * @var mixed|null
      */
-    public $original = null;
+    public $original;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $createdAt = null;
+    public ?Carbon $createdAt;
 
+    /**
+     * @inheritDoc
+     */
     public function fill(array $data): void
     {
-        $this->items = [];
-
-        foreach ($data['items'] as $item) {
-            if (!empty($item) && is_array($item)) {
-                $invoiceItem = new InvoiceItem();
-                $invoiceItem->fill($item);
-            } else {
-                $invoiceItem = $item;
-            }
+        if (empty($data['items']) && !empty($data['amount'])) {
+            $invoiceItem = new InvoiceItem();
+            $data['items'] = [];
+            $invoiceItem->fill([
+                'description' => 'Nova cobrança',
+                'quantity' => 1,
+                'price' => $data['amount'],
+            ]);
             $this->items[] = $invoiceItem;
+            unset($data['amount']);
         }
-        unset($data['items']);
+        elseif (!empty($data['items'])) {
+            $this->items = [];
+            foreach ($data['items'] as $item) {
+                $invoiceItem = $item;
+                if (!empty($item) && is_array($item)) {
+                    $invoiceItem = new InvoiceItem();
+                    $invoiceItem->fill($item);
+                }
+                $this->items[] = $invoiceItem;
+            }
+            unset($data['items']);
+        }
 
         if (!empty($data['customer']) && is_array($data['customer'])) {
             $this->customer = new Customer();
@@ -137,66 +154,90 @@ class Invoice extends Model
     /**
      * @inheritDoc
      */
-    public function save(): bool
+    public function validate(array $attributes = [], array $excludedAttributes = []): void
     {
-        if (!$this->validate()){
-            return false;
+        parent::validate($attributes);
+        if (empty($attributes)) {
+            $attributes = array_keys(get_class_vars(get_class($this)));
         }
-        return parent::save();
+        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
+
+        $model = 'Invoice';
+
+        if (in_array('customer', $attributes) && empty($this->customer)) {
+            throw ModelAttributeValidationException::required($model, 'customer');
+        }
+
+        if (in_array('amount', $attributes) && in_array('items', $attributes) && empty($this->amount) && empty($this->items)) {
+            throw ModelAttributeValidationException::required($model, 'amount or items');
+        }
+        if (in_array('paymentMethod', $attributes) && empty($this->paymentMethod)) {
+            throw ModelAttributeValidationException::required($model, 'paymentMethod');
+        }
+        if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+            if (empty($this->creditCard)) {
+                throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
+            }
+        }
+        if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP && empty($this->customer->address)) {
+            throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
+        }
     }
 
     /**
-     * Validate the model.
-     *
-     * @return bool
+     * @return void
+     * @throws ModelAttributeValidationException
      */
-    private function validate(): bool
+    public function validateCustomerAttribute()
     {
-        if (!$this->hasPaymentMethod($this->paymentMethod)) {
-            $this->errors = new GatewayException('Invalid payment method.');
-            return false;
-        }
-        return true;
+        $this->customer->validate();
     }
 
     /**
-     * Verify if it has the payment method
-     *
-     * @param $paymentMethod
-     *
-     * @return bool
+     * @return void
+     * @throws ModelAttributeValidationException
      */
-    public static function hasPaymentMethod($paymentMethod): bool
+    public function validateItemsAttribute()
     {
-        return in_array($paymentMethod, [
+        foreach ($this->items as $item) {
+            if ($item instanceof InvoiceItem) {
+                $item->validate();
+            } else {
+                throw ModelAttributeValidationException::invalid('Invoice', 'items', 'items must be an array of InvoiceItem');
+            }
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validatePaymentMethodAttribute()
+    {
+        if (!in_array($this->paymentMethod, [
             Invoice::PAYMENT_METHOD_CREDIT_CARD,
             Invoice::PAYMENT_METHOD_BANK_SLIP,
             Invoice::PAYMENT_METHOD_PIX,
-        ]);
+        ])) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'paymentMethod' ,
+                'paymentMethod must be one of: ' . implode(', ', [
+                    Invoice::PAYMENT_METHOD_CREDIT_CARD,
+                    Invoice::PAYMENT_METHOD_BANK_SLIP,
+                    Invoice::PAYMENT_METHOD_PIX,
+                ])
+            );
+        }
     }
 
     /**
-     * @inheritDoc
+     * @return void
+     * @throws ModelAttributeValidationException
      */
-    public function toArray(): array
+    public function validateCreditCardAttribute()
     {
-        return [
-            'id' => $this->id,
-            'status' => $this->status,
-            'amount' => $this->amount,
-            'order_id' => $this->orderId,
-            'customer' => $this->customer,
-            'items' => $this->items,
-            'payment_method' => $this->paymentMethod,
-            'credit_card' => $this->creditCard,
-            'bank_slip' => $this->bankSlip,
-            'pix' => $this->pix,
-            'expiration_date' => $this->expirationDate,
-            'fee' => $this->fee,
-            'gateway' => $this->gateway,
-            'url' => $this->url,
-            'original' => $this->original,
-            'created_at' => $this->createdAt,
-        ];
+        $this->creditCard->validate();
     }
+
 }

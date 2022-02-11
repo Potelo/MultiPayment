@@ -12,7 +12,6 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
-use Potelo\MultiPayment\Exceptions\PropertyValidationException;
 
 class MoipGateway implements Gateway
 {
@@ -58,7 +57,7 @@ class MoipGateway implements Gateway
         $payment = $order->payments();
 
         if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            if (!is_null($invoice->creditCard->token)) {
+            if (!empty($invoice->creditCard->token)) {
                 $payment->setCreditCardHash($invoice->creditCard->token, $holder);
             } else {
                 $payment->setCreditCard(
@@ -73,7 +72,7 @@ class MoipGateway implements Gateway
             }
         } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $logoUri = '';
-            $expirationDate = !is_null($invoice->expirationDate)
+            $expirationDate = !empty($invoice->expirationDate)
                 ? $invoice->expirationDate->format('Y-m-d')
                 : Carbon::now()->format('Y-m-d');
             $instructionLines = ['', '', ''];
@@ -116,22 +115,23 @@ class MoipGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws PropertyValidationException
+     */
+    public function requiredInvoiceAttributes(): array
+    {
+        return [
+            'customer',
+            'items',
+            'paymentMethod',
+        ];
+    }
+
+    /**
+     * @inheritDoc
      */
     public function createCustomer(Customer $customer): Customer
     {
-        if (is_null($customer->name)) {
-            throw new PropertyValidationException('The Costumer name is required.');
-        }
-        if (is_null($customer->email)) {
-            throw new PropertyValidationException('The Costumer email is required.');
-        }
-        if (is_null($customer->taxDocument)) {
-            throw new PropertyValidationException('The Costumer taxDocument is required.');
-        }
-
         $this->init();
-        $customerData = $customer->toArrayWithoutEmpty();
+        $customerData = $customer->toArray();
         $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
             ->setFullname($customerData['name'])
             ->setEmail($customerData['email'])
@@ -152,12 +152,12 @@ class MoipGateway implements Gateway
             $moipCustomer->addAddress(
                 $customerData['address']['type'],
                 $customerData['address']['street'],
-                $customerData['address']['number'],
+                !empty($customerData['address']['number']) ? $customerData['address']['number'] : 'S/N',
                 $customerData['address']['district'],
                 $customerData['address']['city'],
                 $customerData['address']['state'],
                 $customerData['address']['zip_code'],
-                $customerData['address']['complement']
+                !empty($customerData['address']['complement']) ? $customerData['address']['complement'] : null,
             );
         }
         try {
@@ -170,6 +170,18 @@ class MoipGateway implements Gateway
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function requiredCustomerAttributes(): array
+    {
+        return [
+            'name',
+            'email',
+            'taxDocument',
+        ];
     }
 
     /**
@@ -225,23 +237,23 @@ class MoipGateway implements Gateway
             ->setTaxDocument('')
             ->setPhone('', '', '');
 
-        if (!is_null($customer->name)) {
+        if (!empty($customer->name)) {
             $holder->setFullname($customer->name);
         }
-        if (!is_null($customer->birthDate)) {
+        if (!empty($customer->birthDate)) {
             $holder->setBirthDate($customer->birthDate);
         }
-        if (!is_null($customer->taxDocument)) {
+        if (!empty($customer->taxDocument)) {
             $holder->setTaxDocument($customer->taxDocument);
         }
-        if (!is_null($customer->phoneArea) && !is_null($customer->phoneNumber)) {
+        if (!empty($customer->phoneArea) && !empty($customer->phoneNumber)) {
             $holder->setPhone(
                 $customer->phoneArea,
                 $customer->phoneNumber,
                 $customer->phoneCountryCode ?? 55
             );
         }
-        if (!is_null($customer->address)) {
+        if (!empty($customer->address)) {
             $address = $customer->address;
             $holder->setAddress(
                 $address->type,

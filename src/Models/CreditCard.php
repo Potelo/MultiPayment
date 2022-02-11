@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
  * Class CreditCard
@@ -23,63 +24,154 @@ class CreditCard extends Model
     /**
      * @var string|null
      */
-    public ?string $description = null;
+    public ?string $description;
 
     /**
      * @var string|null
      */
-    public ?string $number = null;
+    public ?string $number;
 
     /**
      * @var string|null
      */
-    public ?string $brand = null;
+    public ?string $brand;
 
     /**
      * @var string|null
      */
-    public ?string $month = null;
+    public ?string $month;
 
     /**
      * @var string|null
      */
-    public ?string $year = null;
+    public ?string $year;
 
     /**
      * @var string|null
      */
-    public ?string $cvv = null;
+    public ?string $cvv;
 
     /**
      * @var string|null
      */
-    public ?string $lastDigits = null;
+    public ?string $lastDigits;
 
     /**
      * @var string|null
      */
-    public ?string $firstName = null;
+    public ?string $firstName;
 
     /**
      * @var string|null
      */
-    public ?string $lastName = null;
+    public ?string $lastName;
 
     /**
      * @var string|null
      */
-    public ?string $token = null;
+    public ?string $token;
 
     /**
      * @var string|null
      */
-    public ?string $gateway = null;
+    public ?string $gateway;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $createdAt = null;
+    public ?Carbon $createdAt;
 
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateNumberAttribute()
+    {
+        $pattern = '/^[0-9]{16}$/';
+        if (!preg_match($pattern, $this->number)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'number', 'CreditCard number must contain only numbers and must be 16 digits long.');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateMonthAttribute()
+    {
+        $pattern = '/^[0-9]{2}$/';
+        if (!preg_match($pattern, $this->month)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month must contain only numbers and must be 2 digits long.');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateYearAttribute()
+    {
+        $pattern = '/^[0-9]{4}$/';
+        if (!preg_match($pattern, $this->year)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'year', 'CreditCard year must contain only numbers and must be 4 digits long.');
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateCvvAttribute()
+    {
+        $pattern = '/^[0-9]{3,4}$/';
+        if (!preg_match($pattern, $this->cvv)) {
+            throw ModelAttributeValidationException::invalid('CreditCard', 'cvv', 'CreditCard cvv must contain only numbers and must be 3 or 4 digits long.');
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function validate(array $attributes = [], array $excludedAttributes = []): void
+    {
+        parent::validate($attributes);
+        if (empty($attributes)) {
+            $attributes = array_keys(get_class_vars(get_class($this)));
+        }
+        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
+
+        if (in_array('id', $attributes) &&
+            in_array('token', $attributes) &&
+            in_array('year', $attributes) &&
+            in_array('month', $attributes) &&
+            in_array('number', $attributes) &&
+            in_array('cvv', $attributes) &&
+            in_array('firstName', $attributes) &&
+            in_array('lastName', $attributes) &&
+            empty($this->id) &&
+            empty($this->token) &&
+            (
+                empty($this->year) ||
+                empty($this->month) ||
+                empty($this->number) ||
+                empty($this->cvv) ||
+                empty($this->firstName) ||
+                empty($this->lastName)
+            )
+        ) {
+            throw new ModelAttributeValidationException('The `id` or `token` or [`number`, `month`, `year`, `cvv`, `firstName` and `lastName` are required.');
+        }
+        if (in_array('month', $attributes) && in_array('year', $attributes) && !empty($this->month) && !empty($this->year)) {
+            $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
+            if ($date->isPast()) {
+                throw ModelAttributeValidationException::invalid('CreditCard', 'month and year', 'CreditCard month and year must be in the future.');
+            }
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function fill(array $data): void
     {
         if (!empty($data['customer']) && is_array($data['customer'])) {
@@ -94,8 +186,8 @@ class CreditCard extends Model
             !empty($this->customer) &&
             !empty($this->customer->name) &&
             is_string($this->customer->name) &&
-            is_null($this->firstName) &&
-            is_null($this->lastName)
+            empty($this->firstName) &&
+            empty($this->lastName)
         ) {
             $names = explode(' ', $this->customer->name);
             $this->firstName = $names[0];
@@ -103,26 +195,4 @@ class CreditCard extends Model
         }
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'id' => $this->id,
-            'customer' => $this->customer,
-            'description' => $this->description,
-            'number' => $this->number,
-            'brand' => $this->brand,
-            'month' => $this->month,
-            'year' => $this->year,
-            'cvv' => $this->cvv,
-            'last_digits' => $this->lastDigits,
-            'first_name' => $this->firstName,
-            'last_name' => $this->lastName,
-            'token' => $this->token,
-            'gateway' => $this->gateway,
-            'created_at' => $this->createdAt,
-        ];
-    }
 }

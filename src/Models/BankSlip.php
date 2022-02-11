@@ -13,33 +13,21 @@ class BankSlip extends Model
     /**
      * @var string|null
      */
-    public ?string $url = null;
+    public ?string $url;
 
     /**
      * @var string|null
      */
-    public ?string $number = null;
+    public ?string $number;
 
     /**
      * @var string|null
      */
-    public ?string $barcodeData = null;
+    public ?string $barcodeData;
 
     /**
      * @var string|null
      */
-    public ?string $barcodeImage = null;
+    public ?string $barcodeImage;
 
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'url' => $this->url,
-            'number' => $this->number,
-            'barcode_data' => $this->barcodeData,
-            'barcode_image' => $this->barcodeImage,
-        ];
-    }
 }

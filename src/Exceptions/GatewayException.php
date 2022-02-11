@@ -4,7 +4,7 @@ namespace Potelo\MultiPayment\Exceptions;
 
 use Potelo\MultiPayment\Contracts\Gateway;
 
-class GatewayException extends \Exception
+class GatewayException extends MultiPaymentException
 {
     /** @var mixed */
     private $errors;
@@ -29,22 +29,51 @@ class GatewayException extends \Exception
         return $this->errors;
     }
 
+    /**
+     * The gateway does not implement the interface.
+     *
+     * @param $gateway
+     *
+     * @return GatewayException
+     */
     public static function invalidInterface($gateway): GatewayException
     {
         return new static("Gateway [" . get_class($gateway) . "] must implement " . Gateway::class . " interface");
     }
 
-    public static function notConfigured($gateway): GatewayException
+    /**
+     * Specified gateway is not present in the list of gateways
+     *
+     * @param  string  $gateway
+     *
+     * @return GatewayException
+     */
+    public static function notConfigured(string $gateway): GatewayException
     {
         return new static("Gateway [{$gateway}] not found in configuration file.");
     }
 
-    public static function notFound($gateway): GatewayException
+    /**
+     * Gateway not found exception.
+     *
+     * @param  string  $gateway
+     *
+     * @return GatewayException
+     */
+    public static function notFound(string $gateway): GatewayException
     {
         return new static("Gateway class [{$gateway}] not found.");
     }
 
-    public static function methodNotFound($gatewayClass, $method): GatewayException
+    /**
+     * Method not found in gateway.
+     *
+     * @param  string  $gatewayClass
+     * @param  string  $method
+     *
+     * @return GatewayException
+     */
+    public static function methodNotFound(string $gatewayClass, string $method): GatewayException
     {
         return new static("Gateway [{$gatewayClass}] does not have method [$method]");
     }
