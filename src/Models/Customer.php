@@ -12,64 +12,64 @@ class Customer extends Model
 {
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $id;
+    public ?string $id;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $name;
+    public ?string $name;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $email;
+    public ?string $email;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $taxDocument;
+    public ?string $taxDocument;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $birthDate;
+    public ?string $birthDate;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $phoneCountryCode;
+    public ?string $phoneCountryCode;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $phoneArea;
+    public ?string $phoneArea;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $phoneNumber;
+    public ?string $phoneNumber;
 
     /**
-     * @var Address
+     * @var Address|null
      */
-    public Address $address;
+    public ?Address $address;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $gateway;
+    public ?string $gateway;
 
     /**
-     * @var mixed
+     * @var mixed|null
      */
     public $original;
 
     /**
-     * @var Carbon
+     * @var Carbon|null
      */
-    public Carbon $createdAt;
+    public ?Carbon $createdAt;
 
     /**
      * @return void

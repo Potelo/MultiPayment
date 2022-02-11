@@ -22,86 +22,86 @@ class Invoice extends Model
     public const PAYMENT_METHOD_PIX = 'pix';
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $id;
+    public ?string $id;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $status;
+    public ?string $status;
 
     /**
-     * @var int
+     * @var int|null
      */
-    public int $amount;
+    public ?int $amount;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $orderId;
+    public ?string $orderId;
 
     /**
-     * @var Customer
+     * @var Customer|null
      */
-    public Customer $customer;
+    public ?Customer $customer;
 
     /**
-     * @var InvoiceItem[]
+     * @var InvoiceItem[]|null
      */
     public ?array$items;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $paymentMethod;
+    public ?string $paymentMethod;
 
     /**
-     * @var CreditCard
+     * @var CreditCard|null
      */
-    public CreditCard $creditCard;
+    public ?CreditCard $creditCard;
 
     /**
-     * @var BankSlip
+     * @var BankSlip|null
      */
-    public BankSlip $bankSlip;
+    public ?BankSlip $bankSlip;
 
     /**
-     * @var Pix
+     * @var Pix|null
      */
-    public Pix $pix;
+    public ?Pix $pix;
 
     /**
-     * @var Carbon
+     * @var Carbon|null
      */
-    public Carbon $expirationDate;
+    public ?Carbon $expirationDate;
 
     /**
-     * @var int
+     * @var int|null
      */
-    public int $fee;
+    public ?int $fee;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $gateway;
+    public ?string $gateway;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $url;
+    public ?string $url;
 
     /**
      * The original invoice response of the gateway, in case need additional information.
      *
-     * @var mixed
+     * @var mixed|null
      */
     public $original;
 
     /**
-     * @var Carbon
+     * @var Carbon|null
      */
-    public Carbon $createdAt;
+    public ?Carbon $createdAt;
 
     /**
      * @inheritDoc

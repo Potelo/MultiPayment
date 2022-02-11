@@ -8,17 +8,17 @@ namespace Potelo\MultiPayment\Models;
 class InvoiceItem extends Model
 {
     /**
-     * @var string
+     * @var string|null
      */
-    public string $description;
+    public ?string $description;
 
     /**
-     * @var int
+     * @var int|null
      */
-    public int $price;
+    public ?int $price;
 
     /**
-     * @var int
+     * @var int|null
      */
-    public int $quantity;
+    public ?int $quantity;
 }

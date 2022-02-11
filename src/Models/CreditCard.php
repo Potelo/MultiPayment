@@ -17,69 +17,69 @@ class CreditCard extends Model
     public $id;
 
     /**
-     * @var Customer
+     * @var Customer|null
      */
-    public Customer $customer;
+    public ?Customer $customer;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $description;
+    public ?string $description;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $number;
+    public ?string $number;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $brand;
+    public ?string $brand;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $month;
+    public ?string $month;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $year;
+    public ?string $year;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $cvv;
+    public ?string $cvv;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $lastDigits;
+    public ?string $lastDigits;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $firstName;
+    public ?string $firstName;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $lastName;
+    public ?string $lastName;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $token;
+    public ?string $token;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $gateway;
+    public ?string $gateway;
 
     /**
-     * @var Carbon
+     * @var Carbon|null
      */
-    public Carbon $createdAt;
+    public ?Carbon $createdAt;
 
     /**
      * @return void

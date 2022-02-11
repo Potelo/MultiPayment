@@ -18,44 +18,44 @@ class Address extends Model
     public string $type = self::TYPE_BILLING;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $street;
+    public ?string $street;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $number;
+    public ?string $number;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $district;
+    public ?string $district;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $city;
+    public ?string $city;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $state;
+    public ?string $state;
 
     /**
-     * @var int
+     * @var string|null
      */
-    public?int $zipCode;
+    public ?string $zipCode;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $complement;
+    public ?string $complement;
 
     /**
-     * @var string
+     * @var string|null
      */
-    public string $country;
+    public ?string $country;
 
     /**
      * @return void
