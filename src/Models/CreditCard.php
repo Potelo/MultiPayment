@@ -167,9 +167,6 @@ class CreditCard extends Model
                 throw ModelAttributeValidationException::invalid('CreditCard', 'month and year', 'CreditCard month and year must be in the future.');
             }
         }
-        if (in_array('customer', $attributes) && empty($this->customer) || empty($this->customer->id)) {
-            throw ModelAttributeValidationException::required('CreditCard', 'customer');
-        }
     }
 
     /**

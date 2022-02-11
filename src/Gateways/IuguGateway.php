@@ -14,6 +14,7 @@ use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class IuguGateway implements Gateway
 {
@@ -232,10 +233,13 @@ class IuguGateway implements Gateway
      * @param  CreditCard  $creditCard
      *
      * @return CreditCard
-     * @throws GatewayException
+     * @throws GatewayException|ModelAttributeValidationException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
+        if (empty($this->customer) || empty($this->customer->id)) {
+            throw ModelAttributeValidationException::required('CreditCard', 'customer');
+        }
         if (empty($creditCard->token)) {
             $creditCard->token = Iugu_PaymentToken::create([
                 'account_id' => config('multi-payment.gateways.iugu.id'),
