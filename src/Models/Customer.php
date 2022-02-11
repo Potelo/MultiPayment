@@ -75,18 +75,6 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    protected function validateNameAttribute(): void
-    {
-        $pattern = '/^[A-z\s.-]+$/';
-        if (!preg_match($pattern, $this->name)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'name', 'The name must be a string with only letters, spaces, dots and dashes.');
-        }
-    }
-
-    /**
-     * @return void
-     * @throws ModelAttributeValidationException
-     */
     protected function validateEmailAttribute(): void
     {
         if (!filter_var($this->email, FILTER_VALIDATE_EMAIL)) {
