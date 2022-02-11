@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Models;
 
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 abstract class Model
@@ -14,12 +15,6 @@ abstract class Model
      * @var Gateway|null
      */
     protected ?Gateway $gatewayClass = null;
-
-    /**
-     * The error encountered during saving.
-     * @var GatewayException
-     */
-    protected GatewayException $errors;
 
     /**
      * Create a new instance of the model.
@@ -66,13 +61,13 @@ abstract class Model
      *
      * @param  array  $data
      *
-     * @return bool
+     * @return void
      * @throws GatewayException|ModelAttributeValidationException
      */
-    public function create(array $data): bool
+    public function create(array $data): void
     {
         $this->fill($data);
-        return $this->save();
+        $this->save();
     }
 
     /**
@@ -80,11 +75,11 @@ abstract class Model
      *
      * @param  bool  $validate
      *
-     * @return bool
+     * @return void
      * @throws GatewayException
      * @throws ModelAttributeValidationException
      */
-    public function save(bool $validate = true): bool
+    public function save(bool $validate = true): void
     {
         if (is_null($this->gatewayClass)) {
             throw new GatewayException("Gateway not set");
@@ -96,20 +91,14 @@ abstract class Model
         } else {
             $method = 'create';
         }
-        if ($validate) {
-            $this->validate();
-        }
         $method = $method . $class;
         if (!method_exists($this->gatewayClass, $method)) {
             throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
         }
-        try {
-            $this->gatewayClass->$method($this);
-            return true;
-        } catch (GatewayException $e) {
-            $this->errors = $e;
-            return false;
+        if ($validate) {
+            $this->validate();
         }
+        $this->gatewayClass->$method($this);
     }
 
     /**
@@ -134,9 +123,9 @@ abstract class Model
         $requiredAttributesMethod = 'required' . $this->getClassName() . 'Attributes';
 
         if (!empty($this->gatewayClass) && method_exists($this->gatewayClass, $requiredAttributesMethod)) {
-            $requiredAttributes = $this->$requiredAttributesMethod();
+            $requiredAttributes = $this->gatewayClass->$requiredAttributesMethod();
             foreach ($requiredAttributes as $attribute) {
-                if (in_array($attributes, $attributes) && is_null($this->$attribute)) {
+                if (in_array($attribute, $attributes) && is_null($this->$attribute)) {
                     throw ModelAttributeValidationException::required($this->getClassName(), $attribute);
                 }
             }
@@ -182,16 +171,6 @@ abstract class Model
             }
         }
         return $data;
-    }
-
-    /**
-     * Get the error encountered during saving.
-     *
-     * @return GatewayException
-     */
-    public function getErrors(): GatewayException
-    {
-        return $this->errors;
     }
 
     /**

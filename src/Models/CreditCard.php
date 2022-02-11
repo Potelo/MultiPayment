@@ -144,22 +144,29 @@ class CreditCard extends Model
             in_array('month', $attributes) &&
             in_array('number', $attributes) &&
             in_array('cvv', $attributes) &&
+            in_array('firstName', $attributes) &&
+            in_array('lastName', $attributes) &&
             empty($this->id) &&
             empty($this->token) &&
             (
                 empty($this->year) ||
                 empty($this->month) ||
                 empty($this->number) ||
-                empty($this->cvv)
+                empty($this->cvv) ||
+                empty($this->firstName) ||
+                empty($this->lastName)
             )
         ) {
-            throw new ModelAttributeValidationException('The id or token or number, month, year, cvv are required.');
+            throw new ModelAttributeValidationException('The `id` or `token` or [`number`, `month`, `year`, `cvv`, `firstName` and `lastName` are required.');
         }
         if (in_array('month', $attributes) && in_array('year', $attributes) && !empty($this->month) && !empty($this->year)) {
             $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
             if ($date->isPast()) {
-                throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month and year must be in the future.');
+                throw ModelAttributeValidationException::invalid('CreditCard', 'month and year', 'CreditCard month and year must be in the future.');
             }
+        }
+        if (in_array('customer', $attributes) && is_null($this->customer) || is_null($this->customer->id)) {
+            throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
     }
 

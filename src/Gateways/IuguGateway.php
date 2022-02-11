@@ -14,7 +14,6 @@ use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
-use Potelo\MultiPayment\Exceptions\PropertyValidationException;
 
 class IuguGateway implements Gateway
 {
@@ -39,7 +38,6 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws PropertyValidationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -129,13 +127,11 @@ class IuguGateway implements Gateway
             'customer',
             'items',
             'paymentMethod',
-            'expirationDate',
         ];
     }
 
     /**
      * @inheritDoc
-     * @throws PropertyValidationException
      */
     public function createCustomer(Customer $customer): Customer
     {
@@ -236,24 +232,10 @@ class IuguGateway implements Gateway
      * @param  CreditCard  $creditCard
      *
      * @return CreditCard
-     * @throws PropertyValidationException|GatewayException
+     * @throws GatewayException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
-        if (is_null($creditCard->token) &&
-            is_null($creditCard->number) &&
-            is_null($creditCard->cvv) &&
-            is_null($creditCard->firstName) &&
-            is_null($creditCard->lastName) &&
-            is_null($creditCard->month) &&
-            is_null($creditCard->year)
-        ) {
-            throw new PropertyValidationException('The token or the credit card data is required.');
-        }
-        if (is_null($creditCard->customer) || is_null($creditCard->customer->id)) {
-            throw new PropertyValidationException('The customer id is required.');
-        }
-
         if (is_null($creditCard->token)) {
             $creditCard->token = Iugu_PaymentToken::create([
                 'account_id' => config('multi-payment.gateways.iugu.id'),

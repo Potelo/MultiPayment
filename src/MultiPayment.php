@@ -5,8 +5,8 @@ namespace Potelo\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
-use Potelo\MultiPayment\Resources\Response;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
  * Class MultiPayment
@@ -61,30 +61,24 @@ class MultiPayment
      *
      * @param  array  $attributes
      *
-     * @return Response
-     * @throws Exceptions\GatewayException
-     * @throws Exceptions\ModelAttributeValidationException
+     * @return Invoice
+     * @throws GatewayException|ModelAttributeValidationException
      */
-    public function charge(array $attributes): Response
+    public function charge(array $attributes): Invoice
     {
         $invoice = new Invoice($this->gateway);
         $invoice->fill($attributes);
         $invoice->customer = new Customer($this->gateway);
         $invoice->customer->fill($attributes['customer']);
         $invoice->validate();
-        if (empty($invoice->customer->id) && !$invoice->customer->save()) {
-            return new Response(Response::STATUS_FAILED, $invoice->customer->getErrors());
+        if (empty($invoice->customer->id)) {
+            $invoice->customer->save();
         }
-
         if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
             $invoice->creditCard->customer = $invoice->customer;
         }
-
-        if (!$invoice->save()) {
-            return new Response(Response::STATUS_FAILED, $invoice->getErrors());
-        } else {
-            return new Response(Response::STATUS_SUCCESS, $invoice);
-        }
+        $invoice->save();
+        return $invoice;
     }
 
     /**

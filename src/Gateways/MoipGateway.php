@@ -12,7 +12,6 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
-use Potelo\MultiPayment\Exceptions\PropertyValidationException;
 
 class MoipGateway implements Gateway
 {
@@ -123,13 +122,11 @@ class MoipGateway implements Gateway
             'customer',
             'items',
             'paymentMethod',
-            'expirationDate',
         ];
     }
 
     /**
      * @inheritDoc
-     * @throws PropertyValidationException
      */
     public function createCustomer(Customer $customer): Customer
     {

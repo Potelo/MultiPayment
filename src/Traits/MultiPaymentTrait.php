@@ -3,7 +3,9 @@
 namespace Potelo\MultiPayment\Traits;
 
 use Potelo\MultiPayment\MultiPayment;
-use Potelo\MultiPayment\Resources\Response;
+use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 trait MultiPaymentTrait
 {
@@ -15,11 +17,10 @@ trait MultiPaymentTrait
      * @param  string|null  $gatewayName
      * @param  int|null  $amount
      *
-     * @return Response
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
-     * @throws \Potelo\MultiPayment\Exceptions\PropertyValidationException|\Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @return Invoice
+     * @throws GatewayException|ModelAttributeValidationException
      */
-    public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Response
+    public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Invoice
     {
         $gatewayName = $gatewayName ?? config('multi-payment.default');
 
@@ -32,12 +33,12 @@ trait MultiPaymentTrait
         if (!is_null($amount)) {
             $options['amount'] = $amount;
         }
-        $response = $payment->charge($options);
-        if ($response->success() && is_null($customerId)) {
-            $this->setCustomerId($gatewayName, $response->getData()->customer->id);
+        $invoice = $payment->charge($options);
+        if (is_null($customerId)) {
+            $this->setCustomerId($gatewayName, $invoice->customer->id);
             $this->save();
         }
-        return $response;
+        return $invoice;
     }
 
     /**
