@@ -152,12 +152,12 @@ class MoipGateway implements Gateway
             $moipCustomer->addAddress(
                 $customerData['address']['type'],
                 $customerData['address']['street'],
-                $customerData['address']['number'],
+                !empty($customerData['address']['number']) ? $customerData['address']['number'] : 'S/N',
                 $customerData['address']['district'],
                 $customerData['address']['city'],
                 $customerData['address']['state'],
                 $customerData['address']['zip_code'],
-                $customerData['address']['complement']
+                !empty($customerData['address']['complement']) ? $customerData['address']['complement'] : null,
             );
         }
         try {

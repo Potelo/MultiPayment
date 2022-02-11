@@ -147,7 +147,7 @@ class CreditCard extends Model
             throw new ModelAttributeValidationException('The id or token or number, month, year, cvv are required.');
         }
         if (!empty($this->month) && !empty($this->year)) {
-            $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year);
+            $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
             if ($date->isPast()) {
                 throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month and year must be in the future.');
             }

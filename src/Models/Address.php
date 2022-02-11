@@ -75,7 +75,7 @@ class Address extends Model
     protected function validateNumberAttribute(): void
     {
         //regex for number and letter or the string "S/N"
-        $pattern = '/^([0-9]+[a-zA-Z]*|S/N)$/';
+        $pattern = '/^([0-9]+[a-zA-Z]*|S\/N)$/';
         if (! preg_match($pattern, $this->number)) {
             throw ModelAttributeValidationException::invalid('Address', 'number', 'Must be a valid number or "S/N"');
         }

@@ -62,6 +62,9 @@ class IuguGateway implements Gateway
 
         if (!empty($invoice->customer->address)) {
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
+            if (empty($invoice->customer->address->number)) {
+                $iuguInvoiceData['payer']['address']['number'] = 'S/N';
+            }
         }
         $iuguInvoice = null;
         if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP || $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
