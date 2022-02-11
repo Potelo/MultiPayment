@@ -116,20 +116,23 @@ class MoipGateway implements Gateway
 
     /**
      * @inheritDoc
+     */
+    public function requiredInvoiceAttributes(): array
+    {
+        return [
+            'customer',
+            'items',
+            'paymentMethod',
+            'expirationDate',
+        ];
+    }
+
+    /**
+     * @inheritDoc
      * @throws PropertyValidationException
      */
     public function createCustomer(Customer $customer): Customer
     {
-        if (is_null($customer->name)) {
-            throw new PropertyValidationException('The Costumer name is required.');
-        }
-        if (is_null($customer->email)) {
-            throw new PropertyValidationException('The Costumer email is required.');
-        }
-        if (is_null($customer->taxDocument)) {
-            throw new PropertyValidationException('The Costumer taxDocument is required.');
-        }
-
         $this->init();
         $customerData = $customer->toArrayWithoutEmpty();
         $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
@@ -170,6 +173,18 @@ class MoipGateway implements Gateway
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function requiredCustomerAttributes(): array
+    {
+        return [
+            'name',
+            'email',
+            'taxDocument',
+        ];
     }
 
     /**

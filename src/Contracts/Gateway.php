@@ -20,6 +20,13 @@ interface Gateway
     public function createCustomer(Customer $customer): Customer;
 
     /**
+     * Return the gateway required attributes to create a new Customer
+     *
+     * @return array
+     */
+    public function requiredCustomerAttributes(): array;
+
+    /**
      * create a new invoice
      *
      * @param  Invoice  $invoice
@@ -28,5 +35,12 @@ interface Gateway
      * @throws GatewayException
      */
     public function createInvoice(Invoice $invoice): Invoice;
+
+    /**
+     * Return the gateway required attributes to create a new Invoice
+     *
+     * @return string[]
+     */
+    public function requiredInvoiceAttributes(): array;
     
 }

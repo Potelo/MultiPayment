@@ -67,7 +67,7 @@ abstract class Model
      * @param  array  $data
      *
      * @return bool
-     * @throws GatewayException
+     * @throws GatewayException|ModelAttributeValidationException
      */
     public function create(array $data): bool
     {
@@ -82,13 +82,14 @@ abstract class Model
      *
      * @return bool
      * @throws GatewayException
+     * @throws ModelAttributeValidationException
      */
     public function save(bool $validate = true): bool
     {
         if (is_null($this->gatewayClass)) {
             throw new GatewayException("Gateway not set");
         }
-        $class = substr(strrchr(get_class($this), '\\'), 1);
+        $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
             $method = 'update';
             $validate = false;
@@ -125,11 +126,22 @@ abstract class Model
             $attributes = array_keys(get_object_vars($this));
         }
         foreach ($attributes as $attribute) {
-            $method = 'validate' . ucfirst($attribute). 'Attribute';
-            if (property_exists($this, $attribute) && !is_null($this->$attribute) && method_exists($this, $method)) {
-                $this->$method();
+            $validateAttributeMethod = 'validate' . ucfirst($attribute). 'Attribute';
+            if (property_exists($this, $attribute) && !is_null($this->$attribute) && method_exists($this, $validateAttributeMethod)) {
+                $this->$validateAttributeMethod();
             }
         }
+        $requiredAttributesMethod = 'required' . $this->getClassName() . 'Attributes';
+
+        if (!empty($this->gatewayClass) && method_exists($this->gatewayClass, $requiredAttributesMethod)) {
+            $requiredAttributes = $this->$requiredAttributesMethod();
+            foreach ($requiredAttributes as $attribute) {
+                if (in_array($attributes, $attributes) && is_null($this->$attribute)) {
+                    throw ModelAttributeValidationException::required($this->getClassName(), $attribute);
+                }
+            }
+        }
+
     }
 
     /**
@@ -180,5 +192,15 @@ abstract class Model
     public function getErrors(): GatewayException
     {
         return $this->errors;
+    }
+
+    /**
+     * Return the class name of the model without namespace.
+     *
+     * @return string
+     */
+    protected function getClassName(): string
+    {
+        return substr(strrchr(get_class($this), '\\'), 1);
     }
 }

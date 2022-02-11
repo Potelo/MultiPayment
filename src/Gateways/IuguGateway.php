@@ -119,19 +119,26 @@ class IuguGateway implements Gateway
         return $invoice;
     }
 
+
+    /**
+     * @inheritDoc
+     */
+    public function requiredInvoiceAttributes(): array
+    {
+        return [
+            'customer',
+            'items',
+            'paymentMethod',
+            'expirationDate',
+        ];
+    }
+
     /**
      * @inheritDoc
      * @throws PropertyValidationException
      */
     public function createCustomer(Customer $customer): Customer
     {
-        if (is_null($customer->name)) {
-            throw new PropertyValidationException('The Costumer name is required.');
-        }
-        if (is_null($customer->email)) {
-            throw new PropertyValidationException('The Costumer email is required.');
-        }
-
         $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
 
         if (!is_null($customer->address)) {
@@ -154,6 +161,17 @@ class IuguGateway implements Gateway
         $customer->original = $iuguCustomer;
 
         return $customer;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function requiredCustomerAttributes(): array
+    {
+        return [
+            'name',
+            'email',
+        ];
     }
 
     /**
