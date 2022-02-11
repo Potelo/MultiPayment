@@ -237,7 +237,7 @@ class IuguGateway implements Gateway
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
-        if (empty($this->customer) || empty($this->customer->id)) {
+        if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
         if (empty($creditCard->token)) {
