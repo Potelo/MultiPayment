@@ -195,26 +195,4 @@ class CreditCard extends Model
         }
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'id' => $this->id,
-            'customer' => $this->customer,
-            'description' => $this->description,
-            'number' => $this->number,
-            'brand' => $this->brand,
-            'month' => $this->month,
-            'year' => $this->year,
-            'cvv' => $this->cvv,
-            'last_digits' => $this->lastDigits,
-            'first_name' => $this->firstName,
-            'last_name' => $this->lastName,
-            'token' => $this->token,
-            'gateway' => $this->gateway,
-            'created_at' => $this->createdAt,
-        ];
-    }
 }

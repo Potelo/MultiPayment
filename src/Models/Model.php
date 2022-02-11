@@ -158,22 +158,17 @@ abstract class Model
      *
      * @return array
      */
-    abstract public function toArray(): array;
-
-    /**
-     * toArray without null values and empty values.
-     *
-     * @return array
-     */
-    public function toArrayWithoutEmpty(): array
+    public function toArray(): array
     {
-        $data = $this->toArray();
-        foreach ($data as $key => $value) {
-            if (empty($value)) {
-                unset($data[$key]);
+        $array = [];
+        foreach (get_object_vars($this) as $key => $value) {
+
+            $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $key));
+            if (!empty($value)) {
+                $array[$key] = $value;
             }
         }
-        return $data;
+        return $array;
     }
 
     /**

@@ -21,16 +21,4 @@ class InvoiceItem extends Model
      * @var int
      */
     public int $quantity;
-
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'description' => $this->description,
-            'price' => $this->price,
-            'quantity' => $this->quantity,
-        ];
-    }
 }

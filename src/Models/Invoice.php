@@ -248,28 +248,4 @@ class Invoice extends Model
         }
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'id' => $this->id,
-            'status' => $this->status,
-            'amount' => $this->amount,
-            'order_id' => $this->orderId,
-            'customer' => $this->customer,
-            'items' => $this->items,
-            'payment_method' => $this->paymentMethod,
-            'credit_card' => $this->creditCard,
-            'bank_slip' => $this->bankSlip,
-            'pix' => $this->pix,
-            'expiration_date' => $this->expirationDate,
-            'fee' => $this->fee,
-            'gateway' => $this->gateway,
-            'url' => $this->url,
-            'original' => $this->original,
-            'created_at' => $this->createdAt,
-        ];
-    }
 }

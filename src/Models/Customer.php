@@ -186,19 +186,10 @@ class Customer extends Model
      */
     public function toArray(): array
     {
-        return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'email' => $this->email,
-            'tax_document' => $this->taxDocument,
-            'birth_date' => $this->birthDate,
-            'phone_country_code' => $this->phoneCountryCode,
-            'phone_area' => $this->phoneArea,
-            'phone_number' => $this->phoneNumber,
-            'address' => !empty($this->address) ? $this->address->toArray() : null,
-            'gateway' => $this->gateway,
-            'original' => $this->original,
-            'created_at' => $this->createdAt
-        ];
+        $array = parent::toArray();
+        if (isset($array['address'])) {
+            $array['address'] = $array['address']->toArray();
+        }
+        return $array;
     }
 }

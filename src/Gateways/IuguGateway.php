@@ -60,7 +60,7 @@ class IuguGateway implements Gateway
             : Carbon::now()->format('Y-m-d');
 
         if (!empty($invoice->customer->address)) {
-            $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArrayWithoutEmpty();
+            $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArray();
             if (empty($invoice->customer->address->number)) {
                 $iuguInvoiceData['payer']['address']['number'] = 'S/N';
             }
@@ -136,10 +136,10 @@ class IuguGateway implements Gateway
      */
     public function createCustomer(Customer $customer): Customer
     {
-        $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArrayWithoutEmpty());
+        $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArray());
 
         if (!empty($customer->address)) {
-            $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArrayWithoutEmpty());
+            $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArray());
             if (empty($customer->address->number)) {
                 $iuguCustomerData['number'] = 'S/N';
             }

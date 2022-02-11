@@ -131,7 +131,7 @@ class MoipGateway implements Gateway
     public function createCustomer(Customer $customer): Customer
     {
         $this->init();
-        $customerData = $customer->toArrayWithoutEmpty();
+        $customerData = $customer->toArray();
         $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
             ->setFullname($customerData['name'])
             ->setEmail($customerData['email'])

@@ -30,16 +30,4 @@ class BankSlip extends Model
      */
     public string $barcodeImage;
 
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'url' => $this->url,
-            'number' => $this->number,
-            'barcode_data' => $this->barcodeData,
-            'barcode_image' => $this->barcodeImage,
-        ];
-    }
 }

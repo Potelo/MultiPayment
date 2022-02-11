@@ -104,22 +104,4 @@ class Address extends Model
         }
         parent::fill($data);
     }
-
-    /**
-     * @inheritDoc
-     */
-    public function toArray(): array
-    {
-        return [
-            'type' => $this->type,
-            'street' => $this->street,
-            'number' => $this->number,
-            'district' => $this->district,
-            'city' => $this->city,
-            'state' => $this->state,
-            'zip_code' => $this->zipCode,
-            'complement' => $this->complement,
-            'country' => $this->country,
-        ];
-    }
 }
