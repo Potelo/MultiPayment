@@ -4,8 +4,6 @@ namespace Potelo\MultiPayment\Providers;
 
 use Potelo\MultiPayment\MultiPayment;
 use Illuminate\Support\ServiceProvider;
-use Potelo\MultiPayment\Gateways\MoipGateway;
-use Potelo\MultiPayment\Gateways\IuguGateway;
 
 class MultiPaymentServiceProvider extends ServiceProvider
 {
@@ -40,12 +38,6 @@ class MultiPaymentServiceProvider extends ServiceProvider
         $configFile = __DIR__ . '/../config/multi-payment.php';
         $this->mergeConfigFrom($configFile, 'multi-payment');
 
-        $this->app->bind(IuguGateway::class, function ($app) {
-            $app->make(IuguGateway::class);
-        });
-        $this->app->bind(MoipGateway::class, function ($app) {
-            $app->make(MoipGateway::class);
-        });
         $this->app->bind('multiPayment', function ($app) {
             return new MultiPayment();
         });
