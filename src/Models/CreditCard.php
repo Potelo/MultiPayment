@@ -135,7 +135,16 @@ class CreditCard extends Model
     public function validate(array $attributes = []): void
     {
         parent::validate($attributes);
-        if (empty($this->id) &&
+        if (empty($attributes)) {
+            $attributes = array_keys(get_object_vars($this));
+        }
+        if (in_array('id', $attributes) &&
+            in_array('token', $attributes) &&
+            in_array('year', $attributes) &&
+            in_array('month', $attributes) &&
+            in_array('number', $attributes) &&
+            in_array('cvv', $attributes) &&
+            empty($this->id) &&
             empty($this->token) &&
             (
                 empty($this->year) ||
@@ -146,7 +155,7 @@ class CreditCard extends Model
         ) {
             throw new ModelAttributeValidationException('The id or token or number, month, year, cvv are required.');
         }
-        if (!empty($this->month) && !empty($this->year)) {
+        if (in_array('month', $attributes) && in_array('year', $attributes) && !empty($this->month) && !empty($this->year)) {
             $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
             if ($date->isPast()) {
                 throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month and year must be in the future.');

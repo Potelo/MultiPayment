@@ -160,25 +160,27 @@ class Invoice extends Model
     public function validate(array $attributes = []): void
     {
         parent::validate($attributes);
-
+        if (empty($attributes)) {
+            $attributes = array_keys(get_object_vars($this));
+        }
         $model = 'Invoice';
 
-        if (empty($this->customer)) {
+        if (in_array('customer', $attributes) && empty($this->customer)) {
             throw ModelAttributeValidationException::required($model, 'customer');
         }
 
-        if (empty($this->amount) && empty($this->items)) {
+        if (in_array('amount', $attributes) && in_array('items', $attributes) && empty($this->amount) && empty($this->items)) {
             throw ModelAttributeValidationException::required($model, 'amount or items');
         }
-        if (empty($this->paymentMethod)) {
+        if (in_array('paymentMethod', $attributes) && empty($this->paymentMethod)) {
             throw ModelAttributeValidationException::required($model, 'paymentMethod');
         }
-        if ($this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+        if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($this->creditCard)) {
                 throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
             }
         }
-        if (($this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) && empty($this->customer->address)) {
+        if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP && empty($this->customer->address)) {
             throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
         }
     }
