@@ -176,8 +176,16 @@ class Invoice extends Model
 
         if (in_array('paymentMethod', $attributes) &&
             $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-            if (empty($this->address)) {
+            if (empty($this->customer->address)) {
                 throw new ModelAttributeValidationException('The `address` attribute is required for bank_slip payment method.');
+            }
+        }
+
+        if (in_array('paymentMethod', $attributes) &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
+            if (empty($this->expirationDate)) {
+                throw new ModelAttributeValidationException('The `expirationDate` attribute is required for bank_slip payment method.');
             }
         }
 

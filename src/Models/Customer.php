@@ -144,6 +144,17 @@ class Customer extends Model
     }
 
     /**
+     * @inheritDoc
+     */
+    protected function attributesExtraValidation(array $attributes): void
+    {
+        if (in_array('phone_area', $attributes) &&
+            empty($this->phoneArea) && !empty($this->phoneNumber)) {
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'phone_area', 'The phone_area is required when phone_number is informed.');
+        }
+    }
+
+    /**
      * @return void
      * @throws ModelAttributeValidationException
      */
