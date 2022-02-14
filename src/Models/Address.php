@@ -97,19 +97,6 @@ class Address extends Model
     /**
      * @inheritDoc
      */
-    public function attributesExtraValidation(array $attributes): void
-    {
-        $required = ['street', 'number', 'zipCode'];
-        foreach ($required as $requiredAttribute) {
-            if (in_array($requiredAttribute, $attributes) && empty($this->$requiredAttribute)) {
-                throw ModelAttributeValidationException::required($this->getClassName(), $requiredAttribute);
-            }
-        }
-    }
-
-    /**
-     * @inheritDoc
-     */
     public function fill(array $data): void
     {
         if (empty($data['type'])) {
