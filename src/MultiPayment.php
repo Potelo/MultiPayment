@@ -5,6 +5,8 @@ namespace Potelo\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Builders\InvoiceBuilder;
+use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -82,20 +84,20 @@ class MultiPayment
     }
 
     /**
-     * @return Invoice
+     * @return InvoiceBuilder
      * @throws GatewayException
      */
-    public function newInvoice(): Invoice
+    public function newInvoice(): InvoiceBuilder
     {
-        return new Invoice($this->gateway);
+        return new InvoiceBuilder($this->gateway);
     }
 
     /**
-     * @return Customer
+     * @return CustomerBuilder
      * @throws GatewayException
      */
-    public function newCustomer(): Customer
+    public function newCustomer(): CustomerBuilder
     {
-        return new Customer($this->gateway);
+        return new CustomerBuilder($this->gateway);
     }
 }

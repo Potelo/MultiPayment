@@ -49,7 +49,7 @@ class Invoice extends Model
     /**
      * @var InvoiceItem[]|null
      */
-    public ?array$items;
+    public ?array $items;
 
     /**
      * @var string|null
