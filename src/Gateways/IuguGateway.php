@@ -39,6 +39,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws ModelAttributeValidationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {

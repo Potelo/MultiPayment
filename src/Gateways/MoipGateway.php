@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
+use Moip\Exceptions\ValidationException;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 
@@ -81,8 +82,10 @@ class MoipGateway implements Gateway
         }
         try {
             $payment->execute();
+        } catch (ValidationException $exception) {
+            throw new GatewayException('Error creating invoice: ' . $exception->getMessage(), $exception->getErrors());
         } catch (\Exception $exception) {
-            throw new GatewayException($exception->getMessage());
+            throw new GatewayException('Error creating invoice: ' . $exception->getMessage());
         }
 
         if (config('multi-payment.gateways.moip.sandbox')) {
@@ -151,8 +154,10 @@ class MoipGateway implements Gateway
         }
         try {
             $moipCustomer = $moipCustomer->create();
+        } catch (ValidationException $exception) {
+            throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
         } catch (\Exception $exception) {
-            throw new GatewayException($exception->getMessage());
+            throw new GatewayException('Error creating customer: ' . $exception->getMessage());
         }
         $customer->id = $moipCustomer->getId();
         $customer->createdAt = Carbon::now();
