@@ -118,19 +118,6 @@ class IuguGateway implements Gateway
         return $invoice;
     }
 
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredInvoiceAttributes(): array
-    {
-        return [
-            'customer',
-            'items',
-            'paymentMethod',
-        ];
-    }
-
     /**
      * @inheritDoc
      */
@@ -158,17 +145,6 @@ class IuguGateway implements Gateway
         $customer->original = $iuguCustomer;
 
         return $customer;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredCustomerAttributes(): array
-    {
-        return [
-            'name',
-            'email',
-        ];
     }
 
     /**

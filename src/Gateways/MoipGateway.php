@@ -117,26 +117,14 @@ class MoipGateway implements Gateway
     /**
      * @inheritDoc
      */
-    public function requiredInvoiceAttributes(): array
-    {
-        return [
-            'customer',
-            'items',
-            'paymentMethod',
-        ];
-    }
-
-    /**
-     * @inheritDoc
-     */
     public function createCustomer(Customer $customer): Customer
     {
         $this->init();
         $customerData = $customer->toArray();
         $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
-            ->setFullname($customerData['name'])
-            ->setEmail($customerData['email'])
-            ->setTaxDocument($customerData['tax_document']);
+            ->setFullname(!empty($customerData['name']) ? $customerData['name'] : null)
+            ->setEmail(!empty($customerData['email']) ? $customerData['email'] : null)
+            ->setTaxDocument(!empty($customerData['tax_document']) ? $customerData['tax_document'] : null);
         if (array_key_exists('phone_area', $customerData) &&
             array_key_exists('phone_number', $customerData)
         ) {
@@ -171,18 +159,6 @@ class MoipGateway implements Gateway
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredCustomerAttributes(): array
-    {
-        return [
-            'name',
-            'email',
-            'taxDocument',
-        ];
     }
 
     /**

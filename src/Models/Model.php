@@ -115,26 +115,13 @@ abstract class Model
             $attributes = array_keys(get_class_vars(get_class($this)));
         }
         $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
-
         foreach ($attributes as $attribute) {
             $validateAttributeMethod = 'validate' . ucfirst($attribute). 'Attribute';
             if (property_exists($this, $attribute) && !empty($this->$attribute) && method_exists($this, $validateAttributeMethod)) {
                 $this->$validateAttributeMethod();
             }
         }
-        $requiredAttributesMethod = 'required' . $this->getClassName() . 'Attributes';
-
-        if (!empty($this->gatewayClass) && method_exists($this->gatewayClass, $requiredAttributesMethod)) {
-            $requiredAttributes = $this->gatewayClass->$requiredAttributesMethod();
-            foreach ($requiredAttributes as $attribute) {
-                if (in_array($attribute, $attributes) && empty($this->$attribute)) {
-                    throw ModelAttributeValidationException::required($this->getClassName(), $attribute);
-                }
-            }
-        }
-
         $this->attributesExtraValidation($attributes);
-
     }
 
     /**
