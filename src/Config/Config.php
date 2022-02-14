@@ -10,8 +10,8 @@ class Config
 
     public static function setup()
     {
-        $dotenv = Dotenv::createImmutable(__DIR__ . '/../../../');
-        $dotenv->load();
+        $dotenv = Dotenv::createImmutable(__DIR__ . '/../../../../../');
+        $dotenv->safeLoad();
         if (!empty($_ENV['MULTI_PAYMENT_CONFIG_PATH'])) {
             self::$configPath = $_ENV['MULTI_PAYMENT_CONFIG_PATH'];
         }
@@ -26,7 +26,6 @@ class Config
     {
         self::setup();
         $configs = self::getConfig();
-        var_dump($configs); die;
         $path = explode('.', $key);
         $value = $configs;
         foreach ($path as $key) {
