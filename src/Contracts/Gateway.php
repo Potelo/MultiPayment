@@ -42,5 +42,15 @@ interface Gateway
      * @return string[]
      */
     public function requiredInvoiceAttributes(): array;
+
+
+    /**
+     * Return one invoice based on the invoice ID
+     * 
+     * @param string $invoiceId
+     * 
+     * @return Invoice
+     */
+    public function getInvoice(string $invoiceId): Invoice;
     
 }
