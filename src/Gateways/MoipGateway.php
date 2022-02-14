@@ -8,8 +8,10 @@ use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
 use Moip\Resource\Payment;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
+use Moip\Exceptions\ValidationException;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 
@@ -80,8 +82,10 @@ class MoipGateway implements Gateway
         }
         try {
             $payment->execute();
+        } catch (ValidationException $exception) {
+            throw new GatewayException('Error creating invoice: ' . $exception->getMessage(), $exception->getErrors());
         } catch (\Exception $exception) {
-            throw new GatewayException($exception->getMessage());
+            throw new GatewayException('Error creating invoice: ' . $exception->getMessage());
         }
 
         if (config('multi-payment.gateways.moip.sandbox')) {
@@ -116,26 +120,14 @@ class MoipGateway implements Gateway
     /**
      * @inheritDoc
      */
-    public function requiredInvoiceAttributes(): array
-    {
-        return [
-            'customer',
-            'items',
-            'paymentMethod',
-        ];
-    }
-
-    /**
-     * @inheritDoc
-     */
     public function createCustomer(Customer $customer): Customer
     {
         $this->init();
         $customerData = $customer->toArray();
         $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
-            ->setFullname($customerData['name'])
-            ->setEmail($customerData['email'])
-            ->setTaxDocument($customerData['tax_document']);
+            ->setFullname(!empty($customerData['name']) ? $customerData['name'] : null)
+            ->setEmail(!empty($customerData['email']) ? $customerData['email'] : null)
+            ->setTaxDocument(!empty($customerData['tax_document']) ? $customerData['tax_document'] : null);
         if (array_key_exists('phone_area', $customerData) &&
             array_key_exists('phone_number', $customerData)
         ) {
@@ -150,38 +142,28 @@ class MoipGateway implements Gateway
         }
         if (array_key_exists('address', $customerData)) {
             $moipCustomer->addAddress(
-                $customerData['address']['type'],
-                $customerData['address']['street'],
+                !empty($customerData['address']['type']) ? $customerData['address']['type'] : null,
+                !empty($customerData['address']['street']) ? $customerData['address']['street'] : null,
                 !empty($customerData['address']['number']) ? $customerData['address']['number'] : 'S/N',
-                $customerData['address']['district'],
-                $customerData['address']['city'],
-                $customerData['address']['state'],
-                $customerData['address']['zip_code'],
+                !empty($customerData['address']['district']) ? $customerData['address']['district'] : null,
+                !empty($customerData['address']['city']) ? $customerData['address']['city'] : null,
+                !empty($customerData['address']['state']) ? $customerData['address']['state'] : null,
+                !empty($customerData['address']['zip_code']) ? $customerData['address']['zip_code'] : null,
                 !empty($customerData['address']['complement']) ? $customerData['address']['complement'] : null,
             );
         }
         try {
             $moipCustomer = $moipCustomer->create();
+        } catch (ValidationException $exception) {
+            throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
         } catch (\Exception $exception) {
-            throw new GatewayException($exception->getMessage());
+            throw new GatewayException('Error creating customer: ' . $exception->getMessage());
         }
         $customer->id = $moipCustomer->getId();
         $customer->createdAt = Carbon::now();
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredCustomerAttributes(): array
-    {
-        return [
-            'name',
-            'email',
-            'taxDocument',
-        ];
     }
 
     /**
@@ -256,14 +238,14 @@ class MoipGateway implements Gateway
         if (!empty($customer->address)) {
             $address = $customer->address;
             $holder->setAddress(
-                $address->type,
-                $address->street,
-                $address->number,
-                $address->district,
-                $address->city,
-                $address->state,
-                $address->zipCode,
-                $address->complement
+                !empty($address->type) ? $address->type : Address::TYPE_BILLING,
+                !empty($address->street) ? $address->street : null,
+                !empty($address->number) ? $address->number : null,
+                !empty($address->district) ? $address->district : null,
+                !empty($address->city) ? $address->city : null,
+                !empty($address->state) ? $address->state : null,
+                !empty($address->zipCode) ? $address->zipCode : null,
+                !empty($address->complement) ? $address->complement : null,
             );
         }
         return $holder;

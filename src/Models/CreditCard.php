@@ -89,7 +89,7 @@ class CreditCard extends Model
     {
         $pattern = '/^[0-9]{16}$/';
         if (!preg_match($pattern, $this->number)) {
-            throw ModelAttributeValidationException::invalid('CreditCard', 'number', 'CreditCard number must contain only numbers and must be 16 digits long.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'number', 'CreditCard number must contain only numbers and must be 16 digits long.');
         }
     }
 
@@ -101,7 +101,7 @@ class CreditCard extends Model
     {
         $pattern = '/^[0-9]{2}$/';
         if (!preg_match($pattern, $this->month)) {
-            throw ModelAttributeValidationException::invalid('CreditCard', 'month', 'CreditCard month must contain only numbers and must be 2 digits long.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'month', 'CreditCard month must contain only numbers and must be 2 digits long.');
         }
     }
 
@@ -113,7 +113,7 @@ class CreditCard extends Model
     {
         $pattern = '/^[0-9]{4}$/';
         if (!preg_match($pattern, $this->year)) {
-            throw ModelAttributeValidationException::invalid('CreditCard', 'year', 'CreditCard year must contain only numbers and must be 4 digits long.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'year', 'CreditCard year must contain only numbers and must be 4 digits long.');
         }
     }
 
@@ -125,21 +125,15 @@ class CreditCard extends Model
     {
         $pattern = '/^[0-9]{3,4}$/';
         if (!preg_match($pattern, $this->cvv)) {
-            throw ModelAttributeValidationException::invalid('CreditCard', 'cvv', 'CreditCard cvv must contain only numbers and must be 3 or 4 digits long.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'cvv', 'CreditCard cvv must contain only numbers and must be 3 or 4 digits long.');
         }
     }
 
     /**
      * @inheritDoc
      */
-    public function validate(array $attributes = [], array $excludedAttributes = []): void
+    public function attributesExtraValidation(array $attributes): void
     {
-        parent::validate($attributes);
-        if (empty($attributes)) {
-            $attributes = array_keys(get_class_vars(get_class($this)));
-        }
-        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
-
         if (in_array('id', $attributes) &&
             in_array('token', $attributes) &&
             in_array('year', $attributes) &&
@@ -164,7 +158,7 @@ class CreditCard extends Model
         if (in_array('month', $attributes) && in_array('year', $attributes) && !empty($this->month) && !empty($this->year)) {
             $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
             if ($date->isPast()) {
-                throw ModelAttributeValidationException::invalid('CreditCard', 'month and year', 'CreditCard month and year must be in the future.');
+                throw ModelAttributeValidationException::invalid($this->getClassName(), 'month and year', 'CreditCard month and year must be in the future.');
             }
         }
     }

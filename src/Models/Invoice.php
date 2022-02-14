@@ -154,15 +154,9 @@ class Invoice extends Model
     /**
      * @inheritDoc
      */
-    public function validate(array $attributes = [], array $excludedAttributes = []): void
+    public function attributesExtraValidation($attributes): void
     {
-        parent::validate($attributes);
-        if (empty($attributes)) {
-            $attributes = array_keys(get_class_vars(get_class($this)));
-        }
-        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
-
-        $model = 'Invoice';
+        $model = $this->getClassName();
 
         if (in_array('customer', $attributes) && empty($this->customer)) {
             throw ModelAttributeValidationException::required($model, 'customer');
@@ -179,6 +173,22 @@ class Invoice extends Model
                 throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
             }
         }
+
+        if (in_array('paymentMethod', $attributes) &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+            if (empty($this->customer->address)) {
+                throw new ModelAttributeValidationException('The `address` attribute is required for bank_slip payment method.');
+            }
+        }
+
+        if (in_array('paymentMethod', $attributes) &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
+            if (empty($this->expirationDate)) {
+                throw new ModelAttributeValidationException('The `expirationDate` attribute is required for bank_slip payment method.');
+            }
+        }
+
         if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP && empty($this->customer->address)) {
             throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
         }

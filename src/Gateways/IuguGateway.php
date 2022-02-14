@@ -39,6 +39,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
+     * @throws ModelAttributeValidationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -118,19 +119,6 @@ class IuguGateway implements Gateway
         return $invoice;
     }
 
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredInvoiceAttributes(): array
-    {
-        return [
-            'customer',
-            'items',
-            'paymentMethod',
-        ];
-    }
-
     /**
      * @inheritDoc
      */
@@ -158,17 +146,6 @@ class IuguGateway implements Gateway
         $customer->original = $iuguCustomer;
 
         return $customer;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredCustomerAttributes(): array
-    {
-        return [
-            'name',
-            'email',
-        ];
     }
 
     /**
