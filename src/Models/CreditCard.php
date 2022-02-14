@@ -132,14 +132,8 @@ class CreditCard extends Model
     /**
      * @inheritDoc
      */
-    public function validate(array $attributes = [], array $excludedAttributes = []): void
+    public function attributesExtraValidation(array $attributes): void
     {
-        parent::validate($attributes);
-        if (empty($attributes)) {
-            $attributes = array_keys(get_class_vars(get_class($this)));
-        }
-        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
-
         if (in_array('id', $attributes) &&
             in_array('token', $attributes) &&
             in_array('year', $attributes) &&

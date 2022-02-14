@@ -154,14 +154,8 @@ class Invoice extends Model
     /**
      * @inheritDoc
      */
-    public function validate(array $attributes = [], array $excludedAttributes = []): void
+    public function attributesExtraValidation($attributes): void
     {
-        parent::validate($attributes);
-        if (empty($attributes)) {
-            $attributes = array_keys(get_class_vars(get_class($this)));
-        }
-        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
-
         $model = $this->getClassName();
 
         if (in_array('customer', $attributes) && empty($this->customer)) {

@@ -133,6 +133,23 @@ abstract class Model
             }
         }
 
+        $this->attributesExtraValidation($attributes);
+
+    }
+
+    /**
+     * Model attributes validation for specific cases if necessary.
+     * This method is called after the validation of the model attributes.
+     * Need to be implemented in the child class.
+     *
+     * @param  array  $attributes
+     *
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function attributesExtraValidation(array $attributes): void
+    {
+        //
     }
 
     /**

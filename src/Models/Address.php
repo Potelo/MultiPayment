@@ -93,13 +93,12 @@ class Address extends Model
             throw ModelAttributeValidationException::invalid($this->getClassName(), 'zipCode', 'Must contain 8 digits without spaces or dashes');
         }
     }
-    public function validate(array $attributes = [], array $excludedAttributes = []): void
+
+    /**
+     * @inheritDoc
+     */
+    public function attributesExtraValidation(array $attributes): void
     {
-        parent::validate($attributes, $excludedAttributes);
-        if (empty($attributes)) {
-            $attributes = array_keys(get_class_vars(get_class($this)));
-        }
-        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
         $required = ['street', 'number', 'zipCode'];
         foreach ($required as $requiredAttribute) {
             if (in_array($requiredAttribute, $attributes) && empty($this->address->$requiredAttribute)) {
