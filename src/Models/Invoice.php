@@ -162,7 +162,7 @@ class Invoice extends Model
         }
         $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
 
-        $model = 'Invoice';
+        $model = $this->getClassName();
 
         if (in_array('customer', $attributes) && empty($this->customer)) {
             throw ModelAttributeValidationException::required($model, 'customer');
@@ -179,6 +179,14 @@ class Invoice extends Model
                 throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
             }
         }
+
+        if (in_array('paymentMethod', $attributes) &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+            if (empty($this->address)) {
+                throw new ModelAttributeValidationException('The `address` attribute is required for bank_slip payment method.');
+            }
+        }
+
         if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP && empty($this->customer->address)) {
             throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
         }

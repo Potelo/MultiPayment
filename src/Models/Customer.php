@@ -78,7 +78,7 @@ class Customer extends Model
     protected function validateEmailAttribute(): void
     {
         if (!filter_var($this->email, FILTER_VALIDATE_EMAIL)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'email', 'The email must be a valid email.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'email', 'The email must be a valid email.');
         }
     }
 
@@ -91,7 +91,7 @@ class Customer extends Model
         //regex for 11 or 14 digits
         $pattern = '/^[0-9]{11,14}$/';
         if (!preg_match($pattern, $this->taxDocument)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'taxDocument', 'The taxDocument must be a string with 11 or 14 digits.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'taxDocument', 'The taxDocument must be a string with 11 or 14 digits.');
         }
     }
 
@@ -103,7 +103,7 @@ class Customer extends Model
     {
         $pattern = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/';
         if (!preg_match($pattern, $this->birthDate)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'birthDate', 'The birthDate must be a string with the format YYYY-MM-DD.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'birthDate', 'The birthDate must be a string with the format YYYY-MM-DD.');
         }
     }
 
@@ -115,7 +115,7 @@ class Customer extends Model
     {
         $pattern = '/^[0-9]{2}$/';
         if (!preg_match($pattern, $this->phoneCountryCode)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'phoneCountryCode', 'The phoneCountryCode must be a string with 2 digits.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'phoneCountryCode', 'The phoneCountryCode must be a string with 2 digits.');
         }
     }
 
@@ -127,7 +127,7 @@ class Customer extends Model
     {
         $pattern = '/^[0-9]{2}$/';
         if (!preg_match($pattern, $this->phoneArea)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'phoneArea', 'The phoneArea must be a string with 2 digits.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'phoneArea', 'The phoneArea must be a string with 2 digits.');
         }
     }
 
@@ -139,7 +139,7 @@ class Customer extends Model
     {
         $pattern = '/^[0-9]{8,9}$/';
         if (!preg_match($pattern, $this->phoneNumber)) {
-            throw ModelAttributeValidationException::invalid('Customer', 'phoneNumber', 'The phoneNumber must be a string with 8 or 9 digits.');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'phoneNumber', 'The phoneNumber must be a string with 8 or 9 digits.');
         }
     }
 

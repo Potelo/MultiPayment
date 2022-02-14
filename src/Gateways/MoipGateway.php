@@ -8,6 +8,7 @@ use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
 use Moip\Resource\Payment;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Contracts\Gateway;
@@ -150,13 +151,13 @@ class MoipGateway implements Gateway
         }
         if (array_key_exists('address', $customerData)) {
             $moipCustomer->addAddress(
-                $customerData['address']['type'],
-                $customerData['address']['street'],
+                !empty($customerData['address']['type']) ? $customerData['address']['type'] : null,
+                !empty($customerData['address']['street']) ? $customerData['address']['street'] : null,
                 !empty($customerData['address']['number']) ? $customerData['address']['number'] : 'S/N',
-                $customerData['address']['district'],
-                $customerData['address']['city'],
-                $customerData['address']['state'],
-                $customerData['address']['zip_code'],
+                !empty($customerData['address']['district']) ? $customerData['address']['district'] : null,
+                !empty($customerData['address']['city']) ? $customerData['address']['city'] : null,
+                !empty($customerData['address']['state']) ? $customerData['address']['state'] : null,
+                !empty($customerData['address']['zip_code']) ? $customerData['address']['zip_code'] : null,
                 !empty($customerData['address']['complement']) ? $customerData['address']['complement'] : null,
             );
         }
@@ -256,14 +257,14 @@ class MoipGateway implements Gateway
         if (!empty($customer->address)) {
             $address = $customer->address;
             $holder->setAddress(
-                $address->type,
-                $address->street,
-                $address->number,
-                $address->district,
-                $address->city,
-                $address->state,
-                $address->zipCode,
-                $address->complement
+                !empty($address->type) ? $address->type : Address::TYPE_BILLING,
+                !empty($address->street) ? $address->street : null,
+                !empty($address->number) ? $address->number : null,
+                !empty($address->district) ? $address->district : null,
+                !empty($address->city) ? $address->city : null,
+                !empty($address->state) ? $address->state : null,
+                !empty($address->zipCode) ? $address->zipCode : null,
+                !empty($address->complement) ? $address->complement : null,
             );
         }
         return $holder;

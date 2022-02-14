@@ -64,7 +64,7 @@ class Address extends Model
     protected function validateTypeAttribute(): void
     {
         if (! in_array($this->type, [self::TYPE_BILLING, self::TYPE_SHIPPING], true)) {
-            throw ModelAttributeValidationException::invalid('Address', 'Must be either "BILLING" or "SHIPPING"');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'Must be either "BILLING" or "SHIPPING"');
         }
     }
 
@@ -77,7 +77,7 @@ class Address extends Model
         //regex for number and letter or the string "S/N"
         $pattern = '/^([0-9]+[a-zA-Z]*|S\/N)$/';
         if (! preg_match($pattern, $this->number)) {
-            throw ModelAttributeValidationException::invalid('Address', 'number', 'Must be a valid number or "S/N"');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'number', 'Must be a valid number or "S/N"');
         }
 
     }
@@ -90,7 +90,21 @@ class Address extends Model
     {
         $pattern = '/^[0-9]{8}$/';
         if (! preg_match($pattern, $this->zipCode)) {
-            throw ModelAttributeValidationException::invalid('Address', 'zipCode', 'Must contain 8 digits without spaces or dashes');
+            throw ModelAttributeValidationException::invalid($this->getClassName(), 'zipCode', 'Must contain 8 digits without spaces or dashes');
+        }
+    }
+    public function validate(array $attributes = [], array $excludedAttributes = []): void
+    {
+        parent::validate($attributes, $excludedAttributes);
+        if (empty($attributes)) {
+            $attributes = array_keys(get_class_vars(get_class($this)));
+        }
+        $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
+        $required = ['street', 'number', 'zipCode'];
+        foreach ($required as $requiredAttribute) {
+            if (in_array($requiredAttribute, $attributes) && empty($this->address->$requiredAttribute)) {
+                throw ModelAttributeValidationException::required($this->getClassName(), $requiredAttribute);
+            }
         }
     }
 
