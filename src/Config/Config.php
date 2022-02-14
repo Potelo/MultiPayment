@@ -2,16 +2,12 @@
 
 namespace Potelo\MultiPayment\Config;
 
-use Dotenv\Dotenv;
-
 class Config
 {
     private static string $configPath = __DIR__ . '/../config/multi-payment.php';
 
     public static function setup()
     {
-        $dotenv = Dotenv::createImmutable(__DIR__ . '/../../../../../');
-        $dotenv->safeLoad();
         if (!empty($_ENV['MULTI_PAYMENT_CONFIG_PATH'])) {
             self::$configPath = $_ENV['MULTI_PAYMENT_CONFIG_PATH'];
         }
