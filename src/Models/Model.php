@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Potelo\MultiPayment\Config\Config;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -40,10 +41,10 @@ abstract class Model
     private function setGatewayClass($gatewayClass): void
     {
         if (is_string($gatewayClass)) {
-            if (empty(config('multi-payment.gateways.'.$gatewayClass))) {
+            if (empty(Config::get('gateways.'.$gatewayClass))) {
                 throw GatewayException::notConfigured($gatewayClass);
             }
-            $className = config("multi-payment.gateways.$gatewayClass.class");
+            $className = Config::get("gateways.$gatewayClass.class");
             if (!class_exists($className)) {
                 throw GatewayException::notFound($className);
             }
