@@ -126,9 +126,19 @@ class MoipGateway implements Gateway
         $this->init();
         $customerData = $customer->toArray();
         $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
-            ->setFullname(!empty($customerData['name']) ? $customerData['name'] : null)
-            ->setEmail(!empty($customerData['email']) ? $customerData['email'] : null)
-            ->setTaxDocument(!empty($customerData['tax_document']) ? $customerData['tax_document'] : null);
+            ->setFullname('')
+            ->setBirthDate('')
+            ->setTaxDocument('');
+        if (!empty($customerData['email'])) {
+            $moipCustomer->setEmail($customerData['email']);
+        }
+        if (!empty($customerData['name'])) {
+            $moipCustomer->setFullname($customerData['name']);
+        }
+        if (!empty($customerData['taxDocument'])) {
+            $type = strlen($customer->taxDocument) == 11 ? 'CPF' : 'CNPJ';
+            $moipCustomer->setTaxDocument($customerData['taxDocument'], $type);
+        }
         if (array_key_exists('phone_area', $customerData) &&
             array_key_exists('phone_number', $customerData)
         ) {
@@ -227,7 +237,8 @@ class MoipGateway implements Gateway
             $holder->setBirthDate($customer->birthDate);
         }
         if (!empty($customer->taxDocument)) {
-            $holder->setTaxDocument($customer->taxDocument);
+            $type = strlen($customer->taxDocument) == 11 ? 'CPF' : 'CNPJ';
+            $holder->setTaxDocument($customer->taxDocument, $type);
         }
         if (!empty($customer->phoneArea) && !empty($customer->phoneNumber)) {
             $holder->setPhone(
