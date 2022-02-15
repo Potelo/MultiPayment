@@ -2,9 +2,12 @@
 
 namespace Potelo\MultiPayment;
 
+use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Builders\InvoiceBuilder;
+use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -26,7 +29,7 @@ class MultiPayment
     public function __construct(?string $gateway = null)
     {
         if (empty($gateway)) {
-            $gateway = config('multi-payment.default');
+            $gateway = Config::get('default');
         }
         $this->setGateway($gateway);
     }
@@ -41,10 +44,10 @@ class MultiPayment
      */
     public function setGateway(string $name): MultiPayment
     {
-        if (empty(config('multi-payment.gateways.'.$name))) {
+        if (empty(Config::get('gateways.'.$name))) {
             throw GatewayException::notConfigured($name);
         }
-        $className = config("multi-payment.gateways.$name.class");
+        $className = Config::get("gateways.$name.class");
         if (!class_exists($className)) {
             throw GatewayException::notFound($name);
         }
@@ -82,20 +85,20 @@ class MultiPayment
     }
 
     /**
-     * @return Invoice
+     * @return InvoiceBuilder
      * @throws GatewayException
      */
-    public function newInvoice(): Invoice
+    public function newInvoice(): InvoiceBuilder
     {
-        return new Invoice($this->gateway);
+        return new InvoiceBuilder($this->gateway);
     }
 
     /**
-     * @return Customer
+     * @return CustomerBuilder
      * @throws GatewayException
      */
-    public function newCustomer(): Customer
+    public function newCustomer(): CustomerBuilder
     {
-        return new Customer($this->gateway);
+        return new CustomerBuilder($this->gateway);
     }
 }

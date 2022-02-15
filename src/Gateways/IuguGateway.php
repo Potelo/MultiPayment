@@ -8,6 +8,7 @@ use Carbon\Carbon;
 use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
 use Potelo\MultiPayment\Models\Pix;
+use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
@@ -35,11 +36,12 @@ class IuguGateway implements Gateway
      */
     public function __construct()
     {
-        Iugu::setApiKey(config('multi-payment.gateways.iugu.api_key'));
+        Iugu::setApiKey(Config::get('gateways.iugu.api_key'));
     }
 
     /**
      * @inheritDoc
+     * @throws ModelAttributeValidationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -119,19 +121,6 @@ class IuguGateway implements Gateway
         return $invoice;
     }
 
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredInvoiceAttributes(): array
-    {
-        return [
-            'customer',
-            'items',
-            'paymentMethod',
-        ];
-    }
-
     /**
      * @inheritDoc
      */
@@ -159,17 +148,6 @@ class IuguGateway implements Gateway
         $customer->original = $iuguCustomer;
 
         return $customer;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function requiredCustomerAttributes(): array
-    {
-        return [
-            'name',
-            'email',
-        ];
     }
 
     /**
@@ -243,9 +221,9 @@ class IuguGateway implements Gateway
         }
         if (empty($creditCard->token)) {
             $creditCard->token = Iugu_PaymentToken::create([
-                'account_id' => config('multi-payment.gateways.iugu.id'),
+                'account_id' => Config::get('gateways.iugu.id'),
                 'method' => 'credit_card',
-                'test' => config('multi-payment.environment') != 'production',
+                'test' => Config::get('environment') != 'production',
                 'data' => [
                     'number' => $creditCard->number,
                     'verification_value' => $creditCard->cvv,

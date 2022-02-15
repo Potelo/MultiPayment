@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -40,10 +41,10 @@ abstract class Model
     private function setGatewayClass($gatewayClass): void
     {
         if (is_string($gatewayClass)) {
-            if (empty(config('multi-payment.gateways.'.$gatewayClass))) {
+            if (empty(Config::get('gateways.'.$gatewayClass))) {
                 throw GatewayException::notConfigured($gatewayClass);
             }
-            $className = config("multi-payment.gateways.$gatewayClass.class");
+            $className = Config::get("gateways.$gatewayClass.class");
             if (!class_exists($className)) {
                 throw GatewayException::notFound($className);
             }
@@ -115,24 +116,28 @@ abstract class Model
             $attributes = array_keys(get_class_vars(get_class($this)));
         }
         $attributes = array_diff_key($attributes, array_flip($excludedAttributes));
-
         foreach ($attributes as $attribute) {
             $validateAttributeMethod = 'validate' . ucfirst($attribute). 'Attribute';
             if (property_exists($this, $attribute) && !empty($this->$attribute) && method_exists($this, $validateAttributeMethod)) {
                 $this->$validateAttributeMethod();
             }
         }
-        $requiredAttributesMethod = 'required' . $this->getClassName() . 'Attributes';
+        $this->attributesExtraValidation($attributes);
+    }
 
-        if (!empty($this->gatewayClass) && method_exists($this->gatewayClass, $requiredAttributesMethod)) {
-            $requiredAttributes = $this->gatewayClass->$requiredAttributesMethod();
-            foreach ($requiredAttributes as $attribute) {
-                if (in_array($attribute, $attributes) && empty($this->$attribute)) {
-                    throw ModelAttributeValidationException::required($this->getClassName(), $attribute);
-                }
-            }
-        }
-
+    /**
+     * Model attributes validation for specific cases if necessary.
+     * This method is called after the validation of the model attributes.
+     * Need to be implemented in the child class.
+     *
+     * @param  array  $attributes
+     *
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function attributesExtraValidation(array $attributes): void
+    {
+        //
     }
 
     /**

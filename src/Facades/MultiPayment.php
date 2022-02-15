@@ -4,13 +4,14 @@ namespace Potelo\MultiPayment\Facades;
 
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
-use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Builders\InvoiceBuilder;
+use Potelo\MultiPayment\Builders\CustomerBuilder;
 
 
 /**
  * @method static invoice charge(array $attributes)
- * @method static Invoice newInvoice()
- * @method static Customer newCustomer()
+ * @method static InvoiceBuilder newInvoice()
+ * @method static CustomerBuilder newCustomer()
  */
 class MultiPayment extends Facade
 {
