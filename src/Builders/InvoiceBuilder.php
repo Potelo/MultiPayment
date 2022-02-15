@@ -26,16 +26,21 @@ class InvoiceBuilder extends Builder
      */
     private bool $createCreditCard = false;
 
+    /**
+     * @var Gateway $gateway
+     */
+    private Gateway $gateway;
 
     /**
      * InvoiceBuilder constructor.
      *
-     * @param  Gateway  $gateway
+     * @param  Gateway|string  $gateway
      *
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function __construct(Gateway $gateway)
+    public function __construct($gateway)
     {
+        $this->gateway = $gateway;
         $this->model = new Invoice($gateway);
     }
 
@@ -119,6 +124,7 @@ class InvoiceBuilder extends Builder
      * @param  bool  $save
      *
      * @return $this
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function addCustomer(
         ?string $name = null,
@@ -131,7 +137,9 @@ class InvoiceBuilder extends Builder
 
     ): InvoiceBuilder
     {
-        $this->model->customer = new Customer();
+        if (empty($this->model->customer)) {
+            $this->model->customer = new Customer($this->gateway);
+        }
         $this->model->customer->name = $name;
         $this->model->customer->email = $email;
         $this->model->customer->taxDocument = $taxDocument;
@@ -147,11 +155,12 @@ class InvoiceBuilder extends Builder
      * @param  Address  $address
      *
      * @return $this
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function setCustomerAddress(Address $address): InvoiceBuilder
     {
         if (empty($this->model->customer)) {
-            $this->model->customer = new Customer();
+            $this->model->customer = new Customer($this->gateway);
         }
         $this->model->customer->address = $address;
         $this->addValidationAttribute('customer');
@@ -169,6 +178,7 @@ class InvoiceBuilder extends Builder
      * @param  string|null  $country
      *
      * @return $this
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function addCustomerAddress(
         string $zipCode,
@@ -181,7 +191,7 @@ class InvoiceBuilder extends Builder
         ?string $country = null
     ): InvoiceBuilder {
         if (empty($this->model->customer)) {
-            $this->model->customer = new Customer();
+            $this->model->customer = new Customer($this->gateway);
         }
         $this->model->customer->address = new Address();
         $this->model->customer->address->zipCode = $zipCode;
