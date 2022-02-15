@@ -80,4 +80,22 @@ trait MultiPaymentTrait
     {
         return Config::get("gateways.$gatewayName.customer_column");
     }
+
+    /**
+     * Return an invoice based on the invoice ID
+     * @param string $inviceId
+     * @param string $gatewayName
+     * 
+     * @return Invoice|null
+     */
+    public function findInvoice(string $invoiceId,string $gatewayName): Invoice
+    {
+        $gatewayName = $gatewayName ?? Config::get('default');
+
+        $payment = new MultiPayment($gatewayName);
+
+        $invoice = $payment->getInvoice($invoiceId);
+
+        return $invoice;
+    }
 }

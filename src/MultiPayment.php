@@ -101,4 +101,15 @@ class MultiPayment
     {
         return new CustomerBuilder($this->gateway);
     }
+
+    /**
+     * Return an invoice based on the invoice ID
+     * @param string $invoiceId
+     * 
+     * @return Invoice|null
+     */
+    public function getInvoice(string $invoiceId): Invoice
+    {
+        //TODO
+    }
 }

@@ -251,4 +251,21 @@ class MoipGateway implements Gateway
         }
         return $holder;
     }
+    
+    /**
+     * Return an invoice based on the invoice ID
+     * @param string $invoiceId
+     * 
+     * @return Invoice
+     */
+    public function getInvoice(string $invoiceId): Invoice
+    {
+        $this->init();
+
+        $moipInvoice = $this->moip->payments()->get($invoiceId);
+
+        $invoice = new Invoice();
+        //TODO criar invoice a partir do invoice do moip
+        return $invoice;
+    }
 }

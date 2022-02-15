@@ -10,6 +10,7 @@ use Iugu_PaymentMethod;
 use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
@@ -275,40 +276,50 @@ class IuguGateway implements Gateway
         $invoice = new Invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->status = $iuguInvoice->status;
-        $invoice->amount = $iuguInvoice->amount;
+        $invoice->amount = $iuguInvoice->total_cents;
         $invoice->orderId = $iuguInvoice->order_id;
         
         $invoice->customer = new Customer();
         $invoice->customer->id = $iuguInvoice->customer_id;
         $invoice->customer->name = $iuguInvoice->customer_name;
         $invoice->customer->email = $iuguInvoice->email;
-        
+        $invoice->items = [];
+
         foreach($iuguInvoice->items as $itemIugu) {
             $invoiceItem = new InvoiceItem();
             $invoiceItem->description = $itemIugu->description;
             $invoiceItem->price = $itemIugu->price_cents;
             $invoiceItem->quantity = $itemIugu->quantity;
-            $invoice->items= $invoiceItem;
+            $invoice->items[] = $invoiceItem;
         }
 
-        $invoice->paymentMethod = $iuguInvoice->payment_method;
-        $invoice->expirationDate = $iuguInvoice->expired_at_iso;
-        $invoice->createdAt = $iuguInvoice->created_at_iso;
+        $invoice->paymentMethod = $iuguInvoice->payable_with;
+        $invoice->expirationDate = new Carbon($iuguInvoice->expired_at_iso);
+        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->gateway = 'iugu';
         $invoice->original = $iuguInvoice;
         $invoice->url = $iuguInvoice->secure_url;
 
-        if ($invoice->paymentMethod == $invoice::PAYMENT_METHOD_CREDIT_CARD){
-            $invoice->creditCard = new CreditCard();
-        } else if($invoice->paymentMethod == $invoice::PAYMENT_METHOD_BANK_SLIP){
-            $invoice->bankSlip = new BankSlip();
-            $invoice->bankSlip->url = $iuguInvoice->barcode;
-            $invoice->bankSlip->number = $iuguInvoice->digitable_line;
-            $invoice->bankSlip->barcodeData = $iuguInvoice->barcode_data;
-            $invoice->bankSlip->barcodeImage = $iuguInvoice->barcode;
+        if($invoice->paymentMethod == $invoice::PAYMENT_METHOD_BANK_SLIP){
+            $invoice->customer->address = new Address();
+            $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
+            $invoice->customer->address->street = $iuguInvoice->payer_address_street;
+            $invoice->customer->address->number = $iuguInvoice->payer_address_number;
+            $invoice->customer->address->district = $iuguInvoice->payer_address_disctrict;
+            $invoice->customer->address->city = $iuguInvoice->payer_address_city;
+            $invoice->customer->address->state = $iuguInvoice->payer_address_state;
+            $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;
+            $invoice->customer->address->country = $iuguInvoice->payer_address_country;
 
+            $invoice->bankSlip = new BankSlip();
+            $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
+            $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
+            $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
+            $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
             $invoice->pix = new Pix();
+            $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
 
