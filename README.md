@@ -112,7 +112,7 @@ $customerBuilder = $multiPayment->newCustomer();
 $customer = $customerBuilder->setName('Nome')
     ->setEmail('email')
     ->setTaxDocument('01234567891')
-    ->setPhone('71', '999999999')
+    ->setPhone('999999999', '71')
     ->addAddress('45400000', 'Rua', 'S/N')
     ->create();
 ```
