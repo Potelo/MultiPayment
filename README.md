@@ -4,9 +4,10 @@
 - [Configuração](#configuração)
   - [PHP](#php)
   - [Laravel](#laravel)
-- [Exemplos](#exemplos)
-- [Documentação](#documentação)
-  - [MultiPayment:](#multipayment)
+- [Utilizando](#utilizando)
+  - [MultiPayment](#multipayment)
+    - [InvoiceBuilder](#invoicebuilder)
+    - [CustomerBuilder](#customerbuilder)
     - [charge](#charge)
   - [Models](#models)
     - [Customer](#customer)
@@ -81,32 +82,45 @@ Também é possível utilizar o Facade:
 \Potelo\MultiPayment\Facades\MultiPayment::charge($options);  
 ```
 
-## Exemplos
-
-Utilize o método `charge` para criar uma transação de pagamento.
-
-Usando a classe `MultiPayment`:
-
-```php  
-$payment = new \Potelo\MultiPayment\MultiPayment(); // gateway default será usado  
-$payment->charge($options);  
-  
-// ou  
-$payment = new \Potelo\MultiPayment\MultiPayment('iugu');  
-$payment->charge($options);  
-  
-// ou  
-$payment = new \Potelo\MultiPayment\MultiPayment();  
-$payment->setGateway('moip')->charge($options);  
-  
-```
-## Documentação
+## Utilizando
 
 ### MultiPayment:
+Usando a classe `MultiPayment`:
+```php
+$payment = new \Potelo\MultiPayment\MultiPayment(); // gateway default será usado
+// ou
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
+// ou  
+$payment = new \Potelo\MultiPayment\MultiPayment();
+$payment->setGateway('moip');
+```
+#### InvoiceBuilder
+```php
+$multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
+$invoiceBuilder = $multiPayment->newInvoice();
+$invoice = $invoiceBuilder->setPaymentMethod('payment_method')
+    ->addCustomer('name', 'email', 'tax_document', 'phone_area', 'phone_number')
+    ->addCustomerAddress('zip_code', 'street', 'number')
+    ->addItem('description', 'quantity', 'price')
+    ->create();
+```
+Confira `src/MultiPayment/Builders/InvoiceBuilder.php` para saber quais métodos estão disponíveis.
+#### CustomerBuilder
+```php
+$multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
+$customerBuilder = $multiPayment->newCustomer();
+$customer = $customerBuilder->setName('Nome')
+    ->setEmail('email')
+    ->setTaxDocument('01234567891')
+    ->setPhone('71', '999999999')
+    ->addAddress('45400000', 'Rua', 'S/N')
+    ->create();
+```
+Confira `src/MultiPayment/Builders/CustomerBuilder.php` para saber quais métodos estão disponíveis.
 #### charge
 
 ```php  
-$options = [  
+$options = [
     'amount' => 10000,
     'customer' => [
         'name' => 'Nome do cliente',
@@ -145,7 +159,10 @@ $options = [
         'first_name' => 'João',
         'last_name' => 'Maria' 
     ],
-];  
+];
+
+$payment = new \Potelo\MultiPayment\MultiPayment();
+$payment->setGateway('moip')->charge($options);
 ```  
 
 | atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                                  |
