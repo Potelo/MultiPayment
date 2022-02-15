@@ -113,7 +113,6 @@ class InvoiceBuilder extends Builder
      * @param  string|null  $name
      * @param  string|null  $email
      * @param  string|null  $taxDocument
-     * @param  Address|null  $address
      * @param  string|null  $phoneArea
      * @param  string|null  $phoneNumber
      * @param  string|null  $phoneCountryCode
