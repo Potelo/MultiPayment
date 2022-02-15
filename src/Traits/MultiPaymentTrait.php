@@ -37,7 +37,6 @@ trait MultiPaymentTrait
         $invoice = $payment->charge($options);
         if (empty($customerId)) {
             $this->setCustomerId($gatewayName, $invoice->customer->id);
-            $this->save();
         }
         return $invoice;
     }
@@ -63,10 +62,11 @@ trait MultiPaymentTrait
      *
      * @return void
      */
-    private function setCustomerId($gatewayName, $customerId)
+    public function setCustomerId($gatewayName, $customerId)
     {
         $customerColumn = $this->getGatewayCustomerColumn($gatewayName);
         $this->{$customerColumn} = $customerId;
+        $this->save();
     }
 
     /**
