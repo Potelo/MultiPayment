@@ -8,7 +8,7 @@ use Carbon\Carbon;
 use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
 use Potelo\MultiPayment\Models\Pix;
-use Potelo\MultiPayment\Config\Config;
+use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;

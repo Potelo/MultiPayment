@@ -1,6 +1,6 @@
 <?php
 
-namespace Potelo\MultiPayment\Config;
+namespace Potelo\MultiPayment\Helpers;
 
 class Config
 {
@@ -8,13 +8,14 @@ class Config
 
     public static function setup()
     {
-        if (!empty($_ENV['MULTI_PAYMENT_CONFIG_PATH'])) {
-            self::$configPath = $_ENV['MULTI_PAYMENT_CONFIG_PATH'];
+        if (!empty($_ENV['MULTIPAYMENT_CONFIG_PATH'])) {
+            self::$configPath = $_ENV['MULTIPAYMENT_CONFIG_PATH'];
         }
     }
 
-     static public function getConfig(): array
+    static public function getConfig(): array
     {
+        self::setup();
         return require self::$configPath;
     }
 
@@ -23,7 +24,6 @@ class Config
         if (class_exists('\Illuminate\Config\Repository')) {
             return config('multi-payment.' . $key);
         }
-        self::setup();
         $configs = self::getConfig();
         $path = explode('.', $key);
         $value = $configs;

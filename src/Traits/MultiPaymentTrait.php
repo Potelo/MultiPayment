@@ -3,7 +3,7 @@
 namespace Potelo\MultiPayment\Traits;
 
 use Potelo\MultiPayment\MultiPayment;
-use Potelo\MultiPayment\Config\Config;
+use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
