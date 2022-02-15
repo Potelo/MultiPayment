@@ -89,6 +89,18 @@ class CustomerBuilder extends Builder
     }
 
     /**
+     * @param  Address  $address
+     *
+     * @return $this
+     */
+    public function setAddress(Address $address): CustomerBuilder
+    {
+        $this->model->address = $address;
+        $this->addValidationAttribute('address');
+        return $this;
+    }
+
+    /**
      * @param  string  $zipCode
      * @param  string  $street
      * @param  string  $number
@@ -100,7 +112,7 @@ class CustomerBuilder extends Builder
      *
      * @return $this
      */
-    public function setAddress(
+    public function addAddress(
         string $zipCode,
         string $street,
         string $number = 'S/N',

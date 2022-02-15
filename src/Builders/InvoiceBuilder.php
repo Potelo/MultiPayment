@@ -125,7 +125,6 @@ class InvoiceBuilder extends Builder
         ?string $name = null,
         ?string $email = null,
         ?string $taxDocument = null,
-        ?Address $address = null,
         ?string $phoneArea = null,
         ?string $phoneNumber = null,
         ?string $phoneCountryCode = '55',
@@ -137,12 +136,64 @@ class InvoiceBuilder extends Builder
         $this->model->customer->name = $name;
         $this->model->customer->email = $email;
         $this->model->customer->taxDocument = $taxDocument;
-        $this->model->customer->address = $address;
         $this->model->customer->phoneArea = $phoneArea;
         $this->model->customer->phoneNumber = $phoneNumber;
         $this->model->customer->phoneCountryCode = $phoneCountryCode;
         $this->addValidationAttribute('customer');
         $this->createCustomer = $save;
+        return $this;
+    }
+
+    /**
+     * @param  Address  $address
+     *
+     * @return $this
+     */
+    public function setCustomerAddress(Address $address): InvoiceBuilder
+    {
+        if (empty($this->model->customer)) {
+            $this->model->customer = new Customer();
+        }
+        $this->model->customer->address = $address;
+        $this->addValidationAttribute('customer');
+        return $this;
+    }
+
+    /**
+     * @param  string  $zipCode
+     * @param  string  $street
+     * @param  string  $number
+     * @param  string|null  $complement
+     * @param  string|null  $district
+     * @param  string|null  $city
+     * @param  string|null  $state
+     * @param  string|null  $country
+     *
+     * @return $this
+     */
+    public function addCustomerAddress(
+        string $zipCode,
+        string $street,
+        string $number = 'S/N',
+        ?string $complement = null,
+        ?string $district = null,
+        ?string $city = null,
+        ?string $state = null,
+        ?string $country = null
+    ): InvoiceBuilder {
+        if (empty($this->model->customer)) {
+            $this->model->customer = new Customer();
+        }
+        $this->model->customer->address = new Address();
+        $this->model->customer->address->zipCode = $zipCode;
+        $this->model->customer->address->street = $street;
+        $this->model->customer->address->number = $number;
+        $this->model->customer->address->complement = $complement;
+        $this->model->customer->address->district = $district;
+        $this->model->customer->address->city = $city;
+        $this->model->customer->address->state = $state;
+        $this->model->customer->address->country = $country;
+        $this->addValidationAttribute('customer');
         return $this;
     }
 
