@@ -20,6 +20,9 @@ class Config
 
     public static function get(string $key)
     {
+        if (class_exists('\Illuminate\Config\Repository')) {
+            return config('multi-payment.' . $key);
+        }
         self::setup();
         $configs = self::getConfig();
         $path = explode('.', $key);

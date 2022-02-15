@@ -89,7 +89,7 @@ class MoipGateway implements Gateway
             throw new GatewayException('Error creating invoice: ' . $exception->getMessage());
         }
 
-        if (Config::get('gateways.moip.sandbox')) {
+        if (Config::get('environment') != 'production') {
             $payment->authorize();
         }
 

@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment;
 
-use Dotenv\Dotenv;
 use Potelo\MultiPayment\Config\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
