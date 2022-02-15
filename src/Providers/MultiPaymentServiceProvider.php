@@ -39,7 +39,7 @@ class MultiPaymentServiceProvider extends ServiceProvider
         $this->mergeConfigFrom($configFile, 'multi-payment');
 
         $this->app->bind('multiPayment', function ($app) {
-            return new MultiPayment();
+            return $app->make(MultiPayment::class);
         });
     }
 }
