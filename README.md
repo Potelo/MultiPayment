@@ -167,11 +167,6 @@ $payment->setGateway('moip')->charge($options);
 ```  
 #### getInvoice
 ```php
-$invoiceId = 'AS12312ASDHGZXSGRTET'
-$foundInvoice = \Potelo\MultiPayment\MultiPayment::setGateway()->getInvoice($invoiceId);//gateway default será utilizado
-//ou
-$foundInvoice = \Potelo\MultiPayment\MultiPayment::setGateway('iugu')->getInvoice($invoiceId);
-//ou
 $invoiceId = 'PAY-312ASDHGZXSGRTET';
 $payment = new \Potelo\MultiPayment\MultiPayment('moip');
 $foundInvoice = $payment->getInvoice($invoiceId);
