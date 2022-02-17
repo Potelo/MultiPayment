@@ -9,8 +9,13 @@ use Potelo\MultiPayment\Contracts\Gateway;
 /**
  * CustomerBuilder class
  */
-class CustomerBuilder extends Builder
+class CustomerBuilder
 {
+    /**
+     * @var Customer $customer
+     */
+    private Customer $customer;
+
     /**
      * CustomerBuilder constructor.
      *
@@ -20,7 +25,7 @@ class CustomerBuilder extends Builder
      */
     public function __construct(Gateway $gateway)
     {
-        $this->model = new Customer($gateway);
+        $this->customer = new Customer($gateway);
     }
 
     /**
@@ -30,8 +35,7 @@ class CustomerBuilder extends Builder
      */
     public function setEmail(string $email): CustomerBuilder
     {
-        $this->model->email = $email;
-        $this->addValidationAttribute('email');
+        $this->customer->email = $email;
         return $this;
     }
 
@@ -42,8 +46,7 @@ class CustomerBuilder extends Builder
      */
     public function setName(string $name): CustomerBuilder
     {
-        $this->model->name = $name;
-        $this->addValidationAttribute('name');
+        $this->customer->name = $name;
         return $this;
     }
 
@@ -56,12 +59,9 @@ class CustomerBuilder extends Builder
      */
     public function setPhone(string $phoneNumber, string $phoneArea, string $phoneCountryCode = '55'): CustomerBuilder
     {
-        $this->model->phoneNumber = $phoneNumber;
-        $this->model->phoneArea = $phoneArea;
-        $this->model->phoneCountryCode = $phoneCountryCode;
-        $this->addValidationAttribute('phoneNumber');
-        $this->addValidationAttribute('phoneArea');
-        $this->addValidationAttribute('phoneCountryCode');
+        $this->customer->phoneNumber = $phoneNumber;
+        $this->customer->phoneArea = $phoneArea;
+        $this->customer->phoneCountryCode = $phoneCountryCode;
         return $this;
     }
 
@@ -72,8 +72,7 @@ class CustomerBuilder extends Builder
      */
     public function setTaxDocument(string $taxDocument): CustomerBuilder
     {
-        $this->model->taxDocument = $taxDocument;
-        $this->addValidationAttribute('taxDocument');
+        $this->customer->taxDocument = $taxDocument;
         return $this;
     }
 
@@ -84,7 +83,7 @@ class CustomerBuilder extends Builder
      */
     public function setBirthDate(string $birthDate): CustomerBuilder
     {
-        $this->model->birthDate = $birthDate;
+        $this->customer->birthDate = $birthDate;
         return $this;
     }
 
@@ -95,8 +94,7 @@ class CustomerBuilder extends Builder
      */
     public function setAddress(Address $address): CustomerBuilder
     {
-        $this->model->address = $address;
-        $this->addValidationAttribute('address');
+        $this->customer->address = $address;
         return $this;
     }
 
@@ -122,16 +120,15 @@ class CustomerBuilder extends Builder
         ?string $state = null,
         ?string $country = null
     ): CustomerBuilder {
-        $this->model->address = new Address();
-        $this->model->address->zipCode = $zipCode;
-        $this->model->address->street = $street;
-        $this->model->address->number = $number;
-        $this->model->address->complement = $complement;
-        $this->model->address->district = $district;
-        $this->model->address->city = $city;
-        $this->model->address->state = $state;
-        $this->model->address->country = $country;
-        $this->addValidationAttribute('address');
+        $this->customer->address = new Address();
+        $this->customer->address->zipCode = $zipCode;
+        $this->customer->address->street = $street;
+        $this->customer->address->number = $number;
+        $this->customer->address->complement = $complement;
+        $this->customer->address->district = $district;
+        $this->customer->address->city = $city;
+        $this->customer->address->state = $state;
+        $this->customer->address->country = $country;
         return $this;
     }
 
@@ -142,9 +139,16 @@ class CustomerBuilder extends Builder
      */
     public function create(): Customer
     {
-        $this->model->validate($this->validationAttributes);
-        $this->model->save(false);
-        return $this->model;
+        $this->customer->save();
+        return $this->customer;
 
+    }
+
+    /**
+     * @return Customer
+     */
+    public function get(): Customer
+    {
+        return $this->customer;
     }
 }

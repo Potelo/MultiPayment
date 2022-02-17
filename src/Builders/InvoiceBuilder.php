@@ -13,23 +13,18 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 /**
  * invoice builder
  */
-class InvoiceBuilder extends Builder
+class InvoiceBuilder
 {
-
-    /**
-     * @var bool
-     */
-    private bool $createCustomer = false;
-
-    /**
-     * @var bool
-     */
-    private bool $createCreditCard = false;
 
     /**
      * @var Gateway $gateway
      */
     private Gateway $gateway;
+
+    /**
+     * @var Invoice $invoice
+     */
+    private Invoice $invoice;
 
     /**
      * InvoiceBuilder constructor.
@@ -41,7 +36,7 @@ class InvoiceBuilder extends Builder
     public function __construct($gateway)
     {
         $this->gateway = $gateway;
-        $this->model = new Invoice($gateway);
+        $this->invoice = new Invoice($gateway);
     }
 
     /**
@@ -51,8 +46,7 @@ class InvoiceBuilder extends Builder
      */
     public function setPaymentMethod(string $paymentMethod): InvoiceBuilder
     {
-        $this->model->paymentMethod = $paymentMethod;
-        $this->addValidationAttribute('paymentMethod');
+        $this->invoice->paymentMethod = $paymentMethod;
         return $this;
     }
 
@@ -63,8 +57,7 @@ class InvoiceBuilder extends Builder
      */
     public function setExpirationDate(string $expirationDate): InvoiceBuilder
     {
-        $this->model->expirationDate = Carbon::createFromFormat('Y-m-d', $expirationDate);
-        $this->addValidationAttribute('expirationDate');
+        $this->invoice->expirationDate = Carbon::createFromFormat('Y-m-d', $expirationDate);
         return $this;
     }
 
@@ -75,8 +68,7 @@ class InvoiceBuilder extends Builder
      */
     public function setItems(array $items): InvoiceBuilder
     {
-        $this->model->items = $items;
-        $this->addValidationAttribute('items');
+        $this->invoice->items = $items;
         return $this;
     }
 
@@ -93,24 +85,18 @@ class InvoiceBuilder extends Builder
         $invoiceItem->description = $description;
         $invoiceItem->price = $price;
         $invoiceItem->quantity = $quantity;
-        $this->model->items[] = $invoiceItem;
-        $this->addValidationAttribute('items');
+        $this->invoice->items[] = $invoiceItem;
         return $this;
     }
 
     /**
      * @param  Customer  $customer
-     * @param  bool  $save
      *
      * @return $this
      */
-    public function setCustomer(Customer $customer, bool $save = true): InvoiceBuilder
+    public function setCustomer(Customer $customer): InvoiceBuilder
     {
-        $this->model->customer = $customer;
-        if ($save) {
-            $this->createCustomer = true;
-        }
-        $this->addValidationAttribute('customer');
+        $this->invoice->customer = $customer;
         return $this;
     }
 
@@ -121,7 +107,6 @@ class InvoiceBuilder extends Builder
      * @param  string|null  $phoneArea
      * @param  string|null  $phoneNumber
      * @param  string|null  $phoneCountryCode
-     * @param  bool  $save
      *
      * @return $this
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
@@ -132,22 +117,18 @@ class InvoiceBuilder extends Builder
         ?string $taxDocument = null,
         ?string $phoneArea = null,
         ?string $phoneNumber = null,
-        ?string $phoneCountryCode = '55',
-        bool $save = true
-
+        ?string $phoneCountryCode = '55'
     ): InvoiceBuilder
     {
-        if (empty($this->model->customer)) {
-            $this->model->customer = new Customer($this->gateway);
+        if (empty($this->invoice->customer)) {
+            $this->invoice->customer = new Customer($this->gateway);
         }
-        $this->model->customer->name = $name;
-        $this->model->customer->email = $email;
-        $this->model->customer->taxDocument = $taxDocument;
-        $this->model->customer->phoneArea = $phoneArea;
-        $this->model->customer->phoneNumber = $phoneNumber;
-        $this->model->customer->phoneCountryCode = $phoneCountryCode;
-        $this->addValidationAttribute('customer');
-        $this->createCustomer = $save;
+        $this->invoice->customer->name = $name;
+        $this->invoice->customer->email = $email;
+        $this->invoice->customer->taxDocument = $taxDocument;
+        $this->invoice->customer->phoneArea = $phoneArea;
+        $this->invoice->customer->phoneNumber = $phoneNumber;
+        $this->invoice->customer->phoneCountryCode = $phoneCountryCode;
         return $this;
     }
 
@@ -159,11 +140,10 @@ class InvoiceBuilder extends Builder
      */
     public function setCustomerAddress(Address $address): InvoiceBuilder
     {
-        if (empty($this->model->customer)) {
-            $this->model->customer = new Customer($this->gateway);
+        if (empty($this->invoice->customer)) {
+            $this->invoice->customer = new Customer($this->gateway);
         }
-        $this->model->customer->address = $address;
-        $this->addValidationAttribute('customer');
+        $this->invoice->customer->address = $address;
         return $this;
     }
 
@@ -190,19 +170,18 @@ class InvoiceBuilder extends Builder
         ?string $state = null,
         ?string $country = null
     ): InvoiceBuilder {
-        if (empty($this->model->customer)) {
-            $this->model->customer = new Customer($this->gateway);
+        if (empty($this->invoice->customer)) {
+            $this->invoice->customer = new Customer($this->gateway);
         }
-        $this->model->customer->address = new Address();
-        $this->model->customer->address->zipCode = $zipCode;
-        $this->model->customer->address->street = $street;
-        $this->model->customer->address->number = $number;
-        $this->model->customer->address->complement = $complement;
-        $this->model->customer->address->district = $district;
-        $this->model->customer->address->city = $city;
-        $this->model->customer->address->state = $state;
-        $this->model->customer->address->country = $country;
-        $this->addValidationAttribute('customer');
+        $this->invoice->customer->address = new Address();
+        $this->invoice->customer->address->zipCode = $zipCode;
+        $this->invoice->customer->address->street = $street;
+        $this->invoice->customer->address->number = $number;
+        $this->invoice->customer->address->complement = $complement;
+        $this->invoice->customer->address->district = $district;
+        $this->invoice->customer->address->city = $city;
+        $this->invoice->customer->address->state = $state;
+        $this->invoice->customer->address->country = $country;
         return $this;
     }
 
@@ -213,8 +192,7 @@ class InvoiceBuilder extends Builder
      */
     public function setCreditCard(CreditCard $creditCard): InvoiceBuilder
     {
-        $this->model->creditCard = $creditCard;
-        $this->addValidationAttribute('creditCard');
+        $this->invoice->creditCard = $creditCard;
         return $this;
     }
 
@@ -225,9 +203,8 @@ class InvoiceBuilder extends Builder
      */
     public function addCreditCardId($id): InvoiceBuilder
     {
-        $this->model->creditCard = new CreditCard();
-        $this->model->creditCard->id = $id;
-        $this->addValidationAttribute('creditCard');
+        $this->invoice->creditCard = new CreditCard();
+        $this->invoice->creditCard->id = $id;
         return $this;
     }
 
@@ -238,9 +215,8 @@ class InvoiceBuilder extends Builder
      */
     public function addCreditCardToken($token): InvoiceBuilder
     {
-        $this->model->creditCard = new CreditCard();
-        $this->model->creditCard->token = $token;
-        $this->addValidationAttribute('creditCard');
+        $this->invoice->creditCard = new CreditCard();
+        $this->invoice->creditCard->token = $token;
         return $this;
     }
 
@@ -254,7 +230,6 @@ class InvoiceBuilder extends Builder
      * @param  string  $firstName
      * @param  string  $lastName
      * @param  Customer|mixed|null  $customer
-     * @param  bool  $save
      *
      * @return $this
      */
@@ -267,27 +242,24 @@ class InvoiceBuilder extends Builder
         string $cvv,
         string $firstName,
         string $lastName,
-        $customer = null,
-        bool $save = true
+        $customer = null
     ): InvoiceBuilder
     {
-        $this->model->creditCard = new CreditCard();
-        $this->model->creditCard->description = $description;
-        $this->model->creditCard->number = $number;
-        $this->model->creditCard->brand = $brand;
-        $this->model->creditCard->month = $month;
-        $this->model->creditCard->year = $year;
-        $this->model->creditCard->cvv = $cvv;
-        $this->model->creditCard->firstName = $firstName;
-        $this->model->creditCard->lastName = $lastName;
+        $this->invoice->creditCard = new CreditCard();
+        $this->invoice->creditCard->description = $description;
+        $this->invoice->creditCard->number = $number;
+        $this->invoice->creditCard->brand = $brand;
+        $this->invoice->creditCard->month = $month;
+        $this->invoice->creditCard->year = $year;
+        $this->invoice->creditCard->cvv = $cvv;
+        $this->invoice->creditCard->firstName = $firstName;
+        $this->invoice->creditCard->lastName = $lastName;
         if ($customer instanceof Customer) {
-            $this->model->creditCard->customer = $customer;
+            $this->invoice->creditCard->customer = $customer;
         } else {
-            $this->model->creditCard->customer = new Customer();
-            $this->model->creditCard->customer->id = $customer;
+            $this->invoice->creditCard->customer = new Customer();
+            $this->invoice->creditCard->customer->id = $customer;
         }
-        $this->addValidationAttribute('creditCard');
-        $this->createCreditCard = $save;
         return $this;
     }
 
@@ -298,16 +270,23 @@ class InvoiceBuilder extends Builder
      */
     public function create(): Invoice
     {
-        $this->model->validate($this->validationAttributes);
-        if ($this->createCustomer) {
-            $this->model->customer->save(false);
+        $this->invoice->validate();
+        if (empty($this->invoice->customer->id)) {
+            $this->invoice->customer->save(false);
         }
-        if ($this->createCreditCard) {
-            if (empty($this->model->creditCard->customer) || empty($this->model->creditCard->customer->id)) {
-                $this->model->creditCard->customer = $this->model->customer;
-            }
+        if (!empty($this->invoice->creditCard) && empty($this->invoice->creditCard->id)) {
+            $this->invoice->creditCard->customer = $this->invoice->customer;
         }
-        $this->model->save(false);
-        return $this->model;
+
+        $this->invoice->save(false);
+        return $this->invoice;
+    }
+
+    /**
+     * @return Invoice
+     */
+    public function get(): Invoice
+    {
+        return $this->invoice;
     }
 }
