@@ -263,14 +263,15 @@ class IuguGateway implements Gateway
      * Return an invoice based on the invoice ID
      * @param string $invoiceId
      * 
-     * @return Invoice|null
+     * @return Invoice
+     * @throws GatewayException
      */
     public function getInvoice(string $invoiceId): Invoice
     {
         try {
             $iuguInvoice = \Iugu_Invoice::fetch($invoiceId);
         } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+            throw new GatewayException('Invoice not found');
         }
 
         $invoice = new Invoice();

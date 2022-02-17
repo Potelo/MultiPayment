@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -249,5 +250,21 @@ class Invoice extends Model
     {
         $this->creditCard->validate();
     }
-
+    
+    /**
+     * @param string $id
+     * @param string $gateway
+     * 
+     * @return Invoice
+     */
+    public function get(string $id): Invoice
+    {
+        $class = $this->getClassName();
+        $method = 'get';
+        $method = $method . $class;
+        if (!method_exists($this->gatewayClass, $method)) {
+            throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
+        }
+        return $this->gatewayClass->$method($id);
+    }
 }

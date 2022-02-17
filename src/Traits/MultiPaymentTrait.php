@@ -86,15 +86,16 @@ trait MultiPaymentTrait
      * @param string $inviceId
      * @param string $gatewayName
      * 
-     * @return Invoice|null
+     * @return Invoice
+     * @throws GatewayException
      */
-    public function findInvoice(string $invoiceId,string $gatewayName): Invoice
+    public function getInvoice(string $invoiceId,string $gatewayName): Invoice
     {
         $gatewayName = $gatewayName ?? Config::get('default');
 
         $payment = new MultiPayment($gatewayName);
 
-        $invoice = $payment->getInvoice($invoiceId);
+        $invoice = $payment->getInvoice($invoiceId,$gatewayName);
 
         return $invoice;
     }
