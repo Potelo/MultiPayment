@@ -28,8 +28,6 @@ class MoipGateway implements Gateway
      */
     protected Moip $moip;
 
-    public const PAYMENT_METHOD_CREDIT_CARD = 'CREDIT_CARD';
-    public const PAYMENT_METHOD_BANK_SLIP = 'BOLETO';
     /**
      * Initialize Moip gateway.
      */
@@ -290,7 +288,7 @@ class MoipGateway implements Gateway
         $invoice->amount = $moipInvoice->getAmount()->total;
         $moipOrder = $this->moip->orders()->getByPath($moipInvoice->getLinks()->getLink('order'));
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
-        $invoice->paymentMethod = $moipInvoice->getFundingInstrument()->method;
+        $invoice->paymentMethod = ($moipInvoice->getFundingInstrument()->method == 'BOLETO') ? 'bank_slip':'credit_card';
         $invoice->url = $moipInvoice->getLinks()->getSelf();
         $invoice->gateway = 'moip';
         $invoice->original = $moipInvoice;
@@ -310,13 +308,13 @@ class MoipGateway implements Gateway
             $invoice->items[] = $invoiceItem;
         }
 
-        if ($invoice->paymentMethod == $this::PAYMENT_METHOD_BANK_SLIP) {
+        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip = new BankSlip('moip');
             $invoice->bankSlip->number = $moipInvoice->getLineCodeBoleto();
             $invoice->bankSlip->url = $moipInvoice->getHrefBoleto();
             $invoice->bankSlip->barcodeData = $moipInvoice->getHrefPrintBoleto();
             $invoice->expirationDate = $moipInvoice->getFundingInstrument()->boleto->expirationDate;
-        } elseif ($invoice->paymentMethod == $this::PAYMENT_METHOD_CREDIT_CARD){
+        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD){
             $invoice->creditCard = new CreditCard('moip');
             $invoice->creditCard->holder = $moipInvoice->getFundingInstrument()->creditCard->holder->fullname;
             $invoice->creditCard->brand = $moipInvoice->getFundingInstrument()->creditCard->brand;

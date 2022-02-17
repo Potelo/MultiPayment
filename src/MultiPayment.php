@@ -105,13 +105,11 @@ class MultiPayment
     /**
      * Return an invoice based on the invoice ID
      * @param string $invoiceId
-     * @param string $gateway
      * 
      * @return Invoice
      */
-    public function getInvoice(string $invoiceId, string $gateway): Invoice
+    public function getInvoice(string $invoiceId): Invoice
     {
-        $invoice = new Invoice($gateway);
-        return $invoice->get($invoiceId);
+        return Invoice::get($invoiceId,$this->gateway);
     }
 }

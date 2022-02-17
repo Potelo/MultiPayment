@@ -7,6 +7,7 @@ use Iugu_Customer;
 use Carbon\Carbon;
 use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
+use IuguObjectNotFound;
 use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
@@ -271,6 +272,8 @@ class IuguGateway implements Gateway
         try {
             $iuguInvoice = \Iugu_Invoice::fetch($invoiceId);
         } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        } catch (IuguObjectNotFound $e){
             throw new GatewayException('Invoice not found');
         }
 
@@ -302,17 +305,17 @@ class IuguGateway implements Gateway
         $invoice->original = $iuguInvoice;
         $invoice->url = $iuguInvoice->secure_url;
 
-        if($invoice->paymentMethod == $invoice::PAYMENT_METHOD_BANK_SLIP){
-            $invoice->customer->address = new Address();
-            $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
-            $invoice->customer->address->street = $iuguInvoice->payer_address_street;
-            $invoice->customer->address->number = $iuguInvoice->payer_address_number;
-            $invoice->customer->address->district = $iuguInvoice->payer_address_disctrict;
-            $invoice->customer->address->city = $iuguInvoice->payer_address_city;
-            $invoice->customer->address->state = $iuguInvoice->payer_address_state;
-            $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;
-            $invoice->customer->address->country = $iuguInvoice->payer_address_country;
+        $invoice->customer->address = new Address();
+        $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
+        $invoice->customer->address->street = $iuguInvoice->payer_address_street;
+        $invoice->customer->address->number = $iuguInvoice->payer_address_number;
+        $invoice->customer->address->district = $iuguInvoice->payer_address_disctrict;
+        $invoice->customer->address->city = $iuguInvoice->payer_address_city;
+        $invoice->customer->address->state = $iuguInvoice->payer_address_state;
+        $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;
+        $invoice->customer->address->country = $iuguInvoice->payer_address_country;
 
+        if($invoice->paymentMethod == $invoice::PAYMENT_METHOD_BANK_SLIP){
             $invoice->bankSlip = new BankSlip();
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
