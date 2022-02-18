@@ -7,13 +7,16 @@ use Iugu_Customer;
 use Carbon\Carbon;
 use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
+use IuguObjectNotFound;
 use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -255,5 +258,103 @@ class IuguGateway implements Gateway
         $creditCard->gateway = 'iugu';
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getInvoice(string $invoiceId): Invoice
+    {
+        try {
+            $iuguInvoice = \Iugu_Invoice::fetch($invoiceId);
+        } catch (IuguObjectNotFound $e){
+            throw new GatewayException('Invoice not found');
+        } catch (\Exception $e) {
+            throw new GatewayException("Error getting invoice: {$e->getMessage()}");
+        }
+        if (!empty($iuguInvoice->errors)) {
+            throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
+        }
+
+        $invoice = new Invoice(get_class($this));
+        $invoice->id = $iuguInvoice->id;
+        $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
+        $invoice->amount = $iuguInvoice->total_cents;
+        $invoice->orderId = $iuguInvoice->order_id;
+
+        $invoice->customer = new Customer();
+        $invoice->customer->id = $iuguInvoice->customer_id;
+        $invoice->customer->name = $iuguInvoice->customer_name;
+        $invoice->customer->email = $iuguInvoice->email;
+        $invoice->customer->phoneNumber = $iuguInvoice->payer_phone;
+        $invoice->customer->phoneArea = $iuguInvoice->payer_phone_prefix;
+
+        $invoice->items = [];
+
+        foreach($iuguInvoice->items as $itemIugu) {
+            $invoiceItem = new InvoiceItem();
+            $invoiceItem->description = $itemIugu->description;
+            $invoiceItem->price = $itemIugu->price_cents;
+            $invoiceItem->quantity = $itemIugu->quantity;
+            $invoice->items[] = $invoiceItem;
+        }
+
+        $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
+        $invoice->expirationDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
+        $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
+        $invoice->gateway = 'iugu';
+        $invoice->original = $iuguInvoice;
+        $invoice->url = $iuguInvoice->secure_url;
+
+        if (!empty($iuguInvoice->payer_address_zip_code)) {
+            $invoice->customer->address = new Address();
+            $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
+            $invoice->customer->address->street = $iuguInvoice->payer_address_street;
+            $invoice->customer->address->number = $iuguInvoice->payer_address_number;
+            $invoice->customer->address->district = $iuguInvoice->payer_address_disctrict;
+            $invoice->customer->address->city = $iuguInvoice->payer_address_city;
+            $invoice->customer->address->state = $iuguInvoice->payer_address_state;
+            $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;
+            $invoice->customer->address->country = $iuguInvoice->payer_address_country;
+        }
+
+        if (!empty($iuguInvoice->bank_slip)) {
+            $invoice->bankSlip = new BankSlip();
+            $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
+            $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
+            $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
+            $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
+        } elseif (!empty($iuguInvoice->pix)) {
+            $invoice->pix = new Pix();
+            $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
+            $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
+        }
+
+        return $invoice;
+    }
+
+    /**
+     * Convert the iugu payment method to the MultiPayment payment method
+     *
+     * @param $iuguPaymentMethod
+     *
+     * @return string|null
+     */
+    private function iuguToMultiPaymentPaymentMethod($iuguPaymentMethod): ?string
+    {
+        $multiPaymentPaymentMethod = [
+            Invoice::PAYMENT_METHOD_PIX,
+            Invoice::PAYMENT_METHOD_BANK_SLIP,
+            Invoice::PAYMENT_METHOD_CREDIT_CARD
+        ];
+        if (!empty($iuguPaymentMethod)) {
+            foreach ($multiPaymentPaymentMethod as $paymentMethod) {
+                if (str_contains($iuguPaymentMethod, $paymentMethod)) {
+                    return $paymentMethod;
+                }
+            }
+        }
+        return null;
     }
 }

@@ -9,6 +9,7 @@
     - [InvoiceBuilder](#invoicebuilder)
     - [CustomerBuilder](#customerbuilder)
     - [charge](#charge)
+    - [getInvoice](#getinvoice)
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
@@ -164,6 +165,12 @@ $options = [
 $payment = new \Potelo\MultiPayment\MultiPayment();
 $payment->setGateway('moip')->charge($options);
 ```  
+#### getInvoice
+```php
+$invoiceId = 'PAY-312ASDHGZXSGRTET';
+$payment = new \Potelo\MultiPayment\MultiPayment('moip');
+$foundInvoice = $payment->getInvoice($invoiceId);
+```
 
 | atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                                  |
 |-------------------------------|---------------------------------------------------------------------|--------------------------------|-------------------------------------------|------------------------------------------|

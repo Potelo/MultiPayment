@@ -249,5 +249,5 @@ class Invoice extends Model
     {
         $this->creditCard->validate();
     }
-
+    
 }

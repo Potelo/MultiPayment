@@ -28,5 +28,15 @@ interface Gateway
      * @throws GatewayException
      */
     public function createInvoice(Invoice $invoice): Invoice;
+
+    /**
+     * Return one invoice based on the invoice ID
+     * 
+     * @param string $invoiceId
+     * 
+     * @return Invoice
+     * @throws GatewayException
+     */
+    public function getInvoice(string $invoiceId): Invoice;
     
 }

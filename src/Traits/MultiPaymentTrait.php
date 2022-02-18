@@ -80,4 +80,5 @@ trait MultiPaymentTrait
     {
         return Config::get("gateways.$gatewayName.customer_column");
     }
+
 }
