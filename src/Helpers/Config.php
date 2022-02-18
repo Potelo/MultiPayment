@@ -8,8 +8,9 @@ class Config
 
     public static function setup()
     {
-        if (!empty($_ENV['MULTIPAYMENT_CONFIG_PATH'])) {
-            self::$configPath = $_ENV['MULTIPAYMENT_CONFIG_PATH'];
+        require_once(__DIR__ . '/../config/getenv.php');
+        if (env('MULTIPAYMENT_CONFIG_PATH')) {
+            self::$configPath = env('MULTIPAYMENT_CONFIG_PATH');
         }
     }
 
@@ -24,6 +25,7 @@ class Config
         if (class_exists('\Illuminate\Config\Repository')) {
             return config('multi-payment.' . $key);
         }
+
         $configs = self::getConfig();
         $path = explode('.', $key);
         $value = $configs;
