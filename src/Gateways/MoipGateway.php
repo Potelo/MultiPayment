@@ -264,13 +264,10 @@ class MoipGateway implements Gateway
         }
         return $holder;
     }
-    
+
+
     /**
-     * Return an invoice based on the invoice ID
-     * @param string $invoiceId
-     * 
-     * @return Invoice
-     * @throws GatewayException
+     * @inheritDoc
      */
     public function getInvoice(string $invoiceId): Invoice
     {
@@ -278,45 +275,55 @@ class MoipGateway implements Gateway
 
         try {
             $moipInvoice = $this->moip->payments()->get($invoiceId);
+        } catch (ValidationException $e) {
+            throw new GatewayException('Error getting invoice: ' . $e->getMessage(), $e->getErrors());
         } catch (\Exception $e) {
-            throw new GatewayException('Invoice not found');
+            throw new GatewayException('Error getting invoice: ' . $e->getMessage());
         }
 
         $invoice = new Invoice();
         $invoice->id = $moipInvoice->getId();
-        $invoice->status = $moipInvoice->getStatus();
+        $invoice->status = $this->moipStatusToMultiPayment($moipInvoice->getStatus());
         $invoice->amount = $moipInvoice->getAmount()->total;
         $moipOrder = $this->moip->orders()->getByPath($moipInvoice->getLinks()->getLink('order'));
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
-        $invoice->paymentMethod = ($moipInvoice->getFundingInstrument()->method == 'BOLETO') ? 'bank_slip':'credit_card';
-        $invoice->url = $moipInvoice->getLinks()->getSelf();
+        $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref;
         $invoice->gateway = 'moip';
         $invoice->original = $moipInvoice;
         $invoice->createdAt = new Carbon($moipInvoice->getCreatedAt());
 
+        $moipCustomer = $moipOrder->getCustomer();
         $invoice->customer = new Customer();
-        $invoice->customer->id = $moipOrder->getCustomer()->getId();
-        $invoice->customer->name = $moipOrder->getCustomer()->getFullname();
-        $invoice->customer->taxDocument = $moipOrder->getCustomer()->getTaxDocumentNumber();
-        
+        $invoice->customer->id = $moipCustomer->getId();
+        $invoice->customer->name = $moipCustomer->getFullname();
+        $invoice->customer->taxDocument = $moipCustomer->getTaxDocumentNumber();
+        $invoice->customer->birthDate = $moipCustomer->getBirthDate()->format('Y-m-d');
+        $invoice->customer->phoneArea = $moipCustomer->getPhoneAreaCode();
+        $invoice->customer->phoneNumber = $moipCustomer->getPhoneNumber();
+        $invoice->customer->phoneCountryCode = $moipCustomer->getPhoneCountryCode();
+
         $invoice->items = [];
         foreach($moipOrder->getItemIterator() as $item){
             $invoiceItem = new InvoiceItem();
-            $invoiceItem->description = $item->product; 
-            $invoiceItem->price = $item->price; 
-            $invoiceItem->quantity = $item->quantity; 
+            $invoiceItem->description = $item->product;
+            $invoiceItem->price = $item->price;
+            $invoiceItem->quantity = $item->quantity;
             $invoice->items[] = $invoiceItem;
         }
 
-        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+        if ($moipInvoice->getFundingInstrument()->method == Payment::METHOD_BOLETO) {
             $invoice->bankSlip = new BankSlip('moip');
+            $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
             $invoice->bankSlip->number = $moipInvoice->getLineCodeBoleto();
-            $invoice->bankSlip->url = $moipInvoice->getHrefBoleto();
-            $invoice->bankSlip->barcodeData = $moipInvoice->getHrefPrintBoleto();
+            $invoice->bankSlip->url = $invoice->url;
             $invoice->expirationDate = $moipInvoice->getFundingInstrument()->boleto->expirationDate;
-        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD){
+        } elseif ($moipInvoice->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
             $invoice->creditCard = new CreditCard('moip');
-            $invoice->creditCard->holder = $moipInvoice->getFundingInstrument()->creditCard->holder->fullname;
+            $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
+            $names = explode(' ', $moipInvoice->getFundingInstrument()->creditCard->holder->fullname, 2);
+            $invoice->creditCard->firstName = $names[0];
+            $invoice->creditCard->lastName = count($names) > 1 ? $names[1] : null;
+            $moipInvoice->getFundingInstrument()->creditCard->holder->fullname;
             $invoice->creditCard->brand = $moipInvoice->getFundingInstrument()->creditCard->brand;
             $invoice->creditCard->lastDigits = $moipInvoice->getFundingInstrument()->creditCard->last4;
             $invoice->creditCard->id = $moipInvoice->getFundingInstrument()->creditCard->id;
