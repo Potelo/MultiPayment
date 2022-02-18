@@ -180,22 +180,21 @@ abstract class Model
      *
      * @return string
      */
-    protected function getClassName(): string
+    protected static function getClassName(): string
     {
-        return substr(strrchr(get_class($this), '\\'), 1);
+        return substr(strrchr(get_called_class(), '\\'), 1);
     }
 
     /**
-     * @param string $id
-     * @param Gateway $gateway
-     * 
-     * @return Invoice
+     * @param  string  $id
+     * @param  Gateway  $gateway
+     *
+     * @return static
+     * @throws GatewayException
      */
-    public static function get(string $id, Gateway $gateway): Invoice
+    public static function get(string $id, Gateway $gateway): Model
     {
-        $class = substr(strrchr(get_called_class(), '\\'), 1);
-        $method = 'get';
-        $method = $method . $class;
+        $method = 'get' . self::getClassName();
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
