@@ -63,7 +63,8 @@ php artisan vendor:publish --provider="Potelo\MultiPayment\Providers\MultiPaymen
 ```  
 Verifique se o arquivo `multi-payment.php` foi criado no diretório `config/`.
 
-Agora configure as váriavei de ambiente no arquivo .env:
+Agora configure as variáveis de ambiente no arquivo .env:
+
 ```dotenv
 APP_ENV=local
 
