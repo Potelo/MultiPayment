@@ -157,6 +157,8 @@ class MoipGateway implements Gateway
     }
 
     /**
+     * Parse a MultiPayment Customer to a Moip Customer
+     *
      * @param  Customer  $customer
      *
      * @return \Moip\Resource\Customer
@@ -303,6 +305,7 @@ class MoipGateway implements Gateway
     }
 
     /**
+     * Fill a moip customer or holder with multipayment customer data
      * @param  Customer  $customer
      * @param  \Moip\Resource\Holder|\Moip\Resource\Customer  $holderOrCustomer
      *

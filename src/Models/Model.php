@@ -186,6 +186,8 @@ abstract class Model
     }
 
     /**
+     * Get the model instance by id in the gateway.
+     *
      * @param  string  $id
      * @param  Gateway  $gateway
      *

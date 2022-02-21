@@ -85,6 +85,8 @@ class MultiPayment
     }
 
     /**
+     * Return an InvoiceBuilder instance
+     *
      * @return InvoiceBuilder
      * @throws GatewayException
      */
@@ -94,6 +96,8 @@ class MultiPayment
     }
 
     /**
+     * Return a CustomerBuilder instance
+     *
      * @return CustomerBuilder
      * @throws GatewayException
      */

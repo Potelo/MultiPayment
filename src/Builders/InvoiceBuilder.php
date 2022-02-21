@@ -40,6 +40,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Set the invoice payment method
+     *
      * @param  string  $paymentMethod
      *
      * @return InvoiceBuilder
@@ -51,6 +53,8 @@ class InvoiceBuilder
     }
 
     /**
+     * set invoice expiration date
+     *
      * @param  string  $expirationDate Format: Y-m-d
      *
      * @return InvoiceBuilder
@@ -62,6 +66,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Set the invoice items
+     *
      * @param  InvoiceItem[]  $items
      *
      * @return InvoiceBuilder
@@ -73,6 +79,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add an item to the invoice
+     *
      * @param  string  $description
      * @param  int  $price
      * @param  int  $quantity
@@ -90,6 +98,7 @@ class InvoiceBuilder
     }
 
     /**
+     * Add a Customer instance to the invoice
      * @param  Customer  $customer
      *
      * @return $this
@@ -101,6 +110,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add the customer data to the invoice
+     *
      * @param  string|null  $name
      * @param  string|null  $email
      * @param  string|null  $taxDocument
@@ -133,6 +144,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add an Address instance to the Customer
+     *
      * @param  Address  $address
      *
      * @return $this
@@ -148,6 +161,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add the customer address
+     *
      * @param  string  $zipCode
      * @param  string  $street
      * @param  string  $number
@@ -186,6 +201,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add a CreditCard instance to the invoice.
+     *
      * @param  CreditCard  $creditCard
      *
      * @return $this
@@ -197,6 +214,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add id of an existing credit card.
+     *
      * @param $id
      *
      * @return $this
@@ -209,6 +228,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Add a credit card token.
+     *
      * @param $token
      *
      * @return $this
@@ -221,14 +242,16 @@ class InvoiceBuilder
     }
 
     /**
+     * Add credit card data to create a new credit card on gateway.
+     *
      * @param  string  $number
      * @param  string  $month
      * @param  string  $year
      * @param  string  $cvv
      * @param  string  $firstName
      * @param  string  $lastName
-     * @param  string  $description
      * @param  Customer|mixed|null  $customer
+     * @param  string  $description
      *
      * @return $this
      */
@@ -239,8 +262,8 @@ class InvoiceBuilder
         string $cvv,
         string $firstName,
         string $lastName,
-        string $description = 'Cartão de crédito',
-        $customer = null
+        $customer = null,
+        string $description = 'Cartão de crédito'
     ): InvoiceBuilder
     {
         $this->invoice->creditCard = new CreditCard();
@@ -261,6 +284,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Create a new invoice in the gateway and return the MultiPayment Invoice.
+     *
      * @return Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
@@ -280,6 +305,8 @@ class InvoiceBuilder
     }
 
     /**
+     * Returns the invoice instance.
+     *
      * @return Invoice
      */
     public function get(): Invoice
