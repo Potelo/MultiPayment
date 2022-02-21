@@ -37,11 +37,6 @@ class Invoice extends Model
     public ?int $amount;
 
     /**
-     * @var string|null
-     */
-    public ?string $orderId;
-
-    /**
      * @var Customer|null
      */
     public ?Customer $customer;
@@ -165,31 +160,32 @@ class Invoice extends Model
         if (in_array('amount', $attributes) && in_array('items', $attributes) && empty($this->amount) && empty($this->items)) {
             throw ModelAttributeValidationException::required($model, 'amount or items');
         }
-        if (in_array('paymentMethod', $attributes) && empty($this->paymentMethod)) {
-            throw ModelAttributeValidationException::required($model, 'paymentMethod');
-        }
-        if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            if (empty($this->creditCard)) {
-                throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
-            }
+
+        if (
+            in_array('paymentMethod', $attributes) &&
+            !empty($this->paymentMethod) &&
+            $this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD &&
+            empty($this->creditCard)
+        ) {
+            throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
         }
 
         if (in_array('paymentMethod', $attributes) &&
-            $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-            if (empty($this->customer->address)) {
-                throw new ModelAttributeValidationException('The `address` attribute is required for bank_slip payment method.');
-            }
+            !empty($this->paymentMethod) &&
+            (
+                $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
+                $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX
+            ) &&
+            empty($this->expirationDate)
+        ) {
+            throw new ModelAttributeValidationException('The `expirationDate` attribute is required for bank_slip or pix payment method.');
         }
 
         if (in_array('paymentMethod', $attributes) &&
+            !empty($this->paymentMethod) &&
             $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP &&
-            $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
-            if (empty($this->expirationDate)) {
-                throw new ModelAttributeValidationException('The `expirationDate` attribute is required for bank_slip payment method.');
-            }
-        }
-
-        if (in_array('paymentMethod', $attributes) && $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP && empty($this->customer->address)) {
+            empty($this->customer->address)
+        ) {
             throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
         }
     }

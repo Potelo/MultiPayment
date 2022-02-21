@@ -70,22 +70,23 @@ class IuguGateway implements Gateway
                 $iuguInvoiceData['payer']['address']['number'] = 'S/N';
             }
         }
-        $iuguInvoice = null;
-        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP || $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
-            $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
-            try {
-                $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\Exception $e) {
-                throw new GatewayException($e->getMessage());
-            }
-            if ($iuguInvoice->errors) {
-                throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
-            }
-        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+
+        try {
+            $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
+        if ($iuguInvoice->errors) {
+            throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
+        }
+
+        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
+
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
+
             try {
                 $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
             } catch (\Exception $e) {
@@ -94,28 +95,27 @@ class IuguGateway implements Gateway
             if ($iuguCharge->errors) {
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
             }
+
             $iuguInvoice = $iuguCharge->invoice();
         }
-        if (empty($iuguInvoice)) {
-            throw new GatewayException('Error creating invoice');
-        }
+
         $invoice->id = $iuguInvoice->id;
         $invoice->gateway = 'iugu';
         $invoice->status = $this->iuguStatusToMultiPayment($iuguInvoice->status);
         $invoice->amount = $iuguInvoice->total_cents;
-        $invoice->orderId = $iuguInvoice->order_id;
 
-        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
             $invoice->bankSlip = new BankSlip();
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
             $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
-        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
+        } elseif (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
             $invoice->pix = new Pix();
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
+
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguInvoice;
@@ -131,19 +131,22 @@ class IuguGateway implements Gateway
         $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArray());
 
         if (!empty($customer->address)) {
-            $iuguCustomerData = array_merge($iuguCustomerData, $customer->address->toArray());
+            $iuguCustomerData = array_merge($iuguCustomerData, $this->multiPaymentToIuguData($customer->address->toArray()));
             if (empty($customer->address->number)) {
                 $iuguCustomerData['number'] = 'S/N';
             }
         }
+
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
         }
+
         if ($iuguCustomer->errors) {
             throw new GatewayException('Error creating customer', $iuguCustomer->errors);
         }
+
         $customer->id = $iuguCustomer->id;
         $customer->gateway = 'iugu';
         $customer->createdAt = new Carbon($iuguCustomer->created_at);
@@ -190,6 +193,7 @@ class IuguGateway implements Gateway
             'email' => 'email',
             'tax_document' => 'cpf_cnpj',
             'street' => 'street',
+            'district' => 'district',
             'number' => 'number',
             'complement' => 'complement',
             'city' => 'city',
@@ -280,7 +284,6 @@ class IuguGateway implements Gateway
         $invoice->id = $iuguInvoice->id;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
         $invoice->amount = $iuguInvoice->total_cents;
-        $invoice->orderId = $iuguInvoice->order_id;
 
         $invoice->customer = new Customer();
         $invoice->customer->id = $iuguInvoice->customer_id;

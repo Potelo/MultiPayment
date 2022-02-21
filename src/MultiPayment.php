@@ -77,7 +77,7 @@ class MultiPayment
         if (empty($invoice->customer->id)) {
             $invoice->customer->save();
         }
-        if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
+        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
             $invoice->creditCard->customer = $invoice->customer;
         }
         $invoice->save();

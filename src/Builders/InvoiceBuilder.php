@@ -221,39 +221,36 @@ class InvoiceBuilder
     }
 
     /**
-     * @param  string  $description
      * @param  string  $number
-     * @param  string  $brand
      * @param  string  $month
      * @param  string  $year
      * @param  string  $cvv
      * @param  string  $firstName
      * @param  string  $lastName
+     * @param  string  $description
      * @param  Customer|mixed|null  $customer
      *
      * @return $this
      */
     public function addCreditCard(
-        string $description,
         string $number,
-        string $brand,
         string $month,
         string $year,
         string $cvv,
         string $firstName,
         string $lastName,
+        string $description = 'Cartão de crédito',
         $customer = null
     ): InvoiceBuilder
     {
         $this->invoice->creditCard = new CreditCard();
-        $this->invoice->creditCard->description = $description;
         $this->invoice->creditCard->number = $number;
-        $this->invoice->creditCard->brand = $brand;
         $this->invoice->creditCard->month = $month;
         $this->invoice->creditCard->year = $year;
         $this->invoice->creditCard->cvv = $cvv;
         $this->invoice->creditCard->firstName = $firstName;
         $this->invoice->creditCard->lastName = $lastName;
+        $this->invoice->creditCard->description = $description;
         if ($customer instanceof Customer) {
             $this->invoice->creditCard->customer = $customer;
         } else {

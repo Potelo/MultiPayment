@@ -10,7 +10,7 @@ interface Gateway
 {
 
     /**
-     * Create a new customer and return the customer id
+     * Create a new customer and return the customer
      *
      * @param  Customer  $customer
      *
