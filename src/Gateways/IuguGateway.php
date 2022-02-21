@@ -24,14 +24,15 @@ class IuguGateway implements Gateway
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
-    private const STATUS_DRAFT = 'draft';
     private const STATUS_CANCELED = 'canceled';
+    private const STATUS_IN_ANALYSIS = 'in_analysis';
+    private const STATUS_DRAFT = 'draft';
     private const STATUS_PARTIALLY_PAID = 'partially_paid';
     private const STATUS_REFUNDED = 'refunded';
     private const STATUS_EXPIRED = 'expired';
     private const STATUS_IN_PROTEST = 'in_protest';
     private const STATUS_CHARGEBACK = 'chargeback';
-    private const STATUS_IN_ANALYSIS = 'in_analysis';
+    private const STATUS_AUTHORIZED = 'authorized';
 
     /**
      * Set iugu api key.
@@ -161,21 +162,28 @@ class IuguGateway implements Gateway
      * @param $iuguStatus
      *
      * @return string
+     * @throws GatewayException
      */
     private static function iuguStatusToMultiPayment($iuguStatus): string
     {
         switch ($iuguStatus) {
+            case self::STATUS_PENDING:
+            case self::STATUS_IN_ANALYSIS:
+            case self::STATUS_DRAFT:
+            case self::STATUS_PARTIALLY_PAID:
+                return Invoice::STATUS_PENDING;
             case self::STATUS_PAID:
+            case self::STATUS_AUTHORIZED:
+            case self::STATUS_IN_PROTEST:
                 return Invoice::STATUS_PAID;
             case self::STATUS_CANCELED:
-                return Invoice::STATUS_CANCELLED;
+            case self::STATUS_EXPIRED:
+                return Invoice::STATUS_CANCELED;
             case self::STATUS_REFUNDED:
+            case self::STATUS_CHARGEBACK:
                 return Invoice::STATUS_REFUNDED;
-//            case self::STATUS_EXPIRED:
-//            case self::STATUS_IN_PROTEST:
-//            case self::STATUS_CHARGEBACK:
             default:
-                return Invoice::STATUS_PENDING;
+                throw new GatewayException('Unexpected Iugu status: ' . $iuguStatus);
         }
     }
 
@@ -267,10 +275,10 @@ class IuguGateway implements Gateway
     /**
      * @inheritDoc
      */
-    public function getInvoice(string $invoiceId): Invoice
+    public function getInvoice(string $id): Invoice
     {
         try {
-            $iuguInvoice = \Iugu_Invoice::fetch($invoiceId);
+            $iuguInvoice = \Iugu_Invoice::fetch($id);
         } catch (IuguObjectNotFound $e){
             throw new GatewayException('Invoice not found');
         } catch (\Exception $e) {
@@ -280,7 +288,7 @@ class IuguGateway implements Gateway
             throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
         }
 
-        $invoice = new Invoice(get_class($this));
+        $invoice = new Invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
         $invoice->amount = $iuguInvoice->total_cents;

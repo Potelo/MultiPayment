@@ -63,6 +63,21 @@ php artisan vendor:publish --provider="Potelo\MultiPayment\Providers\MultiPaymen
 ```  
 Verifique se o arquivo `multi-payment.php` foi criado no diretório `config/`.
 
+Agora configure as váriavei de ambiente no arquivo .env:
+```dotenv
+APP_ENV=local
+
+MULTIPAYMENT_DEFAULT=iugu
+
+#iugu  
+IUGU_ID=
+IUGU_APIKEY=
+
+#moip
+MOIP_APITOKEN=
+MOIP_APIKEY=  
+```  
+
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
 
 ```php  
@@ -202,7 +217,7 @@ $payment->setGateway('moip')->charge($options);
 
 #### getInvoice
 ```php
-$invoiceId = 'PAY-312ASDHGZXSGRTET';
+$invoiceId = 'ORD-312ASDHGZXSGRTET';
 $payment = new \Potelo\MultiPayment\MultiPayment('moip');
 $foundInvoice = $payment->getInvoice($invoiceId);
 ```

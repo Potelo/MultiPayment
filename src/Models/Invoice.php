@@ -12,10 +12,8 @@ class Invoice extends Model
 {
     public const STATUS_PENDING = 'pending';
     public const STATUS_PAID = 'paid';
-    public const STATUS_CANCELLED = 'cancelled';
+    public const STATUS_CANCELED = 'canceled';
     public const STATUS_REFUNDED = 'refunded';
-    public const STATUS_FAILED = 'failed';
-    public const STATUS_AUTHORIZED = 'authorized';
 
     public const PAYMENT_METHOD_CREDIT_CARD = 'credit_card';
     public const PAYMENT_METHOD_BANK_SLIP = 'bank_slip';
