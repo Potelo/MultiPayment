@@ -10,7 +10,7 @@ interface Gateway
 {
 
     /**
-     * Create a new customer and return the customer id
+     * Create a new customer and return the customer
      *
      * @param  Customer  $customer
      *
@@ -32,11 +32,11 @@ interface Gateway
     /**
      * Return one invoice based on the invoice ID
      * 
-     * @param string $invoiceId
+     * @param string $id
      * 
      * @return Invoice
      * @throws GatewayException
      */
-    public function getInvoice(string $invoiceId): Invoice;
+    public function getInvoice(string $id): Invoice;
     
 }

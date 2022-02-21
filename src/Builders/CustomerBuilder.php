@@ -29,6 +29,8 @@ class CustomerBuilder
     }
 
     /**
+     * Set the customer email
+     *
      * @param  string  $email
      *
      * @return $this
@@ -40,6 +42,8 @@ class CustomerBuilder
     }
 
     /**
+     * Set the customer name
+     *
      * @param  string  $name
      *
      * @return $this
@@ -51,6 +55,8 @@ class CustomerBuilder
     }
 
     /**
+     * Set the customer phone
+     *
      * @param  string  $phoneNumber
      * @param  string  $phoneArea
      * @param  string  $phoneCountryCode
@@ -66,6 +72,8 @@ class CustomerBuilder
     }
 
     /**
+     * Set the customer tax document
+     *
      * @param  string  $taxDocument
      *
      * @return $this
@@ -77,6 +85,8 @@ class CustomerBuilder
     }
 
     /**
+     * Set the customer birthdate
+     *
      * @param  string  $birthDate Format: Y-m-d
      *
      * @return $this
@@ -88,6 +98,8 @@ class CustomerBuilder
     }
 
     /**
+     * Set an Address instance
+     *
      * @param  Address  $address
      *
      * @return $this
@@ -99,6 +111,8 @@ class CustomerBuilder
     }
 
     /**
+     * Add a new address to the customer
+     *
      * @param  string  $zipCode
      * @param  string  $street
      * @param  string  $number
@@ -133,6 +147,8 @@ class CustomerBuilder
     }
 
     /**
+     * Create a new customer on gateway and return the MultiPayment customer
+     *
      * @return Customer
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
@@ -145,6 +161,8 @@ class CustomerBuilder
     }
 
     /**
+     * Return Customer instance
+     *
      * @return Customer
      */
     public function get(): Customer

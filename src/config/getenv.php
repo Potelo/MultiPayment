@@ -1,6 +1,8 @@
 <?php
 
 /**
+ * get the value of an environment variable
+ *
  * @param $variable
  * @param $default
  *

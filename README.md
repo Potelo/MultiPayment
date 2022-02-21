@@ -63,6 +63,22 @@ php artisan vendor:publish --provider="Potelo\MultiPayment\Providers\MultiPaymen
 ```  
 Verifique se o arquivo `multi-payment.php` foi criado no diretório `config/`.
 
+Agora configure as variáveis de ambiente no arquivo .env:
+
+```dotenv
+APP_ENV=local
+
+MULTIPAYMENT_DEFAULT=iugu
+
+#iugu  
+IUGU_ID=
+IUGU_APIKEY=
+
+#moip
+MOIP_APITOKEN=
+MOIP_APIKEY=  
+```  
+
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
 
 ```php  
@@ -164,12 +180,6 @@ $options = [
 
 $payment = new \Potelo\MultiPayment\MultiPayment();
 $payment->setGateway('moip')->charge($options);
-```  
-#### getInvoice
-```php
-$invoiceId = 'PAY-312ASDHGZXSGRTET';
-$payment = new \Potelo\MultiPayment\MultiPayment('moip');
-$foundInvoice = $payment->getInvoice($invoiceId);
 ```
 
 | atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                                  |
@@ -194,7 +204,7 @@ $foundInvoice = $payment->getInvoice($invoiceId);
 | `items.description`           | **obrigatório**                                                     | string                         | descrição do item                         | `'Produto 1'`                            |
 | `items.quantity`              | **obrigatório**                                                     | int                            | quantidade do item                        | `1`                                      |
 | `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                                  |
-| `payment_method`              | **obrigatório**                                                     | `'credit_card'`,`'bank_slip'`  | método de pagamento                       | `'credit_card'`                          |
+| `payment_method`              |                                                                     | `'credit_card'`,`'bank_slip'`  | método de pagamento                       | `'credit_card'`                          |
 | `expiration_date`             | **obrigatório** caso `payment_method` seja `'bank_slip'` ou `'pix'` | string no formato `yyyy-mm-dd` | data de expiração da fatura               | `2021-10-10`                             |
 | `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'`          | array                          | array com os dados do cartão de crédito   | `['number' => '1234567890123456',...`    |
 | `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abcdefghijklmnopqrstuvwxyz'`           |
@@ -206,6 +216,12 @@ $foundInvoice = $payment->getInvoice($invoiceId);
 | `credit_card.last_name`       |                                                                     | string                         | último nome no cartão de crédito          | `'Maria'`                                |
 | `bank_slip`                   |                                                                     | array                          | array com os dados do boleto              | `['expiration_date' => '2022-12-31',...` |
 
+#### getInvoice
+```php
+$invoiceId = 'ORD-312ASDHGZXSGRTET';
+$payment = new \Potelo\MultiPayment\MultiPayment('moip');
+$foundInvoice = $payment->getInvoice($invoiceId);
+```
 
 ### Models
 #### Customer

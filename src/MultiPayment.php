@@ -77,7 +77,7 @@ class MultiPayment
         if (empty($invoice->customer->id)) {
             $invoice->customer->save();
         }
-        if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
+        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
             $invoice->creditCard->customer = $invoice->customer;
         }
         $invoice->save();
@@ -85,6 +85,8 @@ class MultiPayment
     }
 
     /**
+     * Return an InvoiceBuilder instance
+     *
      * @return InvoiceBuilder
      * @throws GatewayException
      */
@@ -94,6 +96,8 @@ class MultiPayment
     }
 
     /**
+     * Return a CustomerBuilder instance
+     *
      * @return CustomerBuilder
      * @throws GatewayException
      */
@@ -105,13 +109,13 @@ class MultiPayment
     /**
      * Return an invoice based on the invoice ID
      *
-     * @param  string  $invoiceId
+     * @param  string id
      *
      * @return Invoice
      * @throws GatewayException
      */
-    public function getInvoice(string $invoiceId): Invoice
+    public function getInvoice(string $id): Invoice
     {
-        return Invoice::get($invoiceId, $this->gateway);
+        return Invoice::get($id, $this->gateway);
     }
 }

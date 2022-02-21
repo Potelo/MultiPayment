@@ -21,6 +21,12 @@ use Potelo\MultiPayment\Exceptions\GatewayException;
 class MoipGateway implements Gateway
 {
 
+    private const STATUS_CREATED = 'CREATED';
+    private const STATUS_WAITING = 'WAITING';
+    private const STATUS_PAID = 'PAID';
+    private const STATUS_NOT_PAID = 'NOT_PAID';
+    private const STATUS_REVERTED = 'REVERTED';
+
     /**
      * Moip instance.
      *
@@ -47,7 +53,7 @@ class MoipGateway implements Gateway
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
-        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
+        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
             throw new GatewayException('Moip gateway does not support pix payment method.');
         }
         $this->init();
@@ -56,67 +62,76 @@ class MoipGateway implements Gateway
         foreach ($invoice->items as $item) {
             $order->addItem($item->description, $item->quantity, "", $item->price);
         }
-        $customer = $this->moip->customers()->get($invoice->customer->id);
-        $order->setCustomer($customer)->create();
-        $holder = $this->createHolder($invoice->customer);
-        $payment = $order->payments();
 
-        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            if (!empty($invoice->creditCard->token)) {
-                $payment->setCreditCardHash($invoice->creditCard->token, $holder);
-            } else {
-                $payment->setCreditCard(
-                    $invoice->creditCard->month,
-                    substr($invoice->creditCard->year, -2),
-                    $invoice->creditCard->number,
-                    $invoice->creditCard->cvv,
-                    $holder
-                )
-                    ->setInstallmentCount(1)
-                    ->setStatementDescriptor('Nova cobrança');
-            }
-        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-            $logoUri = '';
-            $expirationDate = !empty($invoice->expirationDate)
-                ? $invoice->expirationDate->format('Y-m-d')
-                : Carbon::now()->format('Y-m-d');
-            $instructionLines = ['', '', ''];
-            $payment->setBoleto($expirationDate, $logoUri, $instructionLines);
-        }
+        $customer = $this->multipaymentCustomerToMoipCustomer($invoice->customer);
+        $order->setCustomer($customer);
+
         try {
-            $payment->execute();
+            $order->create();
         } catch (ValidationException $exception) {
-            throw new GatewayException('Error creating invoice: ' . $exception->getMessage(), $exception->getErrors());
+            throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage(), $exception->getErrors());
         } catch (\Exception $exception) {
-            throw new GatewayException('Error creating invoice: ' . $exception->getMessage());
+            throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage());
         }
 
-        if (Config::get('environment') != 'production') {
-            $payment->authorize();
-        }
-
-        $invoice->id = $payment->getId();
+        $invoice->id = $order->getId();
         $invoice->gateway = 'moip';
+        $invoice->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $order->getCreatedAt()->format('Y-m-d H:i:s'));
+        $invoice->url = $order->getLinks()->getLink('checkout')->payCheckout->redirectHref;
+        $invoice->original = $order;
 
-        $invoice->status = $this->moipStatusToMultiPayment($payment->getStatus());
-        $invoice->amount = $payment->getAmount()->total;
-        $invoice->orderId = $payment->getOrder()->getId();
+        if (!empty($invoice->paymentMethod)) {
 
-        if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-            $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
-            $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
-            $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
-        } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-            $invoice->bankSlip = new BankSlip();
-            $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
-            $invoice->bankSlip->number = $payment->getLineCodeBoleto();
+            $payment = $order->payments();
+            $holder = $this->createHolder($invoice->customer);
+
+            if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+                if (!empty($invoice->creditCard->token)) {
+                    $payment->setCreditCardHash($invoice->creditCard->token, $holder);
+                } else {
+                    $payment->setCreditCard(
+                        $invoice->creditCard->month,
+                        substr($invoice->creditCard->year, -2),
+                        $invoice->creditCard->number,
+                        $invoice->creditCard->cvv,
+                        $holder
+                    )
+                        ->setInstallmentCount(1)
+                        ->setStatementDescriptor('Nova cobrança');
+                }
+            } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+                $logoUri = '';
+                $expirationDate = !empty($invoice->expirationDate)
+                    ? $invoice->expirationDate->format('Y-m-d')
+                    : Carbon::now()->format('Y-m-d');
+                $instructionLines = ['', '', ''];
+                $payment->setBoleto($expirationDate, $logoUri, $instructionLines);
+            }
+
+            try {
+                $payment->execute();
+            } catch (ValidationException $exception) {
+                throw new GatewayException('Error charging invoice: ' . $exception->getMessage(), $exception->getErrors());
+            } catch (\Exception $exception) {
+                throw new GatewayException('Error charging invoice: ' . $exception->getMessage());
+            }
+
+            if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+                $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
+                $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
+                $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
+            } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
+                $invoice->bankSlip = new BankSlip();
+                $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
+                $invoice->bankSlip->number = $payment->getLineCodeBoleto();
+            }
+
+            $order = $payment->getOrder();
         }
 
-        $invoice->url = $payment->getLinks()->getSelf();
-        $invoice->fee = $payment->getOrder()->getAmountFees() ?? null;
-        $invoice->original = $payment;
-        $invoice->createdAt = Carbon::createFromFormat('Y-m-d H:i:s', $payment->getCreatedAt()->format('Y-m-d H:i:s'));
-
+        $invoice->status = $this->moipStatusToMultiPayment($order->getStatus());
+        $invoice->amount = $order->getAmountTotal();
+        $invoice->fee = $order->getAmountFees();
         return $invoice;
     }
 
@@ -125,47 +140,9 @@ class MoipGateway implements Gateway
      */
     public function createCustomer(Customer $customer): Customer
     {
-        $this->init();
-        $customerData = $customer->toArray();
-        $moipCustomer = $this->moip->customers()->setOwnId(uniqid())
-            ->setFullname('')
-            ->setBirthDate('')
-            ->setTaxDocument('');
-        if (!empty($customerData['email'])) {
-            $moipCustomer->setEmail($customerData['email']);
-        }
-        if (!empty($customerData['name'])) {
-            $moipCustomer->setFullname($customerData['name']);
-        }
-        if (!empty($customerData['taxDocument'])) {
-            $type = strlen($customer->taxDocument) == 11 ? 'CPF' : 'CNPJ';
-            $moipCustomer->setTaxDocument($customerData['taxDocument'], $type);
-        }
-        if (array_key_exists('phone_area', $customerData) &&
-            array_key_exists('phone_number', $customerData)
-        ) {
-            $moipCustomer->setPhone(
-                $customerData['phone_area'],
-                $customerData['phone_number'],
-                $customerData['phone_country_code'] ?? 55
-            );
-        }
-        if (array_key_exists('birthDate', $customerData)) {
-            $moipCustomer->setBirthDate($customerData['birthDate']);
-        }
-        if (array_key_exists('address', $customerData)) {
-            $moipCustomer->addAddress(
-                !empty($customerData['address']['type']) ? $customerData['address']['type'] : null,
-                !empty($customerData['address']['street']) ? $customerData['address']['street'] : null,
-                !empty($customerData['address']['number']) ? $customerData['address']['number'] : 'S/N',
-                !empty($customerData['address']['district']) ? $customerData['address']['district'] : null,
-                !empty($customerData['address']['city']) ? $customerData['address']['city'] : null,
-                !empty($customerData['address']['state']) ? $customerData['address']['state'] : null,
-                !empty($customerData['address']['zip_code']) ? $customerData['address']['zip_code'] : null,
-                !empty($customerData['address']['complement']) ? $customerData['address']['complement'] : null,
-            );
-        }
+        $moipCustomer = $this->multipaymentCustomerToMoipCustomer($customer);
         try {
+            $this->init();
             $moipCustomer = $moipCustomer->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
@@ -177,6 +154,29 @@ class MoipGateway implements Gateway
         $customer->original = $customer;
         $customer->gateway = 'moip';
         return $customer;
+    }
+
+    /**
+     * Parse a MultiPayment Customer to a Moip Customer
+     *
+     * @param  Customer  $customer
+     *
+     * @return \Moip\Resource\Customer
+     * @throws GatewayException
+     */
+    private function multipaymentCustomerToMoipCustomer(Customer $customer): \Moip\Resource\Customer
+    {
+        $this->init();
+        if (!empty($customer->id)) {
+            try {
+                $moipCustomer = $this->moip->customers()->get($customer->id);
+            } catch (\Exception $exception) {
+                throw new GatewayException('Error getting customer: ' . $exception->getMessage());
+            }
+        } else {
+            $moipCustomer = $this->moip->customers()->setOwnId(uniqid());
+        }
+        return $this->fillMoipCustomerHolder($customer, $moipCustomer);
     }
 
     /**
@@ -197,23 +197,22 @@ class MoipGateway implements Gateway
      * @param $moipStatus
      *
      * @return string
+     * @throws GatewayException
      */
     private static function moipStatusToMultiPayment($moipStatus): string
     {
         switch ($moipStatus) {
-            case Payment::STATUS_AUTHORIZED:
-                return Invoice::STATUS_AUTHORIZED;
-            case Payment::STATUS_CANCELLED:
-                return Invoice::STATUS_CANCELLED;
-            case Payment::STATUS_REFUNDED:
-                return Invoice::STATUS_REFUNDED;
-//            case Payment::STATUS_WAITING:
-//            case Payment::STATUS_SETTLED:
-//            case Payment::STATUS_IN_ANALYSIS:
-//            case Payment::STATUS_CREATED:
-//            case Payment::STATUS_PRE_AUTHORIZED:
-            default:
+            case self::STATUS_CREATED:
+            case self::STATUS_WAITING:
                 return Invoice::STATUS_PENDING;
+            case self::STATUS_PAID:
+                return Invoice::STATUS_PAID;
+            case self::STATUS_NOT_PAID:
+                return Invoice::STATUS_CANCELED;
+            case self::STATUS_REVERTED:
+                return Invoice::STATUS_REFUNDED;
+            default:
+                throw new GatewayException('Invalid Moip status: ' . $moipStatus);
         }
     }
 
@@ -227,54 +226,19 @@ class MoipGateway implements Gateway
     private function createHolder(Customer $customer): Holder
     {
         $holder = $this->moip->holders()
-            ->setFullname('')
-            ->setBirthDate('')
-            ->setTaxDocument('')
             ->setPhone('', '', '');
-
-        if (!empty($customer->name)) {
-            $holder->setFullname($customer->name);
-        }
-        if (!empty($customer->birthDate)) {
-            $holder->setBirthDate($customer->birthDate);
-        }
-        if (!empty($customer->taxDocument)) {
-            $type = strlen($customer->taxDocument) == 11 ? 'CPF' : 'CNPJ';
-            $holder->setTaxDocument($customer->taxDocument, $type);
-        }
-        if (!empty($customer->phoneArea) && !empty($customer->phoneNumber)) {
-            $holder->setPhone(
-                $customer->phoneArea,
-                $customer->phoneNumber,
-                $customer->phoneCountryCode ?? 55
-            );
-        }
-        if (!empty($customer->address)) {
-            $address = $customer->address;
-            $holder->setAddress(
-                !empty($address->type) ? $address->type : Address::TYPE_BILLING,
-                !empty($address->street) ? $address->street : null,
-                !empty($address->number) ? $address->number : null,
-                !empty($address->district) ? $address->district : null,
-                !empty($address->city) ? $address->city : null,
-                !empty($address->state) ? $address->state : null,
-                !empty($address->zipCode) ? $address->zipCode : null,
-                !empty($address->complement) ? $address->complement : null,
-            );
-        }
-        return $holder;
+        return $this->fillMoipCustomerHolder($customer, $holder);
     }
-
 
     /**
      * @inheritDoc
      */
-    public function getInvoice(string $invoiceId): Invoice
+    public function getInvoice(string $id): Invoice
     {
         $this->init();
 
         try {
-            $moipInvoice = $this->moip->payments()->get($invoiceId);
+            $moipOrder = $this->moip->orders()->get($id);
         } catch (ValidationException $e) {
             throw new GatewayException('Error getting invoice: ' . $e->getMessage(), $e->getErrors());
         } catch (\Exception $e) {
@@ -282,53 +246,106 @@ class MoipGateway implements Gateway
         }
 
         $invoice = new Invoice();
-        $invoice->id = $moipInvoice->getId();
-        $invoice->status = $this->moipStatusToMultiPayment($moipInvoice->getStatus());
-        $invoice->amount = $moipInvoice->getAmount()->total;
-        $moipOrder = $this->moip->orders()->getByPath($moipInvoice->getLinks()->getLink('order'));
+        $invoice->id = $moipOrder->getId();
+        $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
+        $invoice->amount = $moipOrder->getAmountTotal();
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
-        $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref;
+        $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref ?? null;
         $invoice->gateway = 'moip';
-        $invoice->original = $moipInvoice;
-        $invoice->createdAt = new Carbon($moipInvoice->getCreatedAt());
+        $invoice->original = $moipOrder;
+        $invoice->createdAt = new Carbon($moipOrder->getCreatedAt());
 
         $moipCustomer = $moipOrder->getCustomer();
         $invoice->customer = new Customer();
-        $invoice->customer->id = $moipCustomer->getId();
-        $invoice->customer->name = $moipCustomer->getFullname();
-        $invoice->customer->taxDocument = $moipCustomer->getTaxDocumentNumber();
-        $invoice->customer->birthDate = $moipCustomer->getBirthDate()->format('Y-m-d');
-        $invoice->customer->phoneArea = $moipCustomer->getPhoneAreaCode();
-        $invoice->customer->phoneNumber = $moipCustomer->getPhoneNumber();
-        $invoice->customer->phoneCountryCode = $moipCustomer->getPhoneCountryCode();
+        $invoice->customer->id = $moipCustomer->getId() ?? null;
+        $invoice->customer->name = $moipCustomer->getFullname() ?? null;
+        $invoice->customer->taxDocument = $moipCustomer->getTaxDocumentNumber() ?? null;
+        $invoice->customer->birthDate = !is_null($moipCustomer->getBirthDate()) ? $moipCustomer->getBirthDate()->format('Y-m-d') : null;
+        $invoice->customer->phoneArea = $moipCustomer->getPhoneAreaCode() ?? null;
+        $invoice->customer->phoneNumber = $moipCustomer->getPhoneNumber() ?? null;
+        $invoice->customer->phoneCountryCode = $moipCustomer->getPhoneCountryCode() ?? null;
 
-        $invoice->items = [];
-        foreach($moipOrder->getItemIterator() as $item){
-            $invoiceItem = new InvoiceItem();
-            $invoiceItem->description = $item->product;
-            $invoiceItem->price = $item->price;
-            $invoiceItem->quantity = $item->quantity;
-            $invoice->items[] = $invoiceItem;
+        if (!empty($moipOrder->getItemIterator())) {
+            $invoice->items = [];
+            foreach($moipOrder->getItemIterator() as $item){
+                $invoiceItem = new InvoiceItem();
+                $invoiceItem->description = $item->product;
+                $invoiceItem->price = $item->price;
+                $invoiceItem->quantity = $item->quantity;
+                $invoice->items[] = $invoiceItem;
+            }
+
         }
-
-        if ($moipInvoice->getFundingInstrument()->method == Payment::METHOD_BOLETO) {
-            $invoice->bankSlip = new BankSlip('moip');
-            $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
-            $invoice->bankSlip->number = $moipInvoice->getLineCodeBoleto();
-            $invoice->bankSlip->url = $invoice->url;
-            $invoice->expirationDate = $moipInvoice->getFundingInstrument()->boleto->expirationDate;
-        } elseif ($moipInvoice->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
-            $invoice->creditCard = new CreditCard('moip');
-            $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
-            $names = explode(' ', $moipInvoice->getFundingInstrument()->creditCard->holder->fullname, 2);
-            $invoice->creditCard->firstName = $names[0];
-            $invoice->creditCard->lastName = count($names) > 1 ? $names[1] : null;
-            $moipInvoice->getFundingInstrument()->creditCard->holder->fullname;
-            $invoice->creditCard->brand = $moipInvoice->getFundingInstrument()->creditCard->brand;
-            $invoice->creditCard->lastDigits = $moipInvoice->getFundingInstrument()->creditCard->last4;
-            $invoice->creditCard->id = $moipInvoice->getFundingInstrument()->creditCard->id;
+        $paymentsIterator = $moipOrder->getPaymentIterator();
+        if ($paymentsIterator->count() > 0) {
+            $paymentsIterator->seek($paymentsIterator->count() - 1);
+            $moipLastPayment = $paymentsIterator->current();
+            if ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_BOLETO) {
+                $invoice->bankSlip = new BankSlip();
+                $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
+                $invoice->bankSlip->number = $moipLastPayment->getLineCodeBoleto();
+                $invoice->bankSlip->url = $invoice->url;
+                $invoice->expirationDate = !empty($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
+                    ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
+                    : null;
+            } elseif ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
+                $invoice->creditCard = new CreditCard();
+                $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
+                if (!empty($moipLastPayment->getFundingInstrument()->creditCard->holder->fullname)) {
+                    $names = explode(' ', $moipLastPayment->getFundingInstrument()->creditCard->holder->fullname, 2);
+                    $invoice->creditCard->firstName = $names[0];
+                    $invoice->creditCard->lastName = count($names) > 1 ? $names[1] : null;
+                }
+                $invoice->creditCard->brand = $moipLastPayment->getFundingInstrument()->creditCard->brand;
+                $invoice->creditCard->lastDigits = $moipLastPayment->getFundingInstrument()->creditCard->last4;
+                $invoice->creditCard->id = $moipLastPayment->getFundingInstrument()->creditCard->id;
+            }
         }
-
         return $invoice;
+    }
+
+    /**
+     * Fill a moip customer or holder with multipayment customer data
+     * @param  Customer  $customer
+     * @param  \Moip\Resource\Holder|\Moip\Resource\Customer  $holderOrCustomer
+     *
+     * @return \Moip\Resource\Holder|\Moip\Resource\Customer
+     */
+    private function fillMoipCustomerHolder(Customer $customer, $holderOrCustomer)
+    {
+        if (!empty($customer->email) && $holderOrCustomer instanceof \Moip\Resource\Customer) {
+            $holderOrCustomer->setEmail($customer->email);
+        }
+        if (!empty($customer->name)) {
+            $holderOrCustomer->setFullname($customer->name);
+        }
+        if (!empty($customer->birthDate)) {
+            $holderOrCustomer->setBirthDate($customer->birthDate);
+        }
+        if (!empty($customer->taxDocument)) {
+            $type = strlen($customer->taxDocument) == 11 ? 'CPF' : 'CNPJ';
+            $holderOrCustomer->setTaxDocument($customer->taxDocument, $type);
+        }
+        if (!empty($customer->phoneArea) && !empty($customer->phoneNumber)) {
+            $holderOrCustomer->setPhone(
+                $customer->phoneArea,
+                $customer->phoneNumber,
+                $customer->phoneCountryCode ?? 55
+            );
+        }
+        if (!empty($customer->address)) {
+            $method = $holderOrCustomer instanceof \Moip\Resource\Customer ? 'addAddress' : 'setAddress';
+            $holderOrCustomer->$method(
+                !empty($customer->address->type) ? $customer->address->type : Address::TYPE_BILLING,
+                !empty($customer->address->street) ? $customer->address->street : null,
+                !empty($customer->address->number) ? $customer->address->number : 'S/N',
+                !empty($customer->address->district) ? $customer->address->district : null,
+                !empty($customer->address->city) ? $customer->address->city : null,
+                !empty($customer->address->state) ? $customer->address->state : null,
+                !empty($customer->address->zipCode) ? $customer->address->zipCode : null,
+                !empty($customer->address->complement) ? $customer->address->complement : null,
+            );
+        }
+        return $holderOrCustomer;
     }
 }
