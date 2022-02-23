@@ -72,20 +72,10 @@ class IuguGateway implements Gateway
             }
         }
 
-        try {
-            $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-        } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
-        }
-        if ($iuguInvoice->errors) {
-            throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
-        }
-
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
-
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
 
             try {
@@ -96,8 +86,19 @@ class IuguGateway implements Gateway
             if ($iuguCharge->errors) {
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
             }
-
             $iuguInvoice = $iuguCharge->invoice();
+        } else {
+            if (!empty($invoice->paymentMethod)) {
+                $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
+            }
+            try {
+                $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
+            } catch (\Exception $e) {
+                throw new GatewayException($e->getMessage());
+            }
+            if ($iuguInvoice->errors) {
+                throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
+            }
         }
 
         $invoice->id = $iuguInvoice->id;
