@@ -7,6 +7,11 @@
             "Potelo\\MultiPayment\\": "src/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Potelo\\MultiPayment\\Tests\\": "tests/"
+        }
+    },
     "authors": [
         {
             "name": "André Walker",
@@ -30,5 +35,9 @@
         "moip/moip-sdk-php": "^3.1",
         "rmccue/requests": "v1.7.0",
         "nesbot/carbon": "2.55.2"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5",
+        "vlucas/phpdotenv": "5.4.x-dev"
     }
 }

@@ -55,13 +55,16 @@ class InvoiceBuilder
     /**
      * set invoice expiration date
      *
-     * @param  string  $expirationDate Format: Y-m-d
+     * @param  Carbon|string  $expirationDate Carbon or string in Y-m-d format
      *
      * @return InvoiceBuilder
      */
-    public function setExpirationDate(string $expirationDate): InvoiceBuilder
+    public function setExpirationDate($expirationDate): InvoiceBuilder
     {
-        $this->invoice->expirationDate = Carbon::createFromFormat('Y-m-d', $expirationDate);
+        if (is_string($expirationDate)) {
+            $expirationDate = Carbon::parse($expirationDate);
+        }
+        $this->invoice->expirationDate = $expirationDate;
         return $this;
     }
 
@@ -115,6 +118,7 @@ class InvoiceBuilder
      * @param  string|null  $name
      * @param  string|null  $email
      * @param  string|null  $taxDocument
+     * @param  string|null  $birthDate
      * @param  string|null  $phoneArea
      * @param  string|null  $phoneNumber
      * @param  string|null  $phoneCountryCode
@@ -126,6 +130,7 @@ class InvoiceBuilder
         ?string $name = null,
         ?string $email = null,
         ?string $taxDocument = null,
+        ?string $birthDate = null,
         ?string $phoneArea = null,
         ?string $phoneNumber = null,
         ?string $phoneCountryCode = '55'
@@ -137,6 +142,7 @@ class InvoiceBuilder
         $this->invoice->customer->name = $name;
         $this->invoice->customer->email = $email;
         $this->invoice->customer->taxDocument = $taxDocument;
+        $this->invoice->customer->birthDate = $birthDate;
         $this->invoice->customer->phoneArea = $phoneArea;
         $this->invoice->customer->phoneNumber = $phoneNumber;
         $this->invoice->customer->phoneCountryCode = $phoneCountryCode;
