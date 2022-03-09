@@ -1,5 +1,6 @@
 
 - [Introdução](#introdução)
+- [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
 - [Utilizando](#utilizando)
@@ -17,6 +18,10 @@
 ## Introdução
 
 MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu e Moip.
+
+## Requisitos
+  - PHP 7.4+
+  - Laravel 8.0+
 
 ## Instalação
 
