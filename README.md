@@ -1,15 +1,14 @@
 
 - [Introdução](#introdução)
+- [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
-  - [PHP](#php)
-  - [Laravel](#laravel)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
     - [CustomerBuilder](#customerbuilder)
-    - [charge](#charge)
     - [getInvoice](#getinvoice)
+    - [charge](#charge)
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
@@ -20,6 +19,10 @@
 
 MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu e Moip.
 
+## Requisitos
+  - PHP 7.4+
+  - Laravel 8.0+
+
 ## Instalação
 
 Instale esse pacote pelo composer:
@@ -29,34 +32,6 @@ composer require potelo/multi-payment "dev-main"
 ```  
 
 ## Configuração
-
-### PHP
-
-Será necessário configurar variáveis de ambiente para o MultiPayment.
-Recomendado utilizar o pacote [phpdotenv](https://github.com/vlucas/phpdotenv)
-
-Configure as variáveis necessárias para cada gateway que deseja usar no seu `.env`:
-
-```dotenv
-APP_ENV=local
-
-MULTIPAYMENT_DEFAULT=iugu
-
-#iugu  
-IUGU_ID=
-IUGU_APIKEY=
-
-#moip
-MOIP_APITOKEN=
-MOIP_APIKEY=  
-```  
-Caso precise mudar as configurações padrão, ou adicionar outro gateway, pode fazer uma cópia do arquivo `src/config/multi-payment.php` para o seu projeto e adicionar o caminho para o novo arquivo no `.env`:
-```dotenv
-MULTIPAYMENT_CONFIG_PATH=path/to/config/multi-payment.php
-```
-
-### Laravel
-
 Após instalar o pacote rode o comando abaixo para publicar as configurações no projeto Laravel
 ```  
 php artisan vendor:publish --provider="Potelo\MultiPayment\Providers\MultiPaymentServiceProvider"  
@@ -81,11 +56,11 @@ MOIP_APIKEY=
 
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
 
-```php  
+```php
 use Potelo\MultiPayment\MultiPaymentTrait;  
   
-class User extends Authenticatable  
-{  
+class User extends Authenticatable
+{
     use MultiPaymentTrait;
 }
 ```
@@ -95,7 +70,7 @@ $usuario = User::find(1);
 $usuario->charge($options, 'moip', 10000);  
 ```
 Também é possível utilizar o Facade:
-```php  
+```php
 \Potelo\MultiPayment\Facades\MultiPayment::charge($options);  
 ```
 
@@ -134,6 +109,14 @@ $customer = $customerBuilder->setName('Nome')
     ->create();
 ```
 Confira `src/MultiPayment/Builders/CustomerBuilder.php` para saber quais métodos estão disponíveis.
+
+#### getInvoice
+```php
+$invoiceId = 'ORD-312ASDHGZXSGRTET';
+$payment = new \Potelo\MultiPayment\MultiPayment('moip');
+$foundInvoice = $payment->getInvoice($invoiceId);
+```
+
 #### charge
 
 ```php  
@@ -215,13 +198,6 @@ $payment->setGateway('moip')->charge($options);
 | `credit_card.first_name`      |                                                                     | string                         | primeiro nome no cartão de crédito        | `'João'`                                 |
 | `credit_card.last_name`       |                                                                     | string                         | último nome no cartão de crédito          | `'Maria'`                                |
 | `bank_slip`                   |                                                                     | array                          | array com os dados do boleto              | `['expiration_date' => '2022-12-31',...` |
-
-#### getInvoice
-```php
-$invoiceId = 'ORD-312ASDHGZXSGRTET';
-$payment = new \Potelo\MultiPayment\MultiPayment('moip');
-$foundInvoice = $payment->getInvoice($invoiceId);
-```
 
 ### Models
 #### Customer

@@ -7,8 +7,8 @@ use Carbon\Carbon;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
 use Moip\Resource\Payment;
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Address;
-use Potelo\MultiPayment\Helpers\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Moip\Exceptions\ValidationException;
 use Potelo\MultiPayment\Models\Customer;
@@ -41,8 +41,8 @@ class MoipGateway implements Gateway
     {
         $this->moip = new Moip(
             new BasicAuth(
-                Config::get('gateways.moip.api_token'),
-                Config::get('gateways.moip.api_key')
+                Config::get('multi-payment.gateways.moip.api_token'),
+                Config::get('multi-payment.gateways.moip.api_key')
             ),
             $this->getMoipEndpoint()
         );
@@ -186,7 +186,7 @@ class MoipGateway implements Gateway
      */
     private function getMoipEndpoint(): string
     {
-        return Config::get('environment') != 'production'
+        return Config::get('multi-payment.environment') != 'production'
             ? Moip::ENDPOINT_SANDBOX
             : Moip::ENDPOINT_PRODUCTION;
     }

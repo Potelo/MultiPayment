@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment;
 
-use Potelo\MultiPayment\Helpers\Config;
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
@@ -29,7 +29,7 @@ class MultiPayment
     public function __construct(?string $gateway = null)
     {
         if (empty($gateway)) {
-            $gateway = Config::get('default');
+            $gateway = Config::get('multi-payment.default');
         }
         $this->setGateway($gateway);
     }
@@ -44,10 +44,10 @@ class MultiPayment
      */
     public function setGateway(string $name): MultiPayment
     {
-        if (empty(Config::get('gateways.'.$name))) {
+        if (empty(Config::get('multi-payment.gateways.'.$name))) {
             throw GatewayException::notConfigured($name);
         }
-        $className = Config::get("gateways.$name.class");
+        $className = Config::get("multi-payment.gateways.$name.class");
         if (!class_exists($className)) {
             throw GatewayException::notFound($name);
         }

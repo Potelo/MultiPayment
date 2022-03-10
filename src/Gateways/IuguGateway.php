@@ -9,7 +9,7 @@ use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
 use IuguObjectNotFound;
 use Potelo\MultiPayment\Models\Pix;
-use Potelo\MultiPayment\Helpers\Config;
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
@@ -39,7 +39,7 @@ class IuguGateway implements Gateway
      */
     public function __construct()
     {
-        Iugu::setApiKey(Config::get('gateways.iugu.api_key'));
+        Iugu::setApiKey(Config::get('multi-payment.gateways.iugu.api_key'));
     }
 
     /**
@@ -236,9 +236,9 @@ class IuguGateway implements Gateway
         }
         if (empty($creditCard->token)) {
             $creditCard->token = Iugu_PaymentToken::create([
-                'account_id' => Config::get('gateways.iugu.id'),
+                'account_id' => Config::get('multi-payment.gateways.iugu.id'),
                 'method' => 'credit_card',
-                'test' => Config::get('environment') != 'production',
+                'test' => Config::get('multi-payment.environment') != 'production',
                 'data' => [
                     'number' => $creditCard->number,
                     'verification_value' => $creditCard->cvv,

@@ -3,7 +3,7 @@
 namespace Potelo\MultiPayment\Traits;
 
 use Potelo\MultiPayment\MultiPayment;
-use Potelo\MultiPayment\Helpers\Config;
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -23,7 +23,7 @@ trait MultiPaymentTrait
      */
     public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Invoice
     {
-        $gatewayName = $gatewayName ?? Config::get('default');
+        $gatewayName = $gatewayName ?? Config::get('multi-payment.default');
 
         $payment = new MultiPayment($gatewayName);
 
@@ -78,7 +78,7 @@ trait MultiPaymentTrait
      */
     private function getGatewayCustomerColumn($gatewayName)
     {
-        return Config::get("gateways.$gatewayName.customer_column");
+        return Config::get("multi-payment.gateways.$gatewayName.customer_column");
     }
 
 }
