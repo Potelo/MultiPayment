@@ -118,6 +118,7 @@ class IuguGateway implements Gateway
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
 
+        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguInvoice;
@@ -292,6 +293,7 @@ class IuguGateway implements Gateway
         $invoice = new Invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
+        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->amount = $iuguInvoice->total_cents;
 
         $invoice->customer = new Customer();

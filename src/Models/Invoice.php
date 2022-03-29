@@ -30,6 +30,11 @@ class Invoice extends Model
     public ?string $status;
 
     /**
+     * @var Carbon|null
+     */
+    public ?Carbon $paidAt;
+
+    /**
      * @var int|null
      */
     public ?int $amount;

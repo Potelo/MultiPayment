@@ -130,6 +130,7 @@ class MoipGateway implements Gateway
         }
 
         $invoice->status = $this->moipStatusToMultiPayment($order->getStatus());
+        $invoice->paidAt = $invoice->status == Invoice::STATUS_PAID ? new Carbon($order->getUpdatedAt()) : null;
         $invoice->amount = $order->getAmountTotal();
         $invoice->fee = $order->getAmountFees();
         return $invoice;
@@ -248,6 +249,7 @@ class MoipGateway implements Gateway
         $invoice = new Invoice();
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
+        $invoice->paidAt = $invoice->status == Invoice::STATUS_PAID ? new Carbon($moipOrder->getUpdatedAt()) : null;
         $invoice->amount = $moipOrder->getAmountTotal();
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
         $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref ?? null;
