@@ -35,4 +35,33 @@ class MultiPaymentTest extends TestCase
             'moip' => ['moip', 'ORD-MNPLI3PYQK0T'],
         ];
     }
+
+    /**
+     * Test if thorws an exception when not find the invoice
+     *
+     * @dataProvider shouldNotGetInvoiceDataProvider
+     *
+     * @param $gateway
+     * @param $id
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function testShouldNotGetInvoice($gateway, $id)
+    {
+        $this->expectException(\Potelo\MultiPayment\Exceptions\GatewayException::class);
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+        $multiPayment->getInvoice($id);
+    }
+
+    /**
+     * @return array
+     */
+    public function shouldNotGetInvoiceDataProvider(): array
+    {
+        return [
+            'iugu' => ['iugu', '4DAF50DDAA1E461CBA9ECF813111FC0B'],
+            'moip' => ['moip', 'ORD-MNPLI3PYQTOK'],
+        ];
+    }
 }
