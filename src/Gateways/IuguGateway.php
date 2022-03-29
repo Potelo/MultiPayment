@@ -61,8 +61,8 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
-        $iuguInvoiceData['due_date'] = !empty($invoice->expirationDate)
-            ? $invoice->expirationDate->format('Y-m-d')
+        $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
+            ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
 
         if (!empty($invoice->customer->address)) {
@@ -312,7 +312,7 @@ class IuguGateway implements Gateway
         }
 
         $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
-        $invoice->expirationDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+        $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->gateway = 'iugu';

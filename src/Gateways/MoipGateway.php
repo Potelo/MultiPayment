@@ -1,4 +1,4 @@
-<?php
+<?php /** @noinspection ALL */
 
 namespace Potelo\MultiPayment\Gateways;
 
@@ -101,11 +101,11 @@ class MoipGateway implements Gateway
                 }
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
                 $logoUri = '';
-                $expirationDate = !empty($invoice->expirationDate)
-                    ? $invoice->expirationDate->format('Y-m-d')
+                $expiresAt = !empty($invoice->expiresAt)
+                    ? $invoice->expiresAt->format('Y-m-d')
                     : Carbon::now()->format('Y-m-d');
                 $instructionLines = ['', '', ''];
-                $payment->setBoleto($expirationDate, $logoUri, $instructionLines);
+                $payment->setBoleto($expiresAt, $logoUri, $instructionLines);
             }
 
             try {
@@ -285,8 +285,8 @@ class MoipGateway implements Gateway
                 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
                 $invoice->bankSlip->number = $moipLastPayment->getLineCodeBoleto();
                 $invoice->bankSlip->url = $invoice->url;
-                $invoice->expirationDate = !empty($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
-                    ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
+                $invoice->expiresAt = !empty($moipLastPayment->getFundingInstrument()->boleto->expiresAt)
+                    ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expiresAt)
                     : null;
             } elseif ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
                 $invoice->creditCard = new CreditCard();
