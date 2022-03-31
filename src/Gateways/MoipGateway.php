@@ -6,6 +6,7 @@ use Moip\Moip;
 use Carbon\Carbon;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
+use Moip\Resource\Orders;
 use Moip\Resource\Payment;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Address;
@@ -121,8 +122,10 @@ class MoipGateway implements Gateway
                 $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-                $invoice->bankSlip = new BankSlip();
+                $invoice->bankSlip = new BankSlip($this);
+                /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
+                /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->number = $payment->getLineCodeBoleto();
             }
 
@@ -143,6 +146,7 @@ class MoipGateway implements Gateway
         $moipCustomer = $this->multipaymentCustomerToMoipCustomer($customer);
         try {
             $this->init();
+            /** @var \Moip\Resource\Customer $moipCustomer*/
             $moipCustomer = $moipCustomer->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
@@ -238,6 +242,7 @@ class MoipGateway implements Gateway
         $this->init();
 
         try {
+            /** @var Orders $moipOrder*/
             $moipOrder = $this->moip->orders()->get($id);
         } catch (ValidationException $e) {
             throw new GatewayException('Error getting invoice: ' . $e->getMessage(), $e->getErrors());
@@ -245,7 +250,8 @@ class MoipGateway implements Gateway
             throw new GatewayException('Error getting invoice: ' . $e->getMessage());
         }
 
-        $invoice = new Invoice();
+        $invoice = new Invoice($this);
+
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
         $invoice->amount = $moipOrder->getAmountTotal();
@@ -256,7 +262,7 @@ class MoipGateway implements Gateway
         $invoice->createdAt = new Carbon($moipOrder->getCreatedAt());
 
         $moipCustomer = $moipOrder->getCustomer();
-        $invoice->customer = new Customer();
+        $invoice->customer = new Customer($this);
         $invoice->customer->id = $moipCustomer->getId() ?? null;
         $invoice->customer->name = $moipCustomer->getFullname() ?? null;
         $invoice->customer->taxDocument = $moipCustomer->getTaxDocumentNumber() ?? null;
@@ -268,7 +274,7 @@ class MoipGateway implements Gateway
         if (!empty($moipOrder->getItemIterator())) {
             $invoice->items = [];
             foreach($moipOrder->getItemIterator() as $item){
-                $invoiceItem = new InvoiceItem();
+                $invoiceItem = new InvoiceItem($this);
                 $invoiceItem->description = $item->product;
                 $invoiceItem->price = $item->price;
                 $invoiceItem->quantity = $item->quantity;
@@ -281,7 +287,7 @@ class MoipGateway implements Gateway
             $paymentsIterator->seek($paymentsIterator->count() - 1);
             $moipLastPayment = $paymentsIterator->current();
             if ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_BOLETO) {
-                $invoice->bankSlip = new BankSlip();
+                $invoice->bankSlip = new BankSlip($this);
                 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
                 $invoice->bankSlip->number = $moipLastPayment->getLineCodeBoleto();
                 $invoice->bankSlip->url = $invoice->url;
@@ -289,7 +295,7 @@ class MoipGateway implements Gateway
                     ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
                     : null;
             } elseif ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
-                $invoice->creditCard = new CreditCard();
+                $invoice->creditCard = new CreditCard($this);
                 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
                 if (!empty($moipLastPayment->getFundingInstrument()->creditCard->holder->fullname)) {
                     $names = explode(' ', $moipLastPayment->getFundingInstrument()->creditCard->holder->fullname, 2);

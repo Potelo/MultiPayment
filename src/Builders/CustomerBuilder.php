@@ -9,7 +9,7 @@ use Potelo\MultiPayment\Contracts\Gateway;
 /**
  * CustomerBuilder class
  */
-class CustomerBuilder
+class CustomerBuilder extends Builder
 {
     /**
      * @var Customer $customer
@@ -20,12 +20,11 @@ class CustomerBuilder
      * CustomerBuilder constructor.
      *
      * @param  Gateway  $gateway
-     *
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function __construct(Gateway $gateway)
+    public function __construct($gateway = null)
     {
-        $this->customer = new Customer($gateway);
+        parent::__construct($gateway);
+        $this->customer = new Customer($this->gateway);
     }
 
     /**
@@ -134,7 +133,7 @@ class CustomerBuilder
         ?string $state = null,
         ?string $country = null
     ): CustomerBuilder {
-        $this->customer->address = new Address();
+        $this->customer->address = new Address($this->gateway);
         $this->customer->address->zipCode = $zipCode;
         $this->customer->address->street = $street;
         $this->customer->address->number = $number;

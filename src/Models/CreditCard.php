@@ -169,7 +169,7 @@ class CreditCard extends Model
     public function fill(array $data): void
     {
         if (!empty($data['customer']) && is_array($data['customer'])) {
-            $customer = new Customer();
+            $customer = new Customer($this->gatewayClass);
             $customer->fill($data['customer']);
             $data['customer'] = $customer;
         }

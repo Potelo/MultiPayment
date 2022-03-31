@@ -169,7 +169,7 @@ class Customer extends Model
     public function fill(array $data): void
     {
         if (!empty($data['address']) && is_array($data['address'])) {
-            $address = new Address();
+            $address = new Address($this->gatewayClass);
             $address->fill($data['address']);
             $data['address'] = $address;
         }

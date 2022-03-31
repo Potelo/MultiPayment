@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Models;
 
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -20,40 +21,12 @@ abstract class Model
      * Create a new instance of the model.
      *
      * @param  Gateway|string|null  $gateway
-     *
-     * @throws GatewayException
      */
     public function __construct($gateway = null)
     {
         if (!empty($gateway)) {
-            $this->setGatewayClass($gateway);
+            $this->gatewayClass = ConfigurationHelper::resolveGateway($gateway);
         }
-    }
-
-    /**
-     * Set the gateway class.
-     *
-     * @param  Gateway|string  $gatewayClass
-     *
-     * @return void
-     * @throws GatewayException
-     */
-    private function setGatewayClass($gatewayClass): void
-    {
-        if (is_string($gatewayClass)) {
-            if (empty(Config::get('multi-payment.gateways.'.$gatewayClass))) {
-                throw GatewayException::notConfigured($gatewayClass);
-            }
-            $className = Config::get("multi-payment.gateways.$gatewayClass.class");
-            if (!class_exists($className)) {
-                throw GatewayException::notFound($className);
-            }
-            $gatewayClass = new $className;
-        }
-        if (!$gatewayClass instanceof Gateway) {
-            throw GatewayException::invalidInterface(get_class($gatewayClass));
-        }
-        $this->gatewayClass = $gatewayClass;
     }
 
     /**
@@ -92,11 +65,13 @@ abstract class Model
             $method = 'create';
         }
         $method = $method . $class;
-        if (!method_exists($this->gatewayClass, $method)) {
-            throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
-        }
+
         if ($validate) {
             $this->validate();
+        }
+
+        if (!method_exists($this->gatewayClass, $method)) {
+            throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
         }
         $this->gatewayClass->$method($this);
     }
@@ -165,12 +140,14 @@ abstract class Model
     public function toArray(): array
     {
         $array = [];
-        foreach (get_object_vars($this) as $key => $value) {
-
-            $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $key));
-            if (!empty($value)) {
-                $array[$key] = $value;
+        $reflect = new \ReflectionClass($this);
+        $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC);
+        foreach ($props as $prop) {
+            if (!empty($this->{$prop->getName()})) {
+                $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $prop->getName()));
+                $array[$key] = $this->{$prop->getName()};
             }
+
         }
         return $array;
     }
@@ -189,14 +166,15 @@ abstract class Model
      * Get the model instance by id in the gateway.
      *
      * @param  string  $id
-     * @param  Gateway  $gateway
+     * @param  Gateway|string|null  $gateway
      *
      * @return static
      * @throws GatewayException
      */
-    public static function get(string $id, Gateway $gateway): Model
+    public static function get(string $id, $gateway = null): Model
     {
         $method = 'get' . self::getClassName();
+        $gateway = ConfigurationHelper::resolveGateway($gateway);
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }

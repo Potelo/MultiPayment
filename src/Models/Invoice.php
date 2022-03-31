@@ -102,7 +102,7 @@ class Invoice extends Model
     public function fill(array $data): void
     {
         if (empty($data['items']) && !empty($data['amount'])) {
-            $invoiceItem = new InvoiceItem();
+            $invoiceItem = new InvoiceItem($this->gatewayClass);
             $data['items'] = [];
             $invoiceItem->fill([
                 'description' => 'Nova cobrança',
@@ -117,7 +117,7 @@ class Invoice extends Model
             foreach ($data['items'] as $item) {
                 $invoiceItem = $item;
                 if (!empty($item) && is_array($item)) {
-                    $invoiceItem = new InvoiceItem();
+                    $invoiceItem = new InvoiceItem($this->gatewayClass);
                     $invoiceItem->fill($item);
                 }
                 $this->items[] = $invoiceItem;
@@ -126,7 +126,7 @@ class Invoice extends Model
         }
 
         if (!empty($data['customer']) && is_array($data['customer'])) {
-            $this->customer = new Customer();
+            $this->customer = new Customer($this->gatewayClass);
             $this->customer->fill($data['customer']);
             unset($data['customer']);
         }
@@ -137,7 +137,7 @@ class Invoice extends Model
         }
 
         if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
-            $this->creditCard = new CreditCard();
+            $this->creditCard = new CreditCard($this->gatewayClass);
             $this->creditCard->fill($data['credit_card']);
             unset($data['credit_card']);
         }

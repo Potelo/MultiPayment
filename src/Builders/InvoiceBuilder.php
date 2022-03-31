@@ -13,13 +13,8 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 /**
  * invoice builder
  */
-class InvoiceBuilder
+class InvoiceBuilder extends Builder
 {
-
-    /**
-     * @var Gateway $gateway
-     */
-    private Gateway $gateway;
 
     /**
      * @var Invoice $invoice
@@ -31,12 +26,11 @@ class InvoiceBuilder
      *
      * @param  Gateway|string  $gateway
      *
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function __construct($gateway)
+    public function __construct($gateway = null)
     {
-        $this->gateway = $gateway;
-        $this->invoice = new Invoice($gateway);
+        parent::__construct($gateway);
+        $this->invoice = new Invoice($this->gateway);
     }
 
     /**
@@ -92,7 +86,7 @@ class InvoiceBuilder
      */
     public function addItem(string $description, int $price, int $quantity): InvoiceBuilder
     {
-        $invoiceItem = new InvoiceItem();
+        $invoiceItem = new InvoiceItem($this->gateway);
         $invoiceItem->description = $description;
         $invoiceItem->price = $price;
         $invoiceItem->quantity = $quantity;
@@ -124,7 +118,6 @@ class InvoiceBuilder
      * @param  string|null  $phoneCountryCode
      *
      * @return $this
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function addCustomer(
         ?string $name = null,
@@ -155,7 +148,6 @@ class InvoiceBuilder
      * @param  Address  $address
      *
      * @return $this
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function setCustomerAddress(Address $address): InvoiceBuilder
     {
@@ -179,7 +171,6 @@ class InvoiceBuilder
      * @param  string|null  $country
      *
      * @return $this
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function addCustomerAddress(
         string $zipCode,
@@ -194,7 +185,7 @@ class InvoiceBuilder
         if (empty($this->invoice->customer)) {
             $this->invoice->customer = new Customer($this->gateway);
         }
-        $this->invoice->customer->address = new Address();
+        $this->invoice->customer->address = new Address($this->gateway);
         $this->invoice->customer->address->zipCode = $zipCode;
         $this->invoice->customer->address->street = $street;
         $this->invoice->customer->address->number = $number;
@@ -228,7 +219,7 @@ class InvoiceBuilder
      */
     public function addCreditCardId($id): InvoiceBuilder
     {
-        $this->invoice->creditCard = new CreditCard();
+        $this->invoice->creditCard = new CreditCard($this->gateway);
         $this->invoice->creditCard->id = $id;
         return $this;
     }
@@ -242,7 +233,7 @@ class InvoiceBuilder
      */
     public function addCreditCardToken($token): InvoiceBuilder
     {
-        $this->invoice->creditCard = new CreditCard();
+        $this->invoice->creditCard = new CreditCard($this->gateway);
         $this->invoice->creditCard->token = $token;
         return $this;
     }
@@ -272,7 +263,7 @@ class InvoiceBuilder
         string $description = 'Cartão de crédito'
     ): InvoiceBuilder
     {
-        $this->invoice->creditCard = new CreditCard();
+        $this->invoice->creditCard = new CreditCard($this->gateway);
         $this->invoice->creditCard->number = $number;
         $this->invoice->creditCard->month = $month;
         $this->invoice->creditCard->year = $year;
@@ -283,7 +274,7 @@ class InvoiceBuilder
         if ($customer instanceof Customer) {
             $this->invoice->creditCard->customer = $customer;
         } else {
-            $this->invoice->creditCard->customer = new Customer();
+            $this->invoice->creditCard->customer = new Customer($this->gateway);
             $this->invoice->creditCard->customer->id = $customer;
         }
         return $this;
