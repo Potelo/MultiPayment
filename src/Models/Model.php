@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 abstract class Model
@@ -50,6 +51,7 @@ abstract class Model
      *
      * @return void
      * @throws GatewayException
+     * @throws GatewayNotAvailableException
      * @throws ModelAttributeValidationException
      */
     public function save(bool $validate = true): void

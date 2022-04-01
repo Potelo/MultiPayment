@@ -14,10 +14,12 @@ use Potelo\MultiPayment\Models\Invoice;
 use Moip\Exceptions\ValidationException;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
+use Moip\Exceptions\UnexpectedException;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
 class MoipGateway implements Gateway
 {
@@ -71,6 +73,8 @@ class MoipGateway implements Gateway
             $order->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException $exception) {
+            throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
         } catch (\Exception $exception) {
             throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage());
         }
@@ -113,6 +117,8 @@ class MoipGateway implements Gateway
                 $payment->execute();
             } catch (ValidationException $exception) {
                 throw new GatewayException('Error charging invoice: ' . $exception->getMessage(), $exception->getErrors());
+            } catch (UnexpectedException $exception) {
+                throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
             } catch (\Exception $exception) {
                 throw new GatewayException('Error charging invoice: ' . $exception->getMessage());
             }
@@ -150,6 +156,8 @@ class MoipGateway implements Gateway
             $moipCustomer = $moipCustomer->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException $exception) {
+            throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
         } catch (\Exception $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage());
         }

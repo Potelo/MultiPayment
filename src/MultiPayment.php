@@ -10,6 +10,7 @@ use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -36,7 +37,7 @@ class MultiPayment
      * @param  array  $attributes
      *
      * @return Invoice
-     * @throws GatewayException|ModelAttributeValidationException
+     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException
      */
     public function charge(array $attributes): Invoice
     {
@@ -45,13 +46,24 @@ class MultiPayment
         $invoice->customer = new Customer($this->gateway);
         $invoice->customer->fill($attributes['customer']);
         $invoice->validate();
-        if (empty($invoice->customer->id)) {
-            $invoice->customer->save();
+        try {
+            if (empty($invoice->customer->id)) {
+                $invoice->customer->save();
+            }
+            if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
+                $invoice->creditCard->customer = $invoice->customer;
+            }
+            $invoice->save();
+        } catch (GatewayNotAvailableException $e) {
+            if (Config::get('multi-payment.fallback')) {
+                $nextGateway = ConfigurationHelper::getNextGateway($this->gateway);
+                if (!is_null($nextGateway)) {
+                    return (new self($nextGateway))->charge($attributes);
+                }
+            }
+            throw $e;
         }
-        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
-            $invoice->creditCard->customer = $invoice->customer;
-        }
-        $invoice->save();
+
         return $invoice;
     }
 
@@ -59,7 +71,6 @@ class MultiPayment
      * Return an InvoiceBuilder instance
      *
      * @return InvoiceBuilder
-     * @throws GatewayException
      */
     public function newInvoice(): InvoiceBuilder
     {
@@ -70,7 +81,6 @@ class MultiPayment
      * Return a CustomerBuilder instance
      *
      * @return CustomerBuilder
-     * @throws GatewayException
      */
     public function newCustomer(): CustomerBuilder
     {
