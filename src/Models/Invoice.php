@@ -243,5 +243,18 @@ class Invoice extends Model
     {
         $this->creditCard->validate();
     }
-    
+
+    public function save(bool $validate = true): void
+    {
+        if ($validate) {
+            $this->validate();
+        }
+        if (empty($this->customer->id)) {
+            $this->customer->save($validate);
+        }
+        if (!empty($this->creditCard) && empty($this->creditCard->id)) {
+            $this->creditCard->customer = $this->customer;
+        }
+        parent::save(false);
+    }
 }

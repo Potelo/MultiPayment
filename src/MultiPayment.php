@@ -45,14 +45,7 @@ class MultiPayment
         $invoice->fill($attributes);
         $invoice->customer = new Customer($this->gateway);
         $invoice->customer->fill($attributes['customer']);
-        $invoice->validate();
         try {
-            if (empty($invoice->customer->id)) {
-                $invoice->customer->save();
-            }
-            if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
-                $invoice->creditCard->customer = $invoice->customer;
-            }
             $invoice->save();
         } catch (GatewayNotAvailableException $e) {
             if (Config::get('multi-payment.fallback')) {

@@ -285,19 +285,12 @@ class InvoiceBuilder extends Builder
      *
      * @return Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
     public function create(): Invoice
     {
-        $this->invoice->validate();
-        if (empty($this->invoice->customer->id)) {
-            $this->invoice->customer->save(false);
-        }
-        if (!empty($this->invoice->creditCard) && empty($this->invoice->creditCard->id)) {
-            $this->invoice->creditCard->customer = $this->invoice->customer;
-        }
-
-        $this->invoice->save(false);
+        $this->invoice->save();
         return $this->invoice;
     }
 

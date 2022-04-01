@@ -56,9 +56,6 @@ abstract class Model
      */
     public function save(bool $validate = true): void
     {
-        if (empty($this->gatewayClass)) {
-            throw new GatewayException("Gateway not set");
-        }
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
             $method = 'update';
