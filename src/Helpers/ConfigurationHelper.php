@@ -38,7 +38,7 @@ class ConfigurationHelper
     /**
      * @param  Gateway  $actualGateway
      *
-     * @return Gateway|null
+     * @return Gateway
      */
     public static function getNextGateway(Gateway $actualGateway)
     {
@@ -51,6 +51,6 @@ class ConfigurationHelper
                 $found = true;
             }
         }
-        return null;
+        return self::resolveGateway(array_key_first($gateways));
     }
 }

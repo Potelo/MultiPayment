@@ -8,13 +8,12 @@ use Potelo\MultiPayment\Contracts\Gateway;
 
 /**
  * CustomerBuilder class
+ *
+ * @method Customer create()
+ * @method Customer get()
  */
 class CustomerBuilder extends Builder
 {
-    /**
-     * @var Customer $customer
-     */
-    private Customer $customer;
 
     /**
      * CustomerBuilder constructor.
@@ -24,7 +23,7 @@ class CustomerBuilder extends Builder
     public function __construct($gateway = null)
     {
         parent::__construct($gateway);
-        $this->customer = new Customer($this->gateway);
+        $this->model = new Customer($this->gateway);
     }
 
     /**
@@ -36,7 +35,7 @@ class CustomerBuilder extends Builder
      */
     public function setEmail(string $email): CustomerBuilder
     {
-        $this->customer->email = $email;
+        $this->model->email = $email;
         return $this;
     }
 
@@ -49,7 +48,7 @@ class CustomerBuilder extends Builder
      */
     public function setName(string $name): CustomerBuilder
     {
-        $this->customer->name = $name;
+        $this->model->name = $name;
         return $this;
     }
 
@@ -64,9 +63,9 @@ class CustomerBuilder extends Builder
      */
     public function setPhone(string $phoneNumber, string $phoneArea, string $phoneCountryCode = '55'): CustomerBuilder
     {
-        $this->customer->phoneNumber = $phoneNumber;
-        $this->customer->phoneArea = $phoneArea;
-        $this->customer->phoneCountryCode = $phoneCountryCode;
+        $this->model->phoneNumber = $phoneNumber;
+        $this->model->phoneArea = $phoneArea;
+        $this->model->phoneCountryCode = $phoneCountryCode;
         return $this;
     }
 
@@ -79,7 +78,7 @@ class CustomerBuilder extends Builder
      */
     public function setTaxDocument(string $taxDocument): CustomerBuilder
     {
-        $this->customer->taxDocument = $taxDocument;
+        $this->model->taxDocument = $taxDocument;
         return $this;
     }
 
@@ -92,7 +91,7 @@ class CustomerBuilder extends Builder
      */
     public function setBirthDate(string $birthDate): CustomerBuilder
     {
-        $this->customer->birthDate = $birthDate;
+        $this->model->birthDate = $birthDate;
         return $this;
     }
 
@@ -105,7 +104,7 @@ class CustomerBuilder extends Builder
      */
     public function setAddress(Address $address): CustomerBuilder
     {
-        $this->customer->address = $address;
+        $this->model->address = $address;
         return $this;
     }
 
@@ -133,39 +132,15 @@ class CustomerBuilder extends Builder
         ?string $state = null,
         ?string $country = null
     ): CustomerBuilder {
-        $this->customer->address = new Address($this->gateway);
-        $this->customer->address->zipCode = $zipCode;
-        $this->customer->address->street = $street;
-        $this->customer->address->number = $number;
-        $this->customer->address->complement = $complement;
-        $this->customer->address->district = $district;
-        $this->customer->address->city = $city;
-        $this->customer->address->state = $state;
-        $this->customer->address->country = $country;
+        $this->model->address = new Address($this->gateway);
+        $this->model->address->zipCode = $zipCode;
+        $this->model->address->street = $street;
+        $this->model->address->number = $number;
+        $this->model->address->complement = $complement;
+        $this->model->address->district = $district;
+        $this->model->address->city = $city;
+        $this->model->address->state = $state;
+        $this->model->address->country = $country;
         return $this;
-    }
-
-    /**
-     * Create a new customer on gateway and return the MultiPayment customer
-     *
-     * @return Customer
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
-     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
-     */
-    public function create(): Customer
-    {
-        $this->customer->save();
-        return $this->customer;
-
-    }
-
-    /**
-     * Return Customer instance
-     *
-     * @return Customer
-     */
-    public function get(): Customer
-    {
-        return $this->customer;
     }
 }

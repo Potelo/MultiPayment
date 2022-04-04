@@ -16,7 +16,7 @@ return [
     | Default gateway
     |--------------------------------------------------------------------------
     |
-    |  If true, in case of error, the next gateway will be used.
+    |  If true, in case of error in a payment, the next gateway of the gateways array will be used.
     |
     */
     'fallback' => env('MULTIPAYMENT_FALLBACK', false),

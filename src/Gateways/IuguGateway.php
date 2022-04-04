@@ -94,7 +94,13 @@ class IuguGateway implements Gateway
             }
             try {
                 $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\IuguAuthenticationException|IuguObjectNotFound $e) {
+            } catch (IuguObjectNotFound $e) {
+                if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                    throw new GatewayNotAvailableException($e->getMessage());
+                } else {
+                    throw new GatewayException($e->getMessage());
+                }
+            } catch (\IuguAuthenticationException $e) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } catch (\Exception $e) {
                 throw new GatewayException($e->getMessage());
@@ -144,7 +150,13 @@ class IuguGateway implements Gateway
 
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-        } catch (\IuguAuthenticationException|IuguObjectNotFound $e) {
+        } catch (IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
             throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
@@ -255,17 +267,28 @@ class IuguGateway implements Gateway
                 ],
             ]);
         }
+
         try {
             $iuguCreditCard = Iugu_PaymentMethod::create([
                 'token' => $creditCard->token,
                 'customer_id' => $creditCard->customer->id,
                 'description' => $creditCard->description ?? 'CREDIT CARD',
             ]);
-        } catch (\IuguAuthenticationException|IuguObjectNotFound $e) {
+        } catch (IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
             throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
         }
+        if ($iuguCreditCard->errors) {
+            throw new GatewayException('Error creating creditCard: ', $iuguCreditCard->errors);
+        }
+
         $creditCard->id = $iuguCreditCard->id ?? null;
         $creditCard->brand = $iuguCreditCard->data->brand ?? null;
         $creditCard->year = $iuguCreditCard->data->year ?? null;

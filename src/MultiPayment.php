@@ -10,6 +10,7 @@ use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Exceptions\GatewayFallbackException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -20,6 +21,7 @@ class MultiPayment
 {
 
     private Gateway $gateway;
+    private ?Gateway $fallbackGateway = null;
 
     /**
      * MultiPayment constructor.
@@ -32,6 +34,15 @@ class MultiPayment
     }
 
     /**
+     * @param  Gateway|string|null  $gateway
+     * @return MultiPayment
+     */
+    public function setGateway($gateway): MultiPayment
+    {
+        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
+        return $this;
+    }
+    /**
      * Charge a customer
      *
      * @param  array  $attributes
@@ -41,23 +52,23 @@ class MultiPayment
      */
     public function charge(array $attributes): Invoice
     {
-        $invoice = new Invoice($this->gateway);
+        $invoice = new Invoice($this->fallbackGateway ?? $this->gateway);
         $invoice->fill($attributes);
-        $invoice->customer = new Customer($this->gateway);
+        $invoice->customer = new Customer($this->fallbackGateway ?? $this->gateway);
         $invoice->customer->fill($attributes['customer']);
         try {
             $invoice->save();
+            return $invoice;
         } catch (GatewayNotAvailableException $e) {
             if (Config::get('multi-payment.fallback')) {
-                $nextGateway = ConfigurationHelper::getNextGateway($this->gateway);
-                if (!is_null($nextGateway)) {
-                    return (new self($nextGateway))->charge($attributes);
+                $this->fallbackGateway = ConfigurationHelper::getNextGateway($this->fallbackGateway ?? $this->gateway);
+                if (get_class($this->fallbackGateway) !== get_class($this->gateway)) {
+                    return $this->charge($attributes);
                 }
+                throw new GatewayFallbackException('All gateways failed');
             }
             throw $e;
         }
-
-        return $invoice;
     }
 
     /**

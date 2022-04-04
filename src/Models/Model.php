@@ -179,4 +179,23 @@ abstract class Model
         }
         return $gateway->$method($id);
     }
+
+    /**
+     * Replace the gateway class of the model and his attributes.
+     *
+     * @param  Gateway  $gateway
+     *
+     * @return void
+     */
+    public function replaceGatewayClass(Gateway $gateway)
+    {
+        $this->gatewayClass = $gateway;
+        $reflect = new \ReflectionClass($this);
+        $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC);
+        foreach ($props as $prop) {
+            if (!empty($this->{$prop->getName()}) && $this->{$prop->getName()} instanceof Model) {
+                $this->{$prop->getName()}->replaceGatewayClass($gateway);
+            }
+        }
+    }
 }

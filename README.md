@@ -3,6 +3,7 @@
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
+  - [Fallback](#fallback)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
@@ -44,6 +45,7 @@ Agora configure as variáveis de ambiente no arquivo .env:
 APP_ENV=local
 
 MULTIPAYMENT_DEFAULT=iugu
+MULTIPAYMENT_FALLBACK=false
 
 #iugu  
 IUGU_ID=
@@ -73,6 +75,9 @@ Também é possível utilizar o Facade:
 ```php
 \Potelo\MultiPayment\Facades\MultiPayment::charge($options);  
 ```
+
+### Fallback:
+Se a configuração `MULTIPAYMENT_FALLBACK` for `true`, caso ocorra algum erro de indisponibilidade com o gateway selecionado, os métodos `charge` do MultiPayment e o `create` do InvoiceBuilder irão tentar utilizar todos os gateways disponíveis, seguindo a ordem do array `gateways` no arquivo de configuração, até conseguir criar a fatura, ou lançar uma `FallbackException`, caso todos falhem.
 
 ## Utilizando
 
