@@ -17,8 +17,8 @@ jobs:
           APP_ENV: testing
           MULTIPAYMENT_DEFAULT: iugu
           MULTIPAYMENT_FALLBACK: true
-          IUGU_ID: $IUGU_ID
-          IUGU_APIKEY: $IUGU_APIKEY
-          MOIP_APITOKEN: $MOIP_APITOKEN
-          MOIP_APIKEY: $MOIP_APIKEY
+          IUGU_ID: ${{ secrets.IUGU_ID }}
+          IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
+          MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
+          MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
         run: vendor/bin/phpunit --configuration phpunit.xml tests
