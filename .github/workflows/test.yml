@@ -14,9 +14,9 @@ jobs:
 
       - name: Execute tests (Unit and Feature tests) via PHPUnit
         env:
-          APP_ENV: $APP_ENV
-          MULTIPAYMENT_DEFAULT: $MULTIPAYMENT_DEFAULT
-          MULTIPAYMENT_FALLBACK: $MULTIPAYMENT_FALLBACK
+          APP_ENV: testing
+          MULTIPAYMENT_DEFAULT: iugu
+          MULTIPAYMENT_FALLBACK: true
           IUGU_ID: $IUGU_ID
           IUGU_APIKEY: $IUGU_APIKEY
           MOIP_APITOKEN: $MOIP_APITOKEN
