@@ -1,0 +1,24 @@
+name: Tests
+
+on: push
+
+jobs:
+  phpunity-tests:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Dependencies
+        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+
+      - name: Execute tests (Unit and Feature tests) via PHPUnit
+        env:
+          APP_ENV: $APP_ENV
+          MULTIPAYMENT_DEFAULT: $MULTIPAYMENT_DEFAULT
+          MULTIPAYMENT_FALLBACK: $MULTIPAYMENT_FALLBACK
+          IUGU_ID: $IUGU_ID
+          IUGU_APIKEY: $IUGU_APIKEY
+          MOIP_APITOKEN: $MOIP_APITOKEN
+          MOIP_APIKEY: $MOIP_APIKEY
+        run: vendor/bin/phpunit --configuration phpunit.xml tests
