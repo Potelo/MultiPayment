@@ -75,50 +75,50 @@ class InvoiceBuilderTest extends TestCase
     public function shouldCreateInvoiceDataProvider(): array
     {
         return [
-//            'iugu - without payment method' => [
-//                'gateway' => 'iugu',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                ]
-//            ],
-//            'moip - without payment method' => [
-//                'gateway' => 'moip',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                ]
-//            ],
-//            'iugu - company with address without payment method' => [
-//                'gateway' => 'iugu',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::companyWithAddress(),
-//                ]
-//            ],
-//            'moip - company with address without payment method' => [
-//                'gateway' => 'moip',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::companyWithAddress(),
-//                ]
-//            ],
-//            'moip - without payment method and without address' => [
-//                'gateway' => 'moip',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithoutAddress(),
-//                ]
-//            ],
+            'iugu - without payment method' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                ]
+            ],
+            'moip - without payment method' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                ]
+            ],
+            'iugu - company with address without payment method' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::companyWithAddress(),
+                ]
+            ],
+            'moip - company with address without payment method' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::companyWithAddress(),
+                ]
+            ],
+            'moip - without payment method and without address' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                ]
+            ],
             'iugu - credit card without address' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithoutAddress(),
                     'paymentMethod' => 'credit_card',
                     'creditCard' => self::creditCard(),
@@ -127,66 +127,66 @@ class InvoiceBuilderTest extends TestCase
             'moip - credit card without address' => [
                 'gateway' => 'moip',
                 'data' => [
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithoutAddress(),
                     'paymentMethod' => 'credit_card',
                     'creditCard' => self::creditCard(),
                 ]
             ],
-//            'iugu - credit card with address' => [
-//                'gateway' => 'iugu',
-//                'data' => [
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                    'paymentMethod' => 'credit_card',
-//                    'creditCard' => self::creditCard(),
-//                ]
-//            ],
-//            'moip - credit card with address' => [
-//                'gateway' => 'moip',
-//                'data' => [
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                    'paymentMethod' => 'credit_card',
-//                    'creditCard' => self::creditCard(),
-//                ]
-//            ],
-//            'iugu - bank slip with address' => [
-//                'gateway' => 'iugu',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                    'paymentMethod' => 'bank_slip',
-//                ]
-//            ],
-//            'moip - bank slip with address' => [
-//                'gateway' => 'moip',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                    'paymentMethod' => 'bank_slip',
-//                ]
-//            ],
-//            'iugu - pix with address' => [
-//                'gateway' => 'iugu',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithAddress(),
-//                    'paymentMethod' => 'pix',
-//                ]
-//            ],
-//            'iugu - pix without address' => [
-//                'gateway' => 'iugu',
-//                'data' => [
-//                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-//                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 100,],],
-//                    'customer' => self::customerWithoutAddress(),
-//                    'paymentMethod' => 'pix',
-//                ]
-//            ],
+            'iugu - credit card with address' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => self::creditCard(),
+                ]
+            ],
+            'moip - credit card with address' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => self::creditCard(),
+                ]
+            ],
+            'iugu - bank slip with address' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'paymentMethod' => 'bank_slip',
+                ]
+            ],
+            'moip - bank slip with address' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'paymentMethod' => 'bank_slip',
+                ]
+            ],
+            'iugu - pix with address' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'paymentMethod' => 'pix',
+                ]
+            ],
+            'iugu - pix without address' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'pix',
+                ]
+            ],
         ];
     }
 

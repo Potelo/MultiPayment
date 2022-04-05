@@ -117,6 +117,13 @@ class MoipGateway implements Gateway
             }
 
             if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+                if (Config::get('environment') != 'production') {
+                    $payment->authorize();
+                    $order = $order->get($order->getId());
+                    $payment = $payment->get($payment->getId());
+                    $payment->setOrder($order);
+
+                }
                 $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
                 $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
@@ -130,7 +137,7 @@ class MoipGateway implements Gateway
         }
 
         $invoice->status = $this->moipStatusToMultiPayment($order->getStatus());
-        $invoice->paidAt = $invoice->status == Invoice::STATUS_PAID ? new Carbon($order->getUpdatedAt()) : null;
+        $invoice->paidAt = $invoice->status == Invoice::STATUS_PAID ? new Carbon($payment->getCreatedAt()) : null;
         $invoice->amount = $order->getAmountTotal();
         $invoice->fee = $order->getAmountFees();
         return $invoice;
@@ -249,7 +256,12 @@ class MoipGateway implements Gateway
         $invoice = new Invoice();
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
-        $invoice->paidAt = $invoice->status == Invoice::STATUS_PAID ? new Carbon($moipOrder->getUpdatedAt()) : null;
+        $invoice->paidAt = null;
+        foreach ($moipOrder->getPaymentIterator() as $payment) {
+            if ($payment->getStatus() == Payment::STATUS_AUTHORIZED) {
+                $invoice->paidAt = new Carbon($payment->getCreatedAt());
+            }
+        }
         $invoice->amount = $moipOrder->getAmountTotal();
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
         $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref ?? null;
