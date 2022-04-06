@@ -1,4 +1,4 @@
-<?php /** @noinspection ALL */
+<?php
 
 namespace Potelo\MultiPayment\Gateways;
 
@@ -87,7 +87,6 @@ class MoipGateway implements Gateway
         $invoice->original = $order;
 
         if (!empty($invoice->paymentMethod)) {
-
             $payment = $order->payments();
             $holder = $this->createHolder($invoice->customer);
 
