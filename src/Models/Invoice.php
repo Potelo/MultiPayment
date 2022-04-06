@@ -30,6 +30,11 @@ class Invoice extends Model
     public ?string $status;
 
     /**
+     * @var Carbon|null
+     */
+    public ?Carbon $paidAt;
+
+    /**
      * @var int|null
      */
     public ?int $amount;
@@ -67,7 +72,7 @@ class Invoice extends Model
     /**
      * @var Carbon|null
      */
-    public ?Carbon $expirationDate;
+    public ?Carbon $expiresAt;
 
     /**
      * @var int|null
@@ -131,9 +136,9 @@ class Invoice extends Model
             unset($data['customer']);
         }
 
-        if (!empty($data['expiration_date'])) {
-            $this->expirationDate = Carbon::createFromFormat('Y-m-d', $data['expiration_date']);
-            unset($data['expiration_date']);
+        if (!empty($data['expires_at'])) {
+            $this->expiresAt = Carbon::createFromFormat('Y-m-d', $data['expires_at']);
+            unset($data['expires_at']);
         }
 
         if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
@@ -174,9 +179,9 @@ class Invoice extends Model
                 $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
                 $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX
             ) &&
-            empty($this->expirationDate)
+            empty($this->expiresAt)
         ) {
-            throw new ModelAttributeValidationException('The `expirationDate` attribute is required for bank_slip or pix payment method.');
+            throw new ModelAttributeValidationException('The `expiresAt` attribute is required for bank_slip or pix payment method.');
         }
 
         if (in_array('paymentMethod', $attributes) &&

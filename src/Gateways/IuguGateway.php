@@ -61,8 +61,8 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
-        $iuguInvoiceData['due_date'] = !empty($invoice->expirationDate)
-            ? $invoice->expirationDate->format('Y-m-d')
+        $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
+            ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
 
         if (!empty($invoice->customer->address)) {
@@ -118,6 +118,7 @@ class IuguGateway implements Gateway
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
 
+        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->url = $iuguInvoice->secure_url;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguInvoice;
@@ -292,6 +293,7 @@ class IuguGateway implements Gateway
         $invoice = new Invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
+        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->amount = $iuguInvoice->total_cents;
 
         $invoice->customer = new Customer();
@@ -312,7 +314,7 @@ class IuguGateway implements Gateway
         }
 
         $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
-        $invoice->expirationDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+        $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->gateway = 'iugu';

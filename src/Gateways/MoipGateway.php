@@ -1,4 +1,4 @@
-<?php
+<?php /** @noinspection ALL */
 
 namespace Potelo\MultiPayment\Gateways;
 
@@ -101,11 +101,11 @@ class MoipGateway implements Gateway
                 }
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
                 $logoUri = '';
-                $expirationDate = !empty($invoice->expirationDate)
-                    ? $invoice->expirationDate->format('Y-m-d')
+                $expiresAt = !empty($invoice->expiresAt)
+                    ? $invoice->expiresAt->format('Y-m-d')
                     : Carbon::now()->format('Y-m-d');
                 $instructionLines = ['', '', ''];
-                $payment->setBoleto($expirationDate, $logoUri, $instructionLines);
+                $payment->setBoleto($expiresAt, $logoUri, $instructionLines);
             }
 
             try {
@@ -117,6 +117,13 @@ class MoipGateway implements Gateway
             }
 
             if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+                if (Config::get('environment') != 'production') {
+                    $payment->authorize();
+                    $order = $order->get($order->getId());
+                    $payment = $payment->get($payment->getId());
+                    $payment->setOrder($order);
+
+                }
                 $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
                 $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
@@ -130,6 +137,7 @@ class MoipGateway implements Gateway
         }
 
         $invoice->status = $this->moipStatusToMultiPayment($order->getStatus());
+        $invoice->paidAt = $invoice->status == Invoice::STATUS_PAID ? new Carbon($payment->getCreatedAt()) : null;
         $invoice->amount = $order->getAmountTotal();
         $invoice->fee = $order->getAmountFees();
         return $invoice;
@@ -248,6 +256,12 @@ class MoipGateway implements Gateway
         $invoice = new Invoice();
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
+        $invoice->paidAt = null;
+        foreach ($moipOrder->getPaymentIterator() as $payment) {
+            if ($payment->getStatus() == Payment::STATUS_AUTHORIZED) {
+                $invoice->paidAt = new Carbon($payment->getCreatedAt());
+            }
+        }
         $invoice->amount = $moipOrder->getAmountTotal();
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
         $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref ?? null;
@@ -285,8 +299,8 @@ class MoipGateway implements Gateway
                 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
                 $invoice->bankSlip->number = $moipLastPayment->getLineCodeBoleto();
                 $invoice->bankSlip->url = $invoice->url;
-                $invoice->expirationDate = !empty($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
-                    ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expirationDate)
+                $invoice->expiresAt = !empty($moipLastPayment->getFundingInstrument()->boleto->expiresAt)
+                    ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expiresAt)
                     : null;
             } elseif ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
                 $invoice->creditCard = new CreditCard();
