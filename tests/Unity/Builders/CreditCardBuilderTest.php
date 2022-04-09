@@ -70,14 +70,14 @@ class CreditCardBuilderTest extends TestCase
                     'customer' => self::customerWithoutAddress(),
                 ],
             ],
-            'iugu - with hash' => [
-                'iugu',
-                [
-                    'token' => '1f5bd8ef-80ff-4678-ac00-99f82bfbdfbd',
-                    'description' => 'Test credit card',
-                    'customer' => self::customerWithoutAddress(),
-                ],
-            ],
+//            'iugu - with hash' => [
+//                'iugu',
+//                [
+//                    'token' => '1f5bd8ef-80ff-4678-ac00-99f82bfbdfbd',
+//                    'description' => 'Test credit card',
+//                    'customer' => self::customerWithoutAddress(),
+//                ],
+//            ],
         ];
     }
 
