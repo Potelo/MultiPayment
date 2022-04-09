@@ -77,6 +77,7 @@ class TestCase extends \Orchestra\Testbench\TestCase
         $creditCard['cvv'] = '123';
         $creditCard['firstName'] = 'Faker';
         $creditCard['lastName'] = 'Teste';
+        $creditCard['description'] = 'card description';
         return $creditCard;
     }
 }

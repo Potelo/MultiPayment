@@ -66,6 +66,7 @@ class CustomerBuilderTest extends TestCase
                 [
                     'name' => 'Fake Customer',
                     'email' => 'email@exemplo.com',
+                    'taxDocument' => '20176996915',
                 ],
             ],
             'iugu - all data' => [

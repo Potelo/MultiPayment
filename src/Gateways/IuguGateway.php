@@ -301,6 +301,7 @@ class IuguGateway implements Gateway
         }
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
+        $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
     }
