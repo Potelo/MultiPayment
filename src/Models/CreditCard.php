@@ -77,6 +77,11 @@ class CreditCard extends Model
     public ?string $gateway;
 
     /**
+     * @var mixed The original object that was received from the gateway
+     */
+    public $original;
+
+    /**
      * @var Carbon|null
      */
     public ?Carbon $createdAt;
