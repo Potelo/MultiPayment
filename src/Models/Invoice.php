@@ -258,11 +258,11 @@ class Invoice extends Model
             $this->validate();
         }
         if (empty($this->customer->id)) {
-            $this->customer->save($gateway ?? $this->gateway, $validate);
+            $this->customer->save($gateway, $validate);
         }
         if (!empty($this->creditCard) && empty($this->creditCard->id)) {
             $this->creditCard->customer = $this->customer;
         }
-        parent::save($gateway ?? $this->gateway, false);
+        parent::save($gateway, false);
     }
 }
