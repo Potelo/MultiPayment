@@ -173,9 +173,81 @@ class MoipGateway implements Gateway
         }
         $customer->id = $moipCustomer->getId();
         $customer->createdAt = Carbon::now();
-        $customer->original = $customer;
+        $customer->original = $moipCustomer;
         $customer->gateway = 'moip';
         return $customer;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createCreditCard(CreditCard $creditCard): CreditCard
+    {
+        $this->init();
+        $customer = $this->moip->customers()->get($creditCard->customer->id);
+        $verificationValue = rand(200, 300);
+        $verificationOrder = $this->moip->orders()->setOwnId(uniqid())
+            ->addItem(
+                'Verificação de Cartão',
+                1,
+                'Verificação de Cartão',
+                $verificationValue
+            )
+            ->setCustomerId($customer->getId())
+            ->create();
+
+        $holder = $this->moip->holders();
+        $holder->setFullname($customer->getFullname())
+            ->setTaxDocument($customer->getTaxDocumentNumber())
+            ->setBirthDate($customer->getBirthDate() ?? '')
+            ->setPhone(
+                $customer->getPhoneAreaCode() ?? '',
+                $customer->getPhoneNumber() ?? '',
+                $customer->getPhoneCountryCode() ?? ''
+            );
+        $payment = $verificationOrder->payments();
+
+        if (!empty($creditCard->token)) {
+            $payment->setCreditCardHash($creditCard->token, $holder);
+        } else {
+            $payment->setCreditCard(
+                $creditCard->month,
+                substr($creditCard->year, -2),
+                $creditCard->number,
+                $creditCard->cvv,
+                $holder
+            )
+                ->setInstallmentCount(1)
+                ->setStatementDescriptor('Verificação');
+        }
+
+        try {
+            $payment->execute();
+            if (Config::get('environment') != 'production') {
+                $payment->authorize();
+            }
+            //wait for the payment to be authorized
+            sleep(3);
+            $payment->refunds()->creditCardFull();
+        } catch (ValidationException $exception) {
+            throw new GatewayException('Error creating credit card: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException|UnautorizedException $exception) {
+            throw new GatewayNotAvailableException('Error creating credit card: ' . $exception->getMessage());
+        } catch (\Exception $exception) {
+            throw new GatewayException('Error creating credit card: ' . $exception->getMessage());
+        }
+
+        if (!empty($payment->getFundingInstrument()->creditCard->holder->fullname)) {
+            $names = explode(' ', $payment->getFundingInstrument()->creditCard->holder->fullname, 2);
+            $creditCard->firstName = $names[0];
+            $creditCard->lastName = count($names) > 1 ? $names[1] : null;
+        }
+        $creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
+        $creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
+        $creditCard->id = $payment->getFundingInstrument()->creditCard->id;
+        $creditCard->original = $payment->getFundingInstrument()->creditCard;
+        $creditCard->gateway = 'moip';
+        return $creditCard;
     }
 
     /**
