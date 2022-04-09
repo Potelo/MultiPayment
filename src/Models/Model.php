@@ -2,15 +2,17 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Collection;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ConfigurationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 abstract class Model
 {
+    protected const CAN_CREATE_MANY = false;
 
     /**
      * Create a new instance of the model with an array of attributes.
@@ -18,15 +20,15 @@ abstract class Model
      * @param  array  $data
      * @param  null  $gateway
      *
-     * @return void
+     * @return static
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      * @throws ModelAttributeValidationException
      */
-    public function create(array $data, $gateway = null): void
+    public function create(array $data, $gateway = null)
     {
         $this->fill($data);
-        $this->save($gateway);
+        return $this->save($gateway);
     }
 
     /**
@@ -35,10 +37,10 @@ abstract class Model
      * @param  Gateway|string|null  $gateway
      * @param  bool  $validate
      *
-     * @return void
+     * @return static
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function save($gateway = null, bool $validate = true): void
+    public function save($gateway = null, bool $validate = true)
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
@@ -57,6 +59,7 @@ abstract class Model
             throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
         }
         $gatewayClass->$method($this);
+        return $this;
     }
 
     /**
@@ -162,5 +165,40 @@ abstract class Model
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
         return $gateway->$method($id);
+    }
+
+    /**
+     *
+     * @param  array  $attributes
+     * @param  array  $gateways
+     *
+     * @return Collection
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     * @throws ModelAttributeValidationException
+     */
+    public static function createMany(array $attributes, array $gateways = []): Collection
+    {
+        if (!static::CAN_CREATE_MANY) {
+            throw ConfigurationException::cannotBatchedCreate(static::getClassName());
+        }
+
+        if(empty($gateways)) {
+            $gateways = ConfigurationHelper::getAllGateways();
+        } else {
+            $gateways = array_map(function($gateway) {
+                return ConfigurationHelper::resolveGateway($gateway);
+            }, $gateways);
+        }
+
+        $collection = new Collection();
+        foreach ($gateways as $gateway) {
+            $model = new static();
+            $model->fill($attributes);
+            $model->save($gateway);
+            $collection->add($model);
+        }
+
+        return $collection;
     }
 }

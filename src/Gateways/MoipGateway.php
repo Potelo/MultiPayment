@@ -173,7 +173,7 @@ class MoipGateway implements Gateway
         }
         $customer->id = $moipCustomer->getId();
         $customer->createdAt = Carbon::now();
-        $customer->original = $customer;
+        $customer->original = $moipCustomer;
         $customer->gateway = 'moip';
         return $customer;
     }

@@ -41,4 +41,9 @@ class ConfigurationException extends MultiPaymentException
     {
         return new static("Gateway class [{$gateway}] not found.");
     }
+
+    public static function cannotBatchedCreate(string $model): self
+    {
+        return new static("Model [{$model}] does not support batched create.");
+    }
 }

@@ -58,8 +58,7 @@ class MultiPayment
         $invoice->customer = new Customer();
         $invoice->customer->fill($attributes['customer']);
         try {
-            $invoice->save($this->gateway);
-            return $invoice;
+            return $invoice->save($this->gateway);
         } catch (GatewayNotAvailableException $e) {
             if (Config::get('multi-payment.fallback')) {
                 $this->fallbackGateway = ConfigurationHelper::getNextGateway($this->fallbackGateway ?? $this->gateway);

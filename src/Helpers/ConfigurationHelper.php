@@ -53,4 +53,18 @@ class ConfigurationHelper
         }
         return self::resolveGateway(array_key_first($gateways));
     }
+
+    /**
+     * @return array
+     * @throws ConfigurationException
+     */
+    public static function getAllGateways(): array
+    {
+        $gateways = Config::get('multi-payment.gateways');
+        $gatewayList = [];
+        foreach ($gateways as $key => $gateway) {
+            $gatewayList[] = self::resolveGateway($key);
+        }
+        return $gatewayList;
+    }
 }

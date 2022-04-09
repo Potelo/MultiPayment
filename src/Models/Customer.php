@@ -10,7 +10,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
  */
 class Customer extends Model
 {
-
+    protected const CAN_CREATE_MANY = true;
     /**
      * @var string|null
      */

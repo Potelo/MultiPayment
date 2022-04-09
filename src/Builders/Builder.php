@@ -56,6 +56,19 @@ class Builder
     }
 
     /**
+     * @param  array  $gateways
+     *
+     * @return \Illuminate\Support\Collection
+     * @throws GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function createMany(array $gateways = []): \Illuminate\Support\Collection
+    {
+        return $this->model->createMany($this->model->toArray(), $gateways);
+    }
+
+    /**
      * Returns the model instance.
      *
      * @return Model
