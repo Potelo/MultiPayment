@@ -227,7 +227,7 @@ class MoipGateway implements Gateway
                 $payment->authorize();
             }
             //wait for the payment to be authorized
-            sleep(1);
+            sleep(3);
             $payment->refunds()->creditCardFull();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating credit card: ' . $exception->getMessage(), $exception->getErrors());
