@@ -23,8 +23,6 @@ trait MultiPaymentTrait
      */
     public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Invoice
     {
-        $gatewayName = $gatewayName ?? Config::get('multi-payment.default');
-
         $payment = new MultiPayment($gatewayName);
 
         $customerId = $this->getGatewayCustomerId($gatewayName);
@@ -61,6 +59,7 @@ trait MultiPaymentTrait
      * @param $customerId
      *
      * @return void
+     * @noinspection PhpUndefinedMethodInspection
      */
     public function setCustomerId($gatewayName, $customerId)
     {

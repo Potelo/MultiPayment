@@ -248,5 +248,21 @@ class Invoice extends Model
     {
         $this->creditCard->validate();
     }
-    
+
+    /**
+     * @inheritDoc
+     */
+    public function save($gateway = null, bool $validate = true): void
+    {
+        if ($validate) {
+            $this->validate();
+        }
+        if (empty($this->customer->id)) {
+            $this->customer->save($gateway, $validate);
+        }
+        if (!empty($this->creditCard) && empty($this->creditCard->id)) {
+            $this->creditCard->customer = $this->customer;
+        }
+        parent::save($gateway, false);
+    }
 }

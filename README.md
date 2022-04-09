@@ -3,6 +3,7 @@
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
+  - [Fallback](#fallback)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
@@ -44,6 +45,7 @@ Agora configure as variáveis de ambiente no arquivo .env:
 APP_ENV=local
 
 MULTIPAYMENT_DEFAULT=iugu
+MULTIPAYMENT_FALLBACK=false
 
 #iugu  
 IUGU_ID=
@@ -73,6 +75,9 @@ Também é possível utilizar o Facade:
 ```php
 \Potelo\MultiPayment\Facades\MultiPayment::charge($options);  
 ```
+
+### Fallback:
+Se a configuração `MULTIPAYMENT_FALLBACK` for `true`, caso ocorra algum erro de indisponibilidade com o gateway selecionado, os métodos `charge` do MultiPayment e o `create` do InvoiceBuilder irão tentar utilizar todos os gateways disponíveis, seguindo a ordem do array `gateways` no arquivo de configuração, até conseguir criar a fatura, ou lançar uma `FallbackException`, caso todos falhem.
 
 ## Utilizando
 
@@ -202,16 +207,16 @@ $payment->setGateway('moip')->charge($options);
 ### Models
 #### Customer
 ```php
-$customer = new Customer('iugu');
+$customer = new Customer();
 $customer->name = 'Teste';
 $customer->email = 'teste@email.com';
 $customer->taxDocument = '12345678901';
-$customer->save();
+$customer->save('iugu');
 echo $customer->id; // 7D96C7C932F2427CAF54F042345A13C60CD7
 ```
 #### Invoice
 ```php
-$invoice = new Invoice('iugu');
+$invoice = new Invoice();
 $invoice->customer = $customer;
 $item = new InvoiceItem();
 $item->description = 'Teste';
@@ -219,7 +224,7 @@ $item->price = 10000;
 $item->quantity = 1;
 $invoice->items[] = $item;
 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
-$invoice->creditCard = new CreditCard('iugu');
+$invoice->creditCard = new CreditCard();
 $invoice->creditCard->number = '4111111111111111';
 $invoice->creditCard->firstName = 'João';
 $invoice->creditCard->lastName = 'Silva';
@@ -227,6 +232,6 @@ $invoice->creditCard->month = '11';
 $invoice->creditCard->year = '2022';
 $invoice->creditCard->cvv = '123';
 $invoice->creditCard->customer = $customer;
-$invoice->save();
+$invoice->save('iugu');
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
 ```
