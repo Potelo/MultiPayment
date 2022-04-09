@@ -127,7 +127,9 @@ class MoipGateway implements Gateway
                 if (Config::get('environment') != 'production') {
                     $payment->authorize();
                     $order = $order->get($order->getId());
+                    /** @noinspection PhpParamsInspection */
                     $payment = $payment->get($payment->getId());
+                    /** @noinspection PhpUndefinedMethodInspection */
                     $payment->setOrder($order);
 
                 }
@@ -135,7 +137,7 @@ class MoipGateway implements Gateway
                 $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-                $invoice->bankSlip = new BankSlip($this);
+                $invoice->bankSlip = new BankSlip();
                 /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
                 /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
@@ -266,7 +268,7 @@ class MoipGateway implements Gateway
             throw new GatewayException('Error getting invoice: ' . $e->getMessage());
         }
 
-        $invoice = new Invoice($this);
+        $invoice = new Invoice();
 
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
@@ -284,7 +286,7 @@ class MoipGateway implements Gateway
         $invoice->createdAt = new Carbon($moipOrder->getCreatedAt());
 
         $moipCustomer = $moipOrder->getCustomer();
-        $invoice->customer = new Customer($this);
+        $invoice->customer = new Customer();
         $invoice->customer->id = $moipCustomer->getId() ?? null;
         $invoice->customer->name = $moipCustomer->getFullname() ?? null;
         $invoice->customer->taxDocument = $moipCustomer->getTaxDocumentNumber() ?? null;
@@ -296,7 +298,7 @@ class MoipGateway implements Gateway
         if (!empty($moipOrder->getItemIterator())) {
             $invoice->items = [];
             foreach($moipOrder->getItemIterator() as $item){
-                $invoiceItem = new InvoiceItem($this);
+                $invoiceItem = new InvoiceItem();
                 $invoiceItem->description = $item->product;
                 $invoiceItem->price = $item->price;
                 $invoiceItem->quantity = $item->quantity;
@@ -309,7 +311,7 @@ class MoipGateway implements Gateway
             $paymentsIterator->seek($paymentsIterator->count() - 1);
             $moipLastPayment = $paymentsIterator->current();
             if ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_BOLETO) {
-                $invoice->bankSlip = new BankSlip($this);
+                $invoice->bankSlip = new BankSlip();
                 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
                 $invoice->bankSlip->number = $moipLastPayment->getLineCodeBoleto();
                 $invoice->bankSlip->url = $invoice->url;
@@ -317,7 +319,7 @@ class MoipGateway implements Gateway
                     ? new Carbon($moipLastPayment->getFundingInstrument()->boleto->expiresAt)
                     : null;
             } elseif ($moipLastPayment->getFundingInstrument()->method == Payment::METHOD_CREDIT_CARD){
-                $invoice->creditCard = new CreditCard($this);
+                $invoice->creditCard = new CreditCard();
                 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
                 if (!empty($moipLastPayment->getFundingInstrument()->creditCard->holder->fullname)) {
                     $names = explode(' ', $moipLastPayment->getFundingInstrument()->creditCard->holder->fullname, 2);

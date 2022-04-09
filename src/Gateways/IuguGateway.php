@@ -116,13 +116,13 @@ class IuguGateway implements Gateway
         $invoice->amount = $iuguInvoice->total_cents;
 
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
-            $invoice->bankSlip = new BankSlip($this);
+            $invoice->bankSlip = new BankSlip();
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
             $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
         } elseif (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_PIX) {
-            $invoice->pix = new Pix($this);
+            $invoice->pix = new Pix();
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
@@ -321,13 +321,13 @@ class IuguGateway implements Gateway
             throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
         }
 
-        $invoice = new Invoice($this);
+        $invoice = new Invoice();
         $invoice->id = $iuguInvoice->id;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
         $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->amount = $iuguInvoice->total_cents;
 
-        $invoice->customer = new Customer($this);
+        $invoice->customer = new Customer();
         $invoice->customer->id = $iuguInvoice->customer_id;
         $invoice->customer->name = $iuguInvoice->customer_name;
         $invoice->customer->email = $iuguInvoice->email;
@@ -337,7 +337,7 @@ class IuguGateway implements Gateway
         $invoice->items = [];
 
         foreach($iuguInvoice->items as $itemIugu) {
-            $invoiceItem = new InvoiceItem($this);
+            $invoiceItem = new InvoiceItem();
             $invoiceItem->description = $itemIugu->description;
             $invoiceItem->price = $itemIugu->price_cents;
             $invoiceItem->quantity = $itemIugu->quantity;
@@ -353,7 +353,7 @@ class IuguGateway implements Gateway
         $invoice->url = $iuguInvoice->secure_url;
 
         if (!empty($iuguInvoice->payer_address_zip_code)) {
-            $invoice->customer->address = new Address($this);
+            $invoice->customer->address = new Address();
             $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
             $invoice->customer->address->street = $iuguInvoice->payer_address_street;
             $invoice->customer->address->number = $iuguInvoice->payer_address_number;
@@ -365,13 +365,13 @@ class IuguGateway implements Gateway
         }
 
         if (!empty($iuguInvoice->bank_slip)) {
-            $invoice->bankSlip = new BankSlip($this);
+            $invoice->bankSlip = new BankSlip();
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
             $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
         } elseif (!empty($iuguInvoice->pix)) {
-            $invoice->pix = new Pix($this);
+            $invoice->pix = new Pix();
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }

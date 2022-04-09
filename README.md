@@ -207,16 +207,16 @@ $payment->setGateway('moip')->charge($options);
 ### Models
 #### Customer
 ```php
-$customer = new Customer('iugu');
+$customer = new Customer();
 $customer->name = 'Teste';
 $customer->email = 'teste@email.com';
 $customer->taxDocument = '12345678901';
-$customer->save();
+$customer->save('iugu');
 echo $customer->id; // 7D96C7C932F2427CAF54F042345A13C60CD7
 ```
 #### Invoice
 ```php
-$invoice = new Invoice('iugu');
+$invoice = new Invoice();
 $invoice->customer = $customer;
 $item = new InvoiceItem();
 $item->description = 'Teste';
@@ -224,7 +224,7 @@ $item->price = 10000;
 $item->quantity = 1;
 $invoice->items[] = $item;
 $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
-$invoice->creditCard = new CreditCard('iugu');
+$invoice->creditCard = new CreditCard();
 $invoice->creditCard->number = '4111111111111111';
 $invoice->creditCard->firstName = 'João';
 $invoice->creditCard->lastName = 'Silva';
@@ -232,6 +232,6 @@ $invoice->creditCard->month = '11';
 $invoice->creditCard->year = '2022';
 $invoice->creditCard->cvv = '123';
 $invoice->creditCard->customer = $customer;
-$invoice->save();
+$invoice->save('iugu');
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
 ```

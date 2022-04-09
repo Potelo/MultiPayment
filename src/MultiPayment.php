@@ -42,22 +42,23 @@ class MultiPayment
         $this->gateway = ConfigurationHelper::resolveGateway($gateway);
         return $this;
     }
+
     /**
      * Charge a customer
      *
      * @param  array  $attributes
      *
      * @return Invoice
-     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException
+     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException|GatewayFallbackException
      */
     public function charge(array $attributes): Invoice
     {
-        $invoice = new Invoice($this->fallbackGateway ?? $this->gateway);
+        $invoice = new Invoice();
         $invoice->fill($attributes);
-        $invoice->customer = new Customer($this->fallbackGateway ?? $this->gateway);
+        $invoice->customer = new Customer();
         $invoice->customer->fill($attributes['customer']);
         try {
-            $invoice->save();
+            $invoice->save($this->gateway);
             return $invoice;
         } catch (GatewayNotAvailableException $e) {
             if (Config::get('multi-payment.fallback')) {

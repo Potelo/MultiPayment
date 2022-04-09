@@ -23,7 +23,7 @@ class CustomerBuilder extends Builder
     public function __construct($gateway = null)
     {
         parent::__construct($gateway);
-        $this->model = new Customer($this->gateway);
+        $this->model = new Customer();
     }
 
     /**
@@ -132,7 +132,7 @@ class CustomerBuilder extends Builder
         ?string $state = null,
         ?string $country = null
     ): CustomerBuilder {
-        $this->model->address = new Address($this->gateway);
+        $this->model->address = new Address();
         $this->model->address->zipCode = $zipCode;
         $this->model->address->street = $street;
         $this->model->address->number = $number;

@@ -13,48 +13,32 @@ abstract class Model
 {
 
     /**
-     * The gateway instance.
-     * @var Gateway
-     */
-    protected Gateway $gatewayClass;
-
-    /**
-     * Create a new instance of the model.
-     *
-     * @param  Gateway|string|null  $gateway
-     */
-    public function __construct($gateway = null)
-    {
-        if (!empty($gateway)) {
-            $this->gatewayClass = ConfigurationHelper::resolveGateway($gateway);
-        }
-    }
-
-    /**
      * Create a new instance of the model with an array of attributes.
      *
      * @param  array  $data
-     *
-     * @return void
-     * @throws GatewayException|ModelAttributeValidationException
-     */
-    public function create(array $data): void
-    {
-        $this->fill($data);
-        $this->save();
-    }
-
-    /**
-     * If gateway is set, then we will use it to save the model
-     *
-     * @param  bool  $validate
+     * @param  null  $gateway
      *
      * @return void
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      * @throws ModelAttributeValidationException
      */
-    public function save(bool $validate = true): void
+    public function create(array $data, $gateway = null): void
+    {
+        $this->fill($data);
+        $this->save($gateway);
+    }
+
+    /**
+     * If gateway is set, then we will use it to save the model
+     *
+     * @param  Gateway|string|null  $gateway
+     * @param  bool  $validate
+     *
+     * @return void
+     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     */
+    public function save($gateway = null, bool $validate = true): void
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
@@ -68,11 +52,11 @@ abstract class Model
         if ($validate) {
             $this->validate();
         }
-
-        if (!method_exists($this->gatewayClass, $method)) {
-            throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
+        $gatewayClass = ConfigurationHelper::resolveGateway($gateway);
+        if (!method_exists($gatewayClass, $method)) {
+            throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
         }
-        $this->gatewayClass->$method($this);
+        $gatewayClass->$method($this);
     }
 
     /**
@@ -178,24 +162,5 @@ abstract class Model
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
         return $gateway->$method($id);
-    }
-
-    /**
-     * Replace the gateway class of the model and his attributes.
-     *
-     * @param  Gateway  $gateway
-     *
-     * @return void
-     */
-    public function replaceGatewayClass(Gateway $gateway)
-    {
-        $this->gatewayClass = $gateway;
-        $reflect = new \ReflectionClass($this);
-        $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC);
-        foreach ($props as $prop) {
-            if (!empty($this->{$prop->getName()}) && $this->{$prop->getName()} instanceof Model) {
-                $this->{$prop->getName()}->replaceGatewayClass($gateway);
-            }
-        }
     }
 }

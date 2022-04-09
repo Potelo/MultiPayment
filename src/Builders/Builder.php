@@ -40,14 +40,13 @@ class Builder
     {
         try {
             $beforeSaveModel = clone $this->model;
-            $this->model->save();
+            $this->model->save($this->fallbackGateway ?? $this->gateway);
             return $this->model;
         } catch (GatewayNotAvailableException $e) {
             if (Config::get('multi-payment.fallback') && $this->useFallback) {
                 $this->fallbackGateway = ConfigurationHelper::getNextGateway($this->fallbackGateway ?? $this->gateway);
                 if (get_class($this->fallbackGateway) !== get_class($this->gateway)) {
                     $this->model = clone $beforeSaveModel;
-                    $this->model->replaceGatewayClass($this->fallbackGateway);
                     return $this->create();
                 }
                 throw new GatewayFallbackException('All gateways failed');

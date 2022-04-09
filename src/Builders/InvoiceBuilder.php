@@ -30,7 +30,7 @@ class InvoiceBuilder extends Builder
     public function __construct($gateway = null)
     {
         parent::__construct($gateway);
-        $this->model = new Invoice($this->gateway);
+        $this->model = new Invoice();
     }
 
     /**
@@ -86,7 +86,7 @@ class InvoiceBuilder extends Builder
      */
     public function addItem(string $description, int $price, int $quantity): InvoiceBuilder
     {
-        $invoiceItem = new InvoiceItem($this->gateway);
+        $invoiceItem = new InvoiceItem();
         $invoiceItem->description = $description;
         $invoiceItem->price = $price;
         $invoiceItem->quantity = $quantity;
@@ -130,7 +130,7 @@ class InvoiceBuilder extends Builder
     ): InvoiceBuilder
     {
         if (empty($this->model->customer)) {
-            $this->model->customer = new Customer($this->gateway);
+            $this->model->customer = new Customer();
         }
         $this->model->customer->name = $name;
         $this->model->customer->email = $email;
@@ -152,7 +152,7 @@ class InvoiceBuilder extends Builder
     public function setCustomerAddress(Address $address): InvoiceBuilder
     {
         if (empty($this->model->customer)) {
-            $this->model->customer = new Customer($this->gateway);
+            $this->model->customer = new Customer();
         }
         $this->model->customer->address = $address;
         return $this;
@@ -183,9 +183,9 @@ class InvoiceBuilder extends Builder
         ?string $country = null
     ): InvoiceBuilder {
         if (empty($this->model->customer)) {
-            $this->model->customer = new Customer($this->gateway);
+            $this->model->customer = new Customer();
         }
-        $this->model->customer->address = new Address($this->gateway);
+        $this->model->customer->address = new Address();
         $this->model->customer->address->zipCode = $zipCode;
         $this->model->customer->address->street = $street;
         $this->model->customer->address->number = $number;
@@ -219,7 +219,7 @@ class InvoiceBuilder extends Builder
      */
     public function addCreditCardId($id): InvoiceBuilder
     {
-        $this->model->creditCard = new CreditCard($this->gateway);
+        $this->model->creditCard = new CreditCard();
         $this->model->creditCard->id = $id;
         return $this;
     }
@@ -233,7 +233,7 @@ class InvoiceBuilder extends Builder
      */
     public function addCreditCardToken($token): InvoiceBuilder
     {
-        $this->model->creditCard = new CreditCard($this->gateway);
+        $this->model->creditCard = new CreditCard();
         $this->model->creditCard->token = $token;
         return $this;
     }
@@ -263,7 +263,7 @@ class InvoiceBuilder extends Builder
         string $description = 'Cartão de crédito'
     ): InvoiceBuilder
     {
-        $this->model->creditCard = new CreditCard($this->gateway);
+        $this->model->creditCard = new CreditCard();
         $this->model->creditCard->number = $number;
         $this->model->creditCard->month = $month;
         $this->model->creditCard->year = $year;
@@ -274,7 +274,7 @@ class InvoiceBuilder extends Builder
         if ($customer instanceof Customer) {
             $this->model->creditCard->customer = $customer;
         } else {
-            $this->model->creditCard->customer = new Customer($this->gateway);
+            $this->model->creditCard->customer = new Customer();
             $this->model->creditCard->customer->id = $customer;
         }
         return $this;

@@ -107,7 +107,7 @@ class Invoice extends Model
     public function fill(array $data): void
     {
         if (empty($data['items']) && !empty($data['amount'])) {
-            $invoiceItem = new InvoiceItem($this->gatewayClass);
+            $invoiceItem = new InvoiceItem();
             $data['items'] = [];
             $invoiceItem->fill([
                 'description' => 'Nova cobrança',
@@ -122,7 +122,7 @@ class Invoice extends Model
             foreach ($data['items'] as $item) {
                 $invoiceItem = $item;
                 if (!empty($item) && is_array($item)) {
-                    $invoiceItem = new InvoiceItem($this->gatewayClass);
+                    $invoiceItem = new InvoiceItem();
                     $invoiceItem->fill($item);
                 }
                 $this->items[] = $invoiceItem;
@@ -131,7 +131,7 @@ class Invoice extends Model
         }
 
         if (!empty($data['customer']) && is_array($data['customer'])) {
-            $this->customer = new Customer($this->gatewayClass);
+            $this->customer = new Customer();
             $this->customer->fill($data['customer']);
             unset($data['customer']);
         }
@@ -142,7 +142,7 @@ class Invoice extends Model
         }
 
         if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
-            $this->creditCard = new CreditCard($this->gatewayClass);
+            $this->creditCard = new CreditCard();
             $this->creditCard->fill($data['credit_card']);
             unset($data['credit_card']);
         }
@@ -249,17 +249,20 @@ class Invoice extends Model
         $this->creditCard->validate();
     }
 
-    public function save(bool $validate = true): void
+    /**
+     * @inheritDoc
+     */
+    public function save($gateway = null, bool $validate = true): void
     {
         if ($validate) {
             $this->validate();
         }
         if (empty($this->customer->id)) {
-            $this->customer->save($validate);
+            $this->customer->save($gateway ?? $this->gateway, $validate);
         }
         if (!empty($this->creditCard) && empty($this->creditCard->id)) {
             $this->creditCard->customer = $this->customer;
         }
-        parent::save(false);
+        parent::save($gateway ?? $this->gateway, false);
     }
 }
