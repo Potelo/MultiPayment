@@ -4,6 +4,9 @@ namespace Potelo\MultiPayment\Tests\Unity;
 
 use Potelo\MultiPayment\Tests\TestCase;
 
+/**
+ * @covers \Potelo\MultiPayment\MultiPayment
+ */
 class MultiPaymentTest extends TestCase
 {
 

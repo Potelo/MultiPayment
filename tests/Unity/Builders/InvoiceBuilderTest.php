@@ -66,6 +66,7 @@ class InvoiceBuilderTest extends TestCase
             );
         }
         $invoice = $invoiceBuilder->create();
+        $this->assertEquals($gateway, $invoice->gateway);
         $this->assertInstanceOf(\Potelo\MultiPayment\Models\Invoice::class, $invoice);
         $this->assertObjectHasAttribute('id', $invoice);
     }

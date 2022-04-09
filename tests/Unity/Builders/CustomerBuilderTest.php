@@ -48,6 +48,7 @@ class CustomerBuilderTest extends TestCase
         }
         $customer = $customerBuilder->create();
         $this->assertNotNull($customer->id);
+        $this->assertEquals($gateway, $customer->gateway);
     }
 
     public function shouldCreateACostumerDataProvider(): array
