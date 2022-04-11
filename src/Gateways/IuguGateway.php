@@ -253,8 +253,8 @@ class IuguGateway implements Gateway
         if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
-        if (empty($creditCard->token)) {
-            $creditCard->token = Iugu_PaymentToken::create([
+        if (empty($creditCard->getToken($this))) {
+            $token = Iugu_PaymentToken::create([
                 'account_id' => Config::get('multi-payment.gateways.iugu.id'),
                 'method' => 'credit_card',
                 'test' => Config::get('multi-payment.environment') != 'production',
@@ -267,11 +267,12 @@ class IuguGateway implements Gateway
                     'year' => $creditCard->year,
                 ],
             ]);
+            $creditCard->setToken($token, $this);
         }
 
         try {
             $iuguCreditCard = Iugu_PaymentMethod::create([
-                'token' => $creditCard->token,
+                'token' => $creditCard->getToken($this),
                 'customer_id' => $creditCard->customer->id,
                 'description' => $creditCard->description ?? 'CREDIT CARD',
             ]);

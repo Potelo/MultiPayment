@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Builders;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 
 /**
  * CustomerBuilder class
@@ -157,13 +158,28 @@ class CreditCardBuilder extends Builder
      * Set the token.
      *
      * @param  string  $token
+     * @param  Gateway|string|null  $gateway
      *
      * @return $this
      */
-    public function setToken(string $token): self
+    public function setToken(string $token, $gateway = null): self
     {
-        $this->model->token = $token;
+        $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
+        $this->model->setToken($token, $gateway);
+        return $this;
+    }
 
+    /**
+     * @param  array|null  $tokens
+     *
+     * @return $this
+     */
+    public function setTokens(?array $tokens): self
+    {
+        foreach ($tokens as $gateway => $token) {
+            $gateway = ConfigurationHelper::resolveGateway($gateway);
+            $this->setToken($token, $gateway);
+        }
         return $this;
     }
 }

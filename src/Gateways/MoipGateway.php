@@ -91,8 +91,8 @@ class MoipGateway implements Gateway
             $holder = $this->createHolder($invoice->customer);
 
             if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-                if (!empty($invoice->creditCard->token)) {
-                    $payment->setCreditCardHash($invoice->creditCard->token, $holder);
+                if (!empty($invoice->creditCard->getToken($this))) {
+                    $payment->setCreditCardHash($invoice->creditCard->getToken($this), $holder);
                 } else {
                     $payment->setCreditCard(
                         $invoice->creditCard->month,
@@ -207,8 +207,8 @@ class MoipGateway implements Gateway
             );
         $payment = $verificationOrder->payments();
 
-        if (!empty($creditCard->token)) {
-            $payment->setCreditCardHash($creditCard->token, $holder);
+        if (!empty($creditCard->getToken($this))) {
+            $payment->setCreditCardHash($creditCard->getToken($this), $holder);
         } else {
             $payment->setCreditCard(
                 $creditCard->month,
