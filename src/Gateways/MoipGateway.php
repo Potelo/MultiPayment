@@ -1,4 +1,4 @@
-<?php /** @noinspection ALL */
+<?php
 
 namespace Potelo\MultiPayment\Gateways;
 
@@ -6,6 +6,7 @@ use Moip\Moip;
 use Carbon\Carbon;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
+use Moip\Resource\Orders;
 use Moip\Resource\Payment;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Address;
@@ -13,10 +14,13 @@ use Potelo\MultiPayment\Models\Invoice;
 use Moip\Exceptions\ValidationException;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
+use Moip\Exceptions\UnexpectedException;
+use Moip\Exceptions\UnautorizedException;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
 class MoipGateway implements Gateway
 {
@@ -70,6 +74,8 @@ class MoipGateway implements Gateway
             $order->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException|UnautorizedException $exception) {
+            throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
         } catch (\Exception $exception) {
             throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage());
         }
@@ -81,13 +87,12 @@ class MoipGateway implements Gateway
         $invoice->original = $order;
 
         if (!empty($invoice->paymentMethod)) {
-
             $payment = $order->payments();
             $holder = $this->createHolder($invoice->customer);
 
             if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-                if (!empty($invoice->creditCard->token)) {
-                    $payment->setCreditCardHash($invoice->creditCard->token, $holder);
+                if (!empty($invoice->creditCard->getToken($this))) {
+                    $payment->setCreditCardHash($invoice->creditCard->getToken($this), $holder);
                 } else {
                     $payment->setCreditCard(
                         $invoice->creditCard->month,
@@ -112,6 +117,8 @@ class MoipGateway implements Gateway
                 $payment->execute();
             } catch (ValidationException $exception) {
                 throw new GatewayException('Error charging invoice: ' . $exception->getMessage(), $exception->getErrors());
+            } catch (UnexpectedException|UnautorizedException $exception) {
+                throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
             } catch (\Exception $exception) {
                 throw new GatewayException('Error charging invoice: ' . $exception->getMessage());
             }
@@ -120,16 +127,21 @@ class MoipGateway implements Gateway
                 if (Config::get('environment') != 'production') {
                     $payment->authorize();
                     $order = $order->get($order->getId());
+                    /** @noinspection PhpParamsInspection */
                     $payment = $payment->get($payment->getId());
+                    /** @noinspection PhpUndefinedMethodInspection */
                     $payment->setOrder($order);
 
                 }
                 $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
                 $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
+                $invoice->creditCard->gateway = 'moip';
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
                 $invoice->bankSlip = new BankSlip();
+                /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
+                /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->number = $payment->getLineCodeBoleto();
             }
 
@@ -151,17 +163,92 @@ class MoipGateway implements Gateway
         $moipCustomer = $this->multipaymentCustomerToMoipCustomer($customer);
         try {
             $this->init();
+            /** @var \Moip\Resource\Customer $moipCustomer*/
             $moipCustomer = $moipCustomer->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException|UnautorizedException $exception) {
+            throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
         } catch (\Exception $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage());
         }
         $customer->id = $moipCustomer->getId();
         $customer->createdAt = Carbon::now();
-        $customer->original = $customer;
+        $customer->original = $moipCustomer;
         $customer->gateway = 'moip';
         return $customer;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createCreditCard(CreditCard $creditCard): CreditCard
+    {
+        $this->init();
+        $customer = $this->moip->customers()->get($creditCard->customer->id);
+        $verificationValue = rand(200, 300);
+        $verificationOrder = $this->moip->orders()->setOwnId(uniqid())
+            ->addItem(
+                'Verificação de Cartão',
+                1,
+                'Verificação de Cartão',
+                $verificationValue
+            )
+            ->setCustomerId($customer->getId())
+            ->create();
+
+        $holder = $this->moip->holders();
+        $holder->setFullname($customer->getFullname())
+            ->setTaxDocument($customer->getTaxDocumentNumber())
+            ->setBirthDate($customer->getBirthDate() ?? '')
+            ->setPhone(
+                $customer->getPhoneAreaCode() ?? '',
+                $customer->getPhoneNumber() ?? '',
+                $customer->getPhoneCountryCode() ?? ''
+            );
+        $payment = $verificationOrder->payments();
+
+        if (!empty($creditCard->getToken($this))) {
+            $payment->setCreditCardHash($creditCard->getToken($this), $holder);
+        } else {
+            $payment->setCreditCard(
+                $creditCard->month,
+                substr($creditCard->year, -2),
+                $creditCard->number,
+                $creditCard->cvv,
+                $holder
+            )
+                ->setInstallmentCount(1)
+                ->setStatementDescriptor('Verificação');
+        }
+
+        try {
+            $payment->execute();
+            if (Config::get('environment') != 'production') {
+                $payment->authorize();
+            }
+            //wait for the payment to be authorized
+            sleep(3);
+            $payment->refunds()->creditCardFull();
+        } catch (ValidationException $exception) {
+            throw new GatewayException('Error creating credit card: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException|UnautorizedException $exception) {
+            throw new GatewayNotAvailableException('Error creating credit card: ' . $exception->getMessage());
+        } catch (\Exception $exception) {
+            throw new GatewayException('Error creating credit card: ' . $exception->getMessage());
+        }
+
+        if (!empty($payment->getFundingInstrument()->creditCard->holder->fullname)) {
+            $names = explode(' ', $payment->getFundingInstrument()->creditCard->holder->fullname, 2);
+            $creditCard->firstName = $names[0];
+            $creditCard->lastName = count($names) > 1 ? $names[1] : null;
+        }
+        $creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
+        $creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
+        $creditCard->id = $payment->getFundingInstrument()->creditCard->id;
+        $creditCard->original = $payment->getFundingInstrument()->creditCard;
+        $creditCard->gateway = 'moip';
+        return $creditCard;
     }
 
     /**
@@ -246,6 +333,7 @@ class MoipGateway implements Gateway
         $this->init();
 
         try {
+            /** @var Orders $moipOrder*/
             $moipOrder = $this->moip->orders()->get($id);
         } catch (ValidationException $e) {
             throw new GatewayException('Error getting invoice: ' . $e->getMessage(), $e->getErrors());
@@ -254,6 +342,7 @@ class MoipGateway implements Gateway
         }
 
         $invoice = new Invoice();
+
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
         $invoice->paidAt = null;

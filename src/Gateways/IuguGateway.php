@@ -18,6 +18,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class IuguGateway implements Gateway
@@ -93,6 +94,14 @@ class IuguGateway implements Gateway
             }
             try {
                 $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
+            } catch (IuguObjectNotFound $e) {
+                if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                    throw new GatewayNotAvailableException($e->getMessage());
+                } else {
+                    throw new GatewayException($e->getMessage());
+                }
+            } catch (\IuguAuthenticationException $e) {
+                throw new GatewayNotAvailableException($e->getMessage());
             } catch (\Exception $e) {
                 throw new GatewayException($e->getMessage());
             }
@@ -142,6 +151,14 @@ class IuguGateway implements Gateway
 
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
+        } catch (IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
         }
@@ -229,14 +246,15 @@ class IuguGateway implements Gateway
      *
      * @return CreditCard
      * @throws GatewayException|ModelAttributeValidationException
+     * @throws GatewayNotAvailableException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
         if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
-        if (empty($creditCard->token)) {
-            $creditCard->token = Iugu_PaymentToken::create([
+        if (empty($creditCard->getToken($this))) {
+            $token = Iugu_PaymentToken::create([
                 'account_id' => Config::get('multi-payment.gateways.iugu.id'),
                 'method' => 'credit_card',
                 'test' => Config::get('multi-payment.environment') != 'production',
@@ -249,16 +267,30 @@ class IuguGateway implements Gateway
                     'year' => $creditCard->year,
                 ],
             ]);
+            $creditCard->setToken($token, $this);
         }
+
         try {
             $iuguCreditCard = Iugu_PaymentMethod::create([
-                'token' => $creditCard->token,
+                'token' => $creditCard->getToken($this),
                 'customer_id' => $creditCard->customer->id,
                 'description' => $creditCard->description ?? 'CREDIT CARD',
             ]);
+        } catch (IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
             throw new GatewayException($e->getMessage());
         }
+        if ($iuguCreditCard->errors) {
+            throw new GatewayException('Error creating creditCard: ', $iuguCreditCard->errors);
+        }
+
         $creditCard->id = $iuguCreditCard->id ?? null;
         $creditCard->brand = $iuguCreditCard->data->brand ?? null;
         $creditCard->year = $iuguCreditCard->data->year ?? null;
@@ -270,6 +302,7 @@ class IuguGateway implements Gateway
         }
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
+        $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
     }
