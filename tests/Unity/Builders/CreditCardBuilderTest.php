@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Tests\Unity\Builders;
 
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Facades\MultiPayment;
 
@@ -62,6 +63,17 @@ class CreditCardBuilderTest extends TestCase
                 'moip',
                 array_merge(self::creditCard(), ['customer' => self::customerWithoutAddress()])
             ],
+        ];
+    }
+
+    /**
+     * Should create a credit card using token.
+     *
+     * @return void
+     */
+    public function testShouldCreateACreditCardWithHash()
+    {
+        $dataProvider = [
             'moip - with hash' => [
                 'moip',
                 [
@@ -70,15 +82,33 @@ class CreditCardBuilderTest extends TestCase
                     'customer' => self::customerWithoutAddress(),
                 ],
             ],
-//            'iugu - with hash' => [
-//                'iugu',
-//                [
-//                    'token' => '1f5bd8ef-80ff-4678-ac00-99f82bfbdfbd',
-//                    'description' => 'Test credit card',
-//                    'customer' => self::customerWithoutAddress(),
-//                ],
-//            ],
+            'iugu - with hash' => [
+                'iugu',
+                [
+                    'token' => self::iuguCreditCardToken(),
+                    'description' => 'Test credit card',
+                    'customer' => self::customerWithoutAddress(),
+                ],
+            ],
         ];
+
+        foreach ($dataProvider as $data) {
+            $gateway = $data[0];
+            $data = $data[1];
+            $creditCardBuilder = MultiPayment::setGateway($gateway)->newCreditCard();
+            $customer = $this->createCustomer($gateway, $data['customer']);
+            $creditCardBuilder->setCustomerId($customer->id);
+            if (!empty($data['token'])) {
+                $creditCardBuilder->setToken($data['token']);
+            }
+            if (!empty($data['description'])) {
+                $creditCardBuilder->setDescription($data['description']);
+            }
+            $creditCard = $creditCardBuilder->create();
+            $this->assertNotNull($creditCard->id);
+            $this->assertEquals($gateway, $creditCard->gateway);
+        }
+
     }
 
     public function createCustomer($gateway, $data): \Potelo\MultiPayment\Models\Customer

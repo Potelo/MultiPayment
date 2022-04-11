@@ -1,6 +1,7 @@
 <?php
 namespace Potelo\MultiPayment\Tests;
 
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
 class TestCase extends \Orchestra\Testbench\TestCase
@@ -79,5 +80,23 @@ class TestCase extends \Orchestra\Testbench\TestCase
         $creditCard['lastName'] = 'Teste';
         $creditCard['description'] = 'card description';
         return $creditCard;
+    }
+
+    public static function iuguCreditCardToken() {
+        $creditCard = self::creditCard();
+        \Iugu::setApiKey(Config::get('multi-payment.gateways.iugu.api_key'));
+        return \Iugu_PaymentToken::create([
+            'account_id' => Config::get('multi-payment.gateways.iugu.id'),
+            'method' => 'credit_card',
+            'test' => Config::get('multi-payment.environment') != 'production',
+            'data' => [
+                'number' => $creditCard['number'],
+                'verification_value' => $creditCard['cvv'],
+                'first_name' => $creditCard['firstName'],
+                'last_name' => $creditCard['lastName'],
+                'month' => $creditCard['month'],
+                'year' => $creditCard['year'],
+            ],
+        ]);
     }
 }
