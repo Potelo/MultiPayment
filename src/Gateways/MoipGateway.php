@@ -136,6 +136,7 @@ class MoipGateway implements Gateway
                 $invoice->creditCard->id = $payment->getFundingInstrument()->creditCard->id;
                 $invoice->creditCard->brand = $payment->getFundingInstrument()->creditCard->brand;
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
+                $invoice->creditCard->gateway = 'moip';
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
                 $invoice->bankSlip = new BankSlip();
                 /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
