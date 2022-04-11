@@ -79,6 +79,8 @@ class FallbackTest extends TestCase
             ->addCreditCardTokens($tokens)
             ->setPaymentMethod(Invoice::PAYMENT_METHOD_CREDIT_CARD)
             ->create();
+        $this->assertTrue($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD);
+        $this->assertTrue($invoice->creditCard->gateway == $data['fallback']);
         $this->assertTrue($invoice->gateway == $data['fallback']);
     }
 
