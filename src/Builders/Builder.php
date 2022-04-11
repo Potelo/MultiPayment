@@ -13,7 +13,7 @@ class Builder
 {
     protected bool $useFallback = false;
     private ?Gateway $fallbackGateway = null;
-    protected Gateway $gateway;
+    protected ?Gateway $gateway = null;
     protected Model $model;
 
     /**
