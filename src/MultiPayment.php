@@ -9,6 +9,9 @@ use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Exceptions\GatewayFallbackException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -18,44 +21,25 @@ class MultiPayment
 {
 
     private Gateway $gateway;
+    private ?Gateway $fallbackGateway = null;
 
     /**
      * MultiPayment constructor.
      *
-     * @param  string|null  $gateway
-     *
-     * @throws GatewayException
+     * @param  Gateway|string|null  $gateway
      */
-    public function __construct(?string $gateway = null)
+    public function __construct($gateway = null)
     {
-        if (empty($gateway)) {
-            $gateway = Config::get('multi-payment.default');
-        }
-        $this->setGateway($gateway);
+        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
     }
 
     /**
-     * Set the gateway
-     *
-     * @param  string  $name
-     *
+     * @param  Gateway|string|null  $gateway
      * @return MultiPayment
-     * @throws GatewayException
      */
-    public function setGateway(string $name): MultiPayment
+    public function setGateway($gateway): MultiPayment
     {
-        if (empty(Config::get('multi-payment.gateways.'.$name))) {
-            throw GatewayException::notConfigured($name);
-        }
-        $className = Config::get("multi-payment.gateways.$name.class");
-        if (!class_exists($className)) {
-            throw GatewayException::notFound($name);
-        }
-        $gatewayClass = new $className();
-        if (!$gatewayClass instanceof Gateway) {
-            throw GatewayException::invalidInterface($className);
-        }
-        $this->gateway = $gatewayClass;
+        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
         return $this;
     }
 
@@ -65,30 +49,32 @@ class MultiPayment
      * @param  array  $attributes
      *
      * @return Invoice
-     * @throws GatewayException|ModelAttributeValidationException
+     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException|GatewayFallbackException
      */
     public function charge(array $attributes): Invoice
     {
-        $invoice = new Invoice($this->gateway);
+        $invoice = new Invoice();
         $invoice->fill($attributes);
-        $invoice->customer = new Customer($this->gateway);
+        $invoice->customer = new Customer();
         $invoice->customer->fill($attributes['customer']);
-        $invoice->validate();
-        if (empty($invoice->customer->id)) {
-            $invoice->customer->save();
+        try {
+            return $invoice->save($this->gateway);
+        } catch (GatewayNotAvailableException $e) {
+            if (Config::get('multi-payment.fallback')) {
+                $this->fallbackGateway = ConfigurationHelper::getNextGateway($this->fallbackGateway ?? $this->gateway);
+                if (get_class($this->fallbackGateway) !== get_class($this->gateway)) {
+                    return $this->charge($attributes);
+                }
+                throw new GatewayFallbackException('All gateways failed');
+            }
+            throw $e;
         }
-        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
-            $invoice->creditCard->customer = $invoice->customer;
-        }
-        $invoice->save();
-        return $invoice;
     }
 
     /**
      * Return an InvoiceBuilder instance
      *
      * @return InvoiceBuilder
-     * @throws GatewayException
      */
     public function newInvoice(): InvoiceBuilder
     {
@@ -99,7 +85,6 @@ class MultiPayment
      * Return a CustomerBuilder instance
      *
      * @return CustomerBuilder
-     * @throws GatewayException
      */
     public function newCustomer(): CustomerBuilder
     {

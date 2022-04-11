@@ -2,88 +2,46 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Collection;
 use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ConfigurationException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 abstract class Model
 {
-
-    /**
-     * The gateway instance.
-     * @var Gateway
-     */
-    protected Gateway $gatewayClass;
-
-    /**
-     * Create a new instance of the model.
-     *
-     * @param  Gateway|string|null  $gateway
-     *
-     * @throws GatewayException
-     */
-    public function __construct($gateway = null)
-    {
-        if (!empty($gateway)) {
-            $this->setGatewayClass($gateway);
-        }
-    }
-
-    /**
-     * Set the gateway class.
-     *
-     * @param  Gateway|string  $gatewayClass
-     *
-     * @return void
-     * @throws GatewayException
-     */
-    private function setGatewayClass($gatewayClass): void
-    {
-        if (is_string($gatewayClass)) {
-            if (empty(Config::get('multi-payment.gateways.'.$gatewayClass))) {
-                throw GatewayException::notConfigured($gatewayClass);
-            }
-            $className = Config::get("multi-payment.gateways.$gatewayClass.class");
-            if (!class_exists($className)) {
-                throw GatewayException::notFound($className);
-            }
-            $gatewayClass = new $className;
-        }
-        if (!$gatewayClass instanceof Gateway) {
-            throw GatewayException::invalidInterface(get_class($gatewayClass));
-        }
-        $this->gatewayClass = $gatewayClass;
-    }
+    protected const CAN_CREATE_MANY = false;
 
     /**
      * Create a new instance of the model with an array of attributes.
      *
      * @param  array  $data
+     * @param  null  $gateway
      *
-     * @return void
-     * @throws GatewayException|ModelAttributeValidationException
+     * @return static
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     * @throws ModelAttributeValidationException
      */
-    public function create(array $data): void
+    public function create(array $data, $gateway = null)
     {
         $this->fill($data);
-        $this->save();
+        return $this->save($gateway);
     }
 
     /**
      * If gateway is set, then we will use it to save the model
      *
+     * @param  Gateway|string|null  $gateway
      * @param  bool  $validate
      *
-     * @return void
-     * @throws GatewayException
-     * @throws ModelAttributeValidationException
+     * @return static
+     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function save(bool $validate = true): void
+    public function save($gateway = null, bool $validate = true)
     {
-        if (empty($this->gatewayClass)) {
-            throw new GatewayException("Gateway not set");
-        }
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
             $method = 'update';
@@ -92,13 +50,16 @@ abstract class Model
             $method = 'create';
         }
         $method = $method . $class;
-        if (!method_exists($this->gatewayClass, $method)) {
-            throw GatewayException::methodNotFound(get_class($this->gatewayClass), $method);
-        }
+
         if ($validate) {
             $this->validate();
         }
-        $this->gatewayClass->$method($this);
+        $gatewayClass = ConfigurationHelper::resolveGateway($gateway);
+        if (!method_exists($gatewayClass, $method)) {
+            throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
+        }
+        $gatewayClass->$method($this);
+        return $this;
     }
 
     /**
@@ -165,12 +126,14 @@ abstract class Model
     public function toArray(): array
     {
         $array = [];
-        foreach (get_object_vars($this) as $key => $value) {
-
-            $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $key));
-            if (!empty($value)) {
-                $array[$key] = $value;
+        $reflect = new \ReflectionClass($this);
+        $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC);
+        foreach ($props as $prop) {
+            if (!empty($this->{$prop->getName()})) {
+                $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $prop->getName()));
+                $array[$key] = $this->{$prop->getName()};
             }
+
         }
         return $array;
     }
@@ -189,17 +152,53 @@ abstract class Model
      * Get the model instance by id in the gateway.
      *
      * @param  string  $id
-     * @param  Gateway  $gateway
+     * @param  Gateway|string|null  $gateway
      *
      * @return static
      * @throws GatewayException
      */
-    public static function get(string $id, Gateway $gateway): Model
+    public static function get(string $id, $gateway = null): Model
     {
         $method = 'get' . self::getClassName();
+        $gateway = ConfigurationHelper::resolveGateway($gateway);
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
         return $gateway->$method($id);
+    }
+
+    /**
+     *
+     * @param  array  $attributes
+     * @param  array  $gateways
+     *
+     * @return Collection
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     * @throws ModelAttributeValidationException
+     */
+    public static function createMany(array $attributes, array $gateways = []): Collection
+    {
+        if (!static::CAN_CREATE_MANY) {
+            throw ConfigurationException::cannotBatchedCreate(static::getClassName());
+        }
+
+        if(empty($gateways)) {
+            $gateways = ConfigurationHelper::getAllGateways();
+        } else {
+            $gateways = array_map(function($gateway) {
+                return ConfigurationHelper::resolveGateway($gateway);
+            }, $gateways);
+        }
+
+        $collection = new Collection();
+        foreach ($gateways as $gateway) {
+            $model = new static();
+            $model->fill($attributes);
+            $model->save($gateway);
+            $collection->add($model);
+        }
+
+        return $collection;
     }
 }
