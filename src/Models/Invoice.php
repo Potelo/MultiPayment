@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -264,5 +265,17 @@ class Invoice extends Model
             $this->creditCard->customer = $this->customer;
         }
         parent::save($gateway, false);
+    }
+
+    /**
+     * Refund the invoice
+     *
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function refund(): Invoice
+    {
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+        return $gateway->refundInvoice($this);
     }
 }

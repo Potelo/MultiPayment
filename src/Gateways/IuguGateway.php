@@ -327,7 +327,73 @@ class IuguGateway implements Gateway
             throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
         }
 
-        $invoice = new Invoice();
+        return $this->parseInvoice($iuguInvoice);
+    }
+
+    /**
+     * Convert the iugu payment method to the MultiPayment payment method
+     *
+     * @param $iuguPaymentMethod
+     *
+     * @return string|null
+     */
+    private function iuguToMultiPaymentPaymentMethod($iuguPaymentMethod): ?string
+    {
+        $multiPaymentPaymentMethod = [
+            Invoice::PAYMENT_METHOD_PIX,
+            Invoice::PAYMENT_METHOD_BANK_SLIP,
+            Invoice::PAYMENT_METHOD_CREDIT_CARD
+        ];
+        if (!empty($iuguPaymentMethod)) {
+            foreach ($multiPaymentPaymentMethod as $paymentMethod) {
+                if (str_contains($iuguPaymentMethod, $paymentMethod)) {
+                    return $paymentMethod;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function refundInvoice(Invoice $invoice): Invoice
+    {
+        $iuguInvoice = new \Iugu_Invoice(['id' => $invoice->id]);
+
+        try {
+            $refunded = $iuguInvoice->refund();
+            if (!$refunded) {
+                throw new GatewayException("Error refunding invoice");
+            }
+        } catch (\Exception $e) {
+            throw new GatewayException("Error refunding invoice: {$e->getMessage()}");
+        }
+
+        return $this->parseInvoice($iuguInvoice, $invoice);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function __toString()
+    {
+        return 'iugu';
+    }
+
+    /**
+     * Convert the iugu invoice into a MultiPayment invoice
+     *
+     * @param $iuguInvoice
+     * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
+     *
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    private function parseInvoice($iuguInvoice, ?Invoice $invoice = null): Invoice
+    {
+        $invoice = $invoice ?? new Invoice();
+
         $invoice->id = $iuguInvoice->id;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
         $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
@@ -383,29 +449,5 @@ class IuguGateway implements Gateway
         }
 
         return $invoice;
-    }
-
-    /**
-     * Convert the iugu payment method to the MultiPayment payment method
-     *
-     * @param $iuguPaymentMethod
-     *
-     * @return string|null
-     */
-    private function iuguToMultiPaymentPaymentMethod($iuguPaymentMethod): ?string
-    {
-        $multiPaymentPaymentMethod = [
-            Invoice::PAYMENT_METHOD_PIX,
-            Invoice::PAYMENT_METHOD_BANK_SLIP,
-            Invoice::PAYMENT_METHOD_CREDIT_CARD
-        ];
-        if (!empty($iuguPaymentMethod)) {
-            foreach ($multiPaymentPaymentMethod as $paymentMethod) {
-                if (str_contains($iuguPaymentMethod, $paymentMethod)) {
-                    return $paymentMethod;
-                }
-            }
-        }
-        return null;
     }
 }
