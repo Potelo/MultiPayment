@@ -83,7 +83,7 @@ class MultiPaymentTest extends TestCase
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
 
-        $invoiceBuilder = MultiPayment::setGateway($gateway)->newInvoice();
+        $invoiceBuilder = $multiPayment->newInvoice();
         $invoiceBuilder->addCustomer(
             $data['customer']['name'] ?? null,
             $data['customer']['email'] ?? null,
@@ -106,6 +106,7 @@ class MultiPaymentTest extends TestCase
 
         );
         $invoice = $invoiceBuilder->create();
+        sleep(3); // Aguarda a criação da fatura no gateway (moip)
 
         $refundedInvoice = $multiPayment->refundInvoice($invoice->id);
 
