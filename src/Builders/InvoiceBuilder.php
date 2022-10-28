@@ -19,8 +19,6 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 class InvoiceBuilder extends Builder
 {
 
-    protected bool $useFallback = true;
-
     /**
      * InvoiceBuilder constructor.
      *

@@ -36,25 +36,6 @@ class ConfigurationHelper
     }
 
     /**
-     * @param  Gateway  $actualGateway
-     *
-     * @return Gateway
-     */
-    public static function getNextGateway(Gateway $actualGateway)
-    {
-        $gateways = Config::get('multi-payment.gateways');
-        $found = false;
-        foreach ($gateways as $key => $gateway) {
-            if ($found == true) {
-                return self::resolveGateway($key);
-            } elseif ($gateway['class'] === get_class($actualGateway)) {
-                $found = true;
-            }
-        }
-        return self::resolveGateway(array_key_first($gateways));
-    }
-
-    /**
      * @return array
      * @throws ConfigurationException
      */
