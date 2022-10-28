@@ -15,12 +15,10 @@ class Builder
      * Builder constructor.
      *
      * @param  Gateway|string|null  $gateway
-     *
-     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      */
     public function __construct($gateway = null)
     {
-        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
+        $this->setGateway($gateway);
     }
 
     /**
@@ -45,5 +43,17 @@ class Builder
     public function get(): Model
     {
         return $this->model;
+    }
+
+    /**
+     * Set the gateway.
+     *
+     * @param  Gateway|string|null  $gateway
+     */
+    public function setGateway($gateway = null): self
+    {
+        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
+
+        return $this;
     }
 }
