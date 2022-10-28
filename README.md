@@ -1,3 +1,6 @@
+## Introdução
+
+MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu e Moip.
 
 - [Introdução](#introdução)
 - [Requisitos](#requisitos)
@@ -12,12 +15,6 @@
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
-
-
-
-## Introdução
-
-MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu e Moip.
 
 ## Requisitos
   - PHP 7.4+
