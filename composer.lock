@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "93b6caff6be6c9b07453a51da2abeb6d",
+    "content-hash": "ae002a6fff36a3af2a2bf3e2d69ecc34",
     "packages": [
         {
             "name": "brick/math",
@@ -507,14 +507,8 @@
             "version": "dev-master",
             "source": {
                 "type": "git",
-                "url": "https://github.com/iugu/iugu-php.git",
-                "reference": "4042ec2b347e9e4156d2526fdb88a0c455908a35"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/iugu/iugu-php/zipball/4042ec2b347e9e4156d2526fdb88a0c455908a35",
-                "reference": "4042ec2b347e9e4156d2526fdb88a0c455908a35",
-                "shasum": ""
+                "url": "https://github.com/Potelo/iugu-php.git",
+                "reference": "6afd20ba53b3eff3374ca492393b9e8ee52fcfd8"
             },
             "require": {
                 "ext-curl": "*",
@@ -533,7 +527,11 @@
                     "lib/Iugu/"
                 ]
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "scripts": {
+                "tests": [
+                    "./vendor/bin/phpunit --colors tests"
+                ]
+            },
             "license": [
                 "MIT"
             ],
@@ -550,11 +548,7 @@
                 "iugu",
                 "pagamentos"
             ],
-            "support": {
-                "issues": "https://github.com/iugu/iugu-php/issues",
-                "source": "https://github.com/iugu/iugu-php/tree/master"
-            },
-            "time": "2019-05-31T22:28:25+00:00"
+            "time": "2022-07-27T22:20:21+00:00"
         },
         {
             "name": "laravel/framework",
