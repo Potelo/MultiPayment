@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment;
 
-use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
@@ -10,7 +9,6 @@ use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
-use Potelo\MultiPayment\Exceptions\GatewayFallbackException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -21,7 +19,6 @@ class MultiPayment
 {
 
     private Gateway $gateway;
-    private ?Gateway $fallbackGateway = null;
 
     /**
      * MultiPayment constructor.
@@ -49,7 +46,7 @@ class MultiPayment
      * @param  array  $attributes
      *
      * @return Invoice
-     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException|GatewayFallbackException
+     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException
      */
     public function charge(array $attributes): Invoice
     {
@@ -57,19 +54,9 @@ class MultiPayment
         $invoice->fill($attributes);
         $invoice->customer = new Customer();
         $invoice->customer->fill($attributes['customer']);
-        try {
-            $invoice->save($this->gateway);
-            return $invoice;
-        } catch (GatewayNotAvailableException $e) {
-            if (Config::get('multi-payment.fallback')) {
-                $this->fallbackGateway = ConfigurationHelper::getNextGateway($this->fallbackGateway ?? $this->gateway);
-                if (get_class($this->fallbackGateway) !== get_class($this->gateway)) {
-                    return $this->charge($attributes);
-                }
-                throw new GatewayFallbackException('All gateways failed');
-            }
-            throw $e;
-        }
+
+        $invoice->save($this->gateway);
+        return $invoice;
     }
 
     /**
