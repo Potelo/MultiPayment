@@ -2,13 +2,14 @@
 
 namespace Potelo\MultiPayment;
 
-use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -22,40 +23,20 @@ class MultiPayment
     /**
      * MultiPayment constructor.
      *
-     * @param  string|null  $gateway
-     *
-     * @throws GatewayException
+     * @param  Gateway|string|null  $gateway
      */
-    public function __construct(?string $gateway = null)
+    public function __construct($gateway = null)
     {
-        if (empty($gateway)) {
-            $gateway = Config::get('multi-payment.default');
-        }
-        $this->setGateway($gateway);
+        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
     }
 
     /**
-     * Set the gateway
-     *
-     * @param  string  $name
-     *
+     * @param  Gateway|string|null  $gateway
      * @return MultiPayment
-     * @throws GatewayException
      */
-    public function setGateway(string $name): MultiPayment
+    public function setGateway($gateway): MultiPayment
     {
-        if (empty(Config::get('multi-payment.gateways.'.$name))) {
-            throw GatewayException::notConfigured($name);
-        }
-        $className = Config::get("multi-payment.gateways.$name.class");
-        if (!class_exists($className)) {
-            throw GatewayException::notFound($name);
-        }
-        $gatewayClass = new $className();
-        if (!$gatewayClass instanceof Gateway) {
-            throw GatewayException::invalidInterface($className);
-        }
-        $this->gateway = $gatewayClass;
+        $this->gateway = ConfigurationHelper::resolveGateway($gateway);
         return $this;
     }
 
@@ -65,22 +46,16 @@ class MultiPayment
      * @param  array  $attributes
      *
      * @return Invoice
-     * @throws GatewayException|ModelAttributeValidationException
+     * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException
      */
     public function charge(array $attributes): Invoice
     {
-        $invoice = new Invoice($this->gateway);
+        $invoice = new Invoice();
         $invoice->fill($attributes);
-        $invoice->customer = new Customer($this->gateway);
+        $invoice->customer = new Customer();
         $invoice->customer->fill($attributes['customer']);
-        $invoice->validate();
-        if (empty($invoice->customer->id)) {
-            $invoice->customer->save();
-        }
-        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod === Invoice::PAYMENT_METHOD_CREDIT_CARD && empty($invoice->creditCard->customer->id)) {
-            $invoice->creditCard->customer = $invoice->customer;
-        }
-        $invoice->save();
+
+        $invoice->save($this->gateway);
         return $invoice;
     }
 
@@ -88,7 +63,6 @@ class MultiPayment
      * Return an InvoiceBuilder instance
      *
      * @return InvoiceBuilder
-     * @throws GatewayException
      */
     public function newInvoice(): InvoiceBuilder
     {
@@ -99,7 +73,6 @@ class MultiPayment
      * Return a CustomerBuilder instance
      *
      * @return CustomerBuilder
-     * @throws GatewayException
      */
     public function newCustomer(): CustomerBuilder
     {

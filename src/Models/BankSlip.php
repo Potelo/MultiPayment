@@ -2,8 +2,6 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use Carbon\Carbon;
-
 /**
  * Class BankSlip
  */

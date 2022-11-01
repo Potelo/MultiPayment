@@ -3,4 +3,3 @@ vendor/
 .vscode/
 /.phpunit.result.cache
 /.phpunit.cache/
-/.env

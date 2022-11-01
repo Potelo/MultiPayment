@@ -1,4 +1,4 @@
-<?php /** @noinspection ALL */
+<?php
 
 namespace Potelo\MultiPayment\Gateways;
 
@@ -6,6 +6,7 @@ use Moip\Moip;
 use Carbon\Carbon;
 use Moip\Auth\BasicAuth;
 use Moip\Resource\Holder;
+use Moip\Resource\Orders;
 use Moip\Resource\Payment;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Address;
@@ -13,10 +14,13 @@ use Potelo\MultiPayment\Models\Invoice;
 use Moip\Exceptions\ValidationException;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
+use Moip\Exceptions\UnexpectedException;
+use Moip\Exceptions\UnautorizedException;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
 class MoipGateway implements Gateway
 {
@@ -70,6 +74,8 @@ class MoipGateway implements Gateway
             $order->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException|UnautorizedException $exception) {
+            throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
         } catch (\Exception $exception) {
             throw new GatewayException('Error trying to create invoice: ' . $exception->getMessage());
         }
@@ -81,7 +87,6 @@ class MoipGateway implements Gateway
         $invoice->original = $order;
 
         if (!empty($invoice->paymentMethod)) {
-
             $payment = $order->payments();
             $holder = $this->createHolder($invoice->customer);
 
@@ -112,6 +117,8 @@ class MoipGateway implements Gateway
                 $payment->execute();
             } catch (ValidationException $exception) {
                 throw new GatewayException('Error charging invoice: ' . $exception->getMessage(), $exception->getErrors());
+            } catch (UnexpectedException|UnautorizedException $exception) {
+                throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
             } catch (\Exception $exception) {
                 throw new GatewayException('Error charging invoice: ' . $exception->getMessage());
             }
@@ -120,7 +127,9 @@ class MoipGateway implements Gateway
                 if (Config::get('environment') != 'production') {
                     $payment->authorize();
                     $order = $order->get($order->getId());
+                    /** @noinspection PhpParamsInspection */
                     $payment = $payment->get($payment->getId());
+                    /** @noinspection PhpUndefinedMethodInspection */
                     $payment->setOrder($order);
 
                 }
@@ -129,7 +138,9 @@ class MoipGateway implements Gateway
                 $invoice->creditCard->lastDigits = $payment->getFundingInstrument()->creditCard->last4;
             } elseif ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP) {
                 $invoice->bankSlip = new BankSlip();
+                /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->url = $payment->getHrefPrintBoleto();
+                /** @noinspection PhpFieldAssignmentTypeMismatchInspection */
                 $invoice->bankSlip->number = $payment->getLineCodeBoleto();
             }
 
@@ -151,9 +162,12 @@ class MoipGateway implements Gateway
         $moipCustomer = $this->multipaymentCustomerToMoipCustomer($customer);
         try {
             $this->init();
+            /** @var \Moip\Resource\Customer $moipCustomer*/
             $moipCustomer = $moipCustomer->create();
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage(), $exception->getErrors());
+        } catch (UnexpectedException|UnautorizedException $exception) {
+            throw new GatewayNotAvailableException('Error creating customer: ' . $exception->getMessage());
         } catch (\Exception $exception) {
             throw new GatewayException('Error creating customer: ' . $exception->getMessage());
         }
@@ -246,6 +260,7 @@ class MoipGateway implements Gateway
         $this->init();
 
         try {
+            /** @var Orders $moipOrder*/
             $moipOrder = $this->moip->orders()->get($id);
         } catch (ValidationException $e) {
             throw new GatewayException('Error getting invoice: ' . $e->getMessage(), $e->getErrors());
@@ -254,6 +269,7 @@ class MoipGateway implements Gateway
         }
 
         $invoice = new Invoice();
+
         $invoice->id = $moipOrder->getId();
         $invoice->status = $this->moipStatusToMultiPayment($moipOrder->getStatus());
         $invoice->paidAt = null;

@@ -5,6 +5,7 @@ namespace  Potelo\MultiPayment\Contracts;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
 interface Gateway
 {
@@ -15,7 +16,7 @@ interface Gateway
      * @param  Customer  $customer
      *
      * @return Customer
-     * @throws GatewayException
+     * @throws GatewayException|GatewayNotAvailableException
      */
     public function createCustomer(Customer $customer): Customer;
 
@@ -25,7 +26,7 @@ interface Gateway
      * @param  Invoice  $invoice
      *
      * @return Invoice
-     * @throws GatewayException
+     * @throws GatewayException|GatewayNotAvailableException
      */
     public function createInvoice(Invoice $invoice): Invoice;
 
@@ -35,7 +36,7 @@ interface Gateway
      * @param string $id
      * 
      * @return Invoice
-     * @throws GatewayException
+     * @throws GatewayException|GatewayNotAvailableException
      */
     public function getInvoice(string $id): Invoice;
     
