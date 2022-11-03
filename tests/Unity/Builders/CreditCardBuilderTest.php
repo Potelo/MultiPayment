@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment\Tests\Unity\Builders;
 
-use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Facades\MultiPayment;
 

@@ -227,30 +227,13 @@ class InvoiceBuilder extends Builder
      * Add a credit card token.
      *
      * @param $token
-     * @param  Gateway|string|null  $gateway
      *
      * @return $this
      */
-    public function addCreditCardToken($token, $gateway = null): InvoiceBuilder
+    public function addCreditCardToken($token): InvoiceBuilder
     {
         $this->model->creditCard = new CreditCard();
-        $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
-        $this->model->creditCard->setToken($token, $gateway);
-        return $this;
-    }
-
-    /**
-     * @param  array|null  $tokens
-     *
-     * @return $this
-     */
-    public function addCreditCardTokens(?array $tokens): self
-    {
-        $this->model->creditCard = new CreditCard();
-        foreach ($tokens as $gateway => $token) {
-            $gateway = ConfigurationHelper::resolveGateway($gateway);
-            $this->model->creditCard->setToken($token, $gateway);
-        }
+        $this->model->creditCard->token = $token;
         return $this;
     }
 

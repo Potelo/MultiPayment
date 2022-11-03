@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
-use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -69,9 +68,10 @@ class CreditCard extends Model
     public ?string $lastName;
 
     /**
-     * @var array|null
+     * @var string|null
      */
-    public ?array $tokens;
+    public ?string $token;
+
     /**
      * @var string|null
      */
@@ -141,7 +141,7 @@ class CreditCard extends Model
     public function attributesExtraValidation(array $attributes): void
     {
         if (in_array('id', $attributes) &&
-            in_array('tokens', $attributes) &&
+            in_array('token', $attributes) &&
             in_array('year', $attributes) &&
             in_array('month', $attributes) &&
             in_array('number', $attributes) &&
@@ -149,7 +149,7 @@ class CreditCard extends Model
             in_array('firstName', $attributes) &&
             in_array('lastName', $attributes) &&
             empty($this->id) &&
-            empty($this->tokens) &&
+            empty($this->token) &&
             (
                 empty($this->year) ||
                 empty($this->month) ||
@@ -159,7 +159,7 @@ class CreditCard extends Model
                 empty($this->lastName)
             )
         ) {
-            throw new ModelAttributeValidationException('The `id` or `token` or [`number`, `month`, `year`, `cvv`, `firstName` and `lastName` are required.');
+            throw new ModelAttributeValidationException('The `id` or `token` or [`number`, `month`, `year`, `cvv`, `firstName` and `lastName`] are required.');
         }
         if (in_array('month', $attributes) && in_array('year', $attributes) && !empty($this->month) && !empty($this->year)) {
             $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
@@ -180,16 +180,8 @@ class CreditCard extends Model
             $data['customer'] = $customer;
         }
         if (!empty($data['token']) && is_string($data['token'])) {
-            $this->setToken($data['token']);
+            $this->token = $data['token'];
             unset($data['token']);
-        }
-
-        if (!empty($data['tokens']) && is_array($data['tokens'])) {
-            foreach ($data['tokens'] as $gateway => $token) {
-                $gateway = ConfigurationHelper::resolveGateway($gateway);
-                $this->setToken($token, $gateway);
-            }
-            unset($data['tokens']);
         }
 
         parent::fill($data);
@@ -204,35 +196,6 @@ class CreditCard extends Model
             $names = explode(' ', $this->customer->name);
             $this->firstName = $names[0];
             $this->lastName = $names[array_key_last($names)];
-        }
-    }
-
-    /**
-     * @return Gateway|string|null
-     */
-    public function getToken($gateway = null): ?string
-    {
-        $gateway = ConfigurationHelper::resolveGateway($gateway);
-        return $this->tokens[get_class($gateway)] ?? null;
-    }
-
-    /**
-     * @param  Gateway|string|null  $token
-     */
-    public function setToken(?string $token, $gateway = null): void
-    {
-        $gateway = ConfigurationHelper::resolveGateway($gateway);
-        $this->tokens[get_class($gateway)] = $token;
-    }
-
-    /**
-     * @param  array|null  $tokens
-     */
-    public function setTokens(?array $tokens): void
-    {
-        foreach ($tokens as $gateway => $token) {
-            $gateway = ConfigurationHelper::resolveGateway($gateway);
-            $this->setToken($token, $gateway);
         }
     }
 }
