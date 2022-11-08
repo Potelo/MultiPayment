@@ -7,6 +7,7 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
+use Potelo\MultiPayment\Builders\CreditCardBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
@@ -77,6 +78,16 @@ class MultiPayment
     public function newCustomer(): CustomerBuilder
     {
         return new CustomerBuilder($this->gateway);
+    }
+
+    /**
+     * Return a CreditCardBuilder instance
+     *
+     * @return CreditCardBuilder
+     */
+    public function newCreditCard(): CreditCardBuilder
+    {
+        return new CreditCardBuilder($this->gateway);
     }
 
     /**
