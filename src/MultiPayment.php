@@ -93,7 +93,7 @@ class MultiPayment
     /**
      * Return an invoice based on the invoice ID
      *
-     * @param  string id
+     * @param  string  $id
      *
      * @return Invoice
      * @throws GatewayException
