@@ -9,7 +9,6 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
-use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 
 /**
  * invoice builder

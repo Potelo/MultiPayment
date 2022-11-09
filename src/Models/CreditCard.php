@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
-use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**

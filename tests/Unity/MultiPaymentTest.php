@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Tests\Unity;
 
 use Potelo\MultiPayment\Tests\TestCase;
-use Potelo\MultiPayment\Facades\MultiPayment;
 
 class MultiPaymentTest extends TestCase
 {
