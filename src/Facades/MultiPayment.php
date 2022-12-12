@@ -6,12 +6,14 @@ use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
+use Potelo\MultiPayment\Builders\CreditCardBuilder;
 
 
 /**
  * @method static invoice charge(array $attributes)
  * @method static InvoiceBuilder newInvoice()
  * @method static CustomerBuilder newCustomer()
+ * @method static CreditCardBuilder newCreditCard()
  * @method static \Potelo\MultiPayment\MultiPayment setGateway($gateway)
  */
 class MultiPayment extends Facade
