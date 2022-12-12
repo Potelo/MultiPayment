@@ -64,4 +64,78 @@ class MultiPaymentTest extends TestCase
             'moip' => ['moip', 'ORD-MNPLI3PYQTOK'],
         ];
     }
+
+    /**
+     * Test if can refund the invoice
+     *
+     * @dataProvider shouldRefundInvoiceDataProvider
+     *
+     * @param  string  $gateway
+     * @param  array  $data
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function testShouldRefundInvoice(string $gateway, array $data)
+    {
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+
+        $invoiceBuilder = $multiPayment->newInvoice();
+        $invoiceBuilder->addCustomer(
+            $data['customer']['name'] ?? null,
+            $data['customer']['email'] ?? null,
+            $data['customer']['taxDocument'] ?? null,
+            $data['customer']['birthDate'] ?? null,
+            $data['customer']['phoneArea'] ?? null,
+            $data['customer']['phoneNumber'] ?? null
+        );
+        foreach ($data['items'] as $item) {
+            $invoiceBuilder->addItem($item['description'], $item['quantity'], $item['price']);
+        }
+        $invoiceBuilder->setPaymentMethod($data['paymentMethod']);
+        $invoiceBuilder->addCreditCard(
+            $data['creditCard']['number'] ?? null,
+            $data['creditCard']['month'] ?? null,
+            $data['creditCard']['year'] ?? null,
+            $data['creditCard']['cvv'] ?? null,
+            $data['creditCard']['firstName'] ?? null,
+            $data['creditCard']['lastName'] ?? null
+
+        );
+        $invoice = $invoiceBuilder->create();
+        sleep(3); // Aguarda a criação da fatura no gateway (moip)
+
+        $refundedInvoice = $multiPayment->refundInvoice($invoice->id);
+
+        $this->assertEquals($invoice::STATUS_REFUNDED, $refundedInvoice->status);
+    }
+
+    /**
+     * @return array
+     */
+    public function shouldRefundInvoiceDataProvider(): array
+    {
+        return [
+            'iugu - credit card - full refund' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => self::creditCard(),
+                ],
+            ],
+            'moip - credit card - full refund' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => self::creditCard(),
+                ],
+            ],
+        ];
+    }
 }

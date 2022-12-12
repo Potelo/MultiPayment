@@ -77,6 +77,11 @@ class CreditCard extends Model
     public ?string $gateway;
 
     /**
+     * @var mixed The original object that was received from the gateway
+     */
+    public $original;
+
+    /**
      * @var Carbon|null
      */
     public ?Carbon $createdAt;
@@ -153,7 +158,7 @@ class CreditCard extends Model
                 empty($this->lastName)
             )
         ) {
-            throw new ModelAttributeValidationException('The `id` or `token` or [`number`, `month`, `year`, `cvv`, `firstName` and `lastName` are required.');
+            throw new ModelAttributeValidationException('The `id` or `token` or [`number`, `month`, `year`, `cvv`, `firstName` and `lastName`] are required.');
         }
         if (in_array('month', $attributes) && in_array('year', $attributes) && !empty($this->month) && !empty($this->year)) {
             $date = Carbon::createFromFormat('m/Y', $this->month . '/' . $this->year)->lastOfMonth();
@@ -173,6 +178,10 @@ class CreditCard extends Model
             $customer->fill($data['customer']);
             $data['customer'] = $customer;
         }
+        if (!empty($data['token']) && is_string($data['token'])) {
+            $this->token = $data['token'];
+            unset($data['token']);
+        }
 
         parent::fill($data);
 
@@ -188,5 +197,4 @@ class CreditCard extends Model
             $this->lastName = $names[array_key_last($names)];
         }
     }
-
 }

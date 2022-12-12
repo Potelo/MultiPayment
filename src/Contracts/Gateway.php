@@ -50,4 +50,21 @@ interface Gateway
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard;
+
+    /**
+     * Refund an invoice
+     *
+     * @param  Invoice  $invoice
+     *
+     * @return Invoice
+     * @throws GatewayException
+     */
+    public function refundInvoice(Invoice $invoice): Invoice;
+
+    /**
+     * String representation of the gateway
+     *
+     * @return string
+     */
+    public function __toString();
 }

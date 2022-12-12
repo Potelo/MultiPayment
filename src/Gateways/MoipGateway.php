@@ -451,4 +451,22 @@ class MoipGateway implements Gateway
         }
         return $holderOrCustomer;
     }
+    /**
+     * @inheritDoc
+     */
+    public function refundInvoice(Invoice $invoice): Invoice
+    {
+        $this->init();
+        $this->moip->refunds()->creditCard($invoice->id);
+
+        return $this->getInvoice($invoice->id);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function __toString()
+    {
+        return 'moip';
+    }
 }

@@ -102,4 +102,22 @@ class MultiPayment
     {
         return Invoice::get($id, $this->gateway);
     }
+
+    /**
+     * Refund an invoice
+     *
+     * @param  string  $id
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function refundInvoice(string $id): Invoice
+    {
+        $invoice = new Invoice();
+        $invoice->id = $id;
+        $invoice->gateway = $this->gateway;
+
+        return $invoice->refund();
+
+    }
 }
