@@ -2,7 +2,6 @@
 
 namespace Potelo\MultiPayment\Tests\Unit\Builders;
 
-use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Facades\MultiPayment;
 
@@ -12,7 +11,6 @@ class CreditCardBuilderTest extends TestCase
     public function __construct(?string $name = null, array $data = [], $dataName = '')
     {
         parent::__construct($name, $data, $dataName);
-
         $this->createApplication();
     }
 
