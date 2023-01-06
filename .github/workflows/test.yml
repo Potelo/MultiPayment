@@ -16,7 +16,6 @@ jobs:
         env:
           APP_ENV: testing
           MULTIPAYMENT_DEFAULT: iugu
-          MULTIPAYMENT_FALLBACK: true
           IUGU_ID: ${{ secrets.IUGU_ID }}
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
           MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
