@@ -1,6 +1,6 @@
 <?php
 
-namespace Potelo\MultiPayment\Tests\Unity;
+namespace Potelo\MultiPayment\Tests\Unit;
 
 use Potelo\MultiPayment\Tests\TestCase;
 

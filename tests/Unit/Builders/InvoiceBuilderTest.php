@@ -1,6 +1,6 @@
 <?php
 
-namespace Potelo\MultiPayment\Tests\Unity\Builders;
+namespace Potelo\MultiPayment\Tests\Unit\Builders;
 
 use Carbon\Carbon;
 use Potelo\MultiPayment\Tests\TestCase;
