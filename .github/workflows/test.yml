@@ -20,4 +20,4 @@ jobs:
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
           MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
           MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
-        run: vendor/bin/phpunit --configuration phpunit.xml tests
+        run: composer test
