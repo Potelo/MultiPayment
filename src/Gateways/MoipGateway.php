@@ -227,9 +227,24 @@ class MoipGateway implements Gateway
             if (Config::get('environment') != 'production') {
                 $payment->authorize();
             }
+
             //wait for the payment to be authorized
-            sleep(3);
-            $payment->refunds()->creditCardFull();
+            $maxAttempts = 3;
+            $attempt = 0;
+            while ($attempt < $maxAttempts) {
+                $attempt++;
+                try {
+                    $payment->refunds()->creditCardFull();
+                    break;
+                } catch (\Exception $exception) {
+                    if ($attempt == $maxAttempts) {
+                        throw $exception;
+                    } else {
+                        sleep(1);
+                    }
+                }
+            }
+
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating credit card: ' . $exception->getMessage(), $exception->getErrors());
         } catch (UnexpectedException|UnautorizedException $exception) {
