@@ -6,6 +6,12 @@ use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
 class TestCase extends \Orchestra\Testbench\TestCase
 {
+    public function __construct(?string $name = null, array $data = [], $dataName = '')
+    {
+        parent::__construct($name, $data, $dataName);
+        \Iugu::setLogErrors(false);
+    }
+
     protected function getPackageProviders($app): array
     {
         return [
