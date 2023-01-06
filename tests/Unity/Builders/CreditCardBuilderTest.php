@@ -8,6 +8,14 @@ use Potelo\MultiPayment\Facades\MultiPayment;
 
 class CreditCardBuilderTest extends TestCase
 {
+
+    public function __construct(?string $name = null, array $data = [], $dataName = '')
+    {
+        parent::__construct($name, $data, $dataName);
+
+        $this->createApplication();
+    }
+
     /**
      * Should create a credit card.
      *
@@ -67,17 +75,17 @@ class CreditCardBuilderTest extends TestCase
     }
 
     /**
-     * Should create a credit card using token.
+     * creditCard hash dataDrovider.
      *
-     * @return void
+     * @return array[]
      */
-    public function testShouldCreateACreditCardWithHash()
+    public function shouldCreateACreditCardWithHashDataProvider(): array
     {
-        $dataProvider = [
+        return [
             'moip - with hash' => [
                 'moip',
                 [
-                    'token' => 'CmDt2IP+4s9GDnL9xlc5TZSw8vcA3BCNrTg/7kgWtcp6TSERmRZxxlg9pMrVeoGxAVz8WtceZtKEL1GJfDcJJMYFkSqapxRThFrtT36BX5ZIy9hMl3IhvLULjDYgz6Ax3v1pUY3dudqaT9jQQJtdjasTbYgwxw11HNqBBOGZRhJgpNB1IRXCb1z40pL3VTB+Ox2fvd1MlC/ZVdgmGpcZ00+GI8MKhvHPSbIRn6Qk2BnDqis4NdrFDARZheIyAo1ABKyXaEFKgLURDEdqtplXzN7ycQ/EPJDVoPsBoOub0vlzLYk0NaWmIFPvUdd6/tYXvqSu/aEyJe3Yaj9PrZUxZQ==',
+                    'token' => 'Sx1VgvxJmgHpOR33qikO+91FHRSIGFArF1DeS4ln2f6YLxk7Km7wfeQWPQOg4SNVGIMvvXoBmra3t8v/dbmeF5QOQxIcyOEK1aM3aaQBq7s2g3BVc8/lvvtOVGg66qmFLinr/87cCNhJ3nYVTYnwbGi5ILYDtV28ysPpRWiXeNzQf8Vx6bH7XZlDwX/Llku9utsdhEsQsWU80L62AALWt10utpn60oQraciZQ7VGjnMpa/ILNp0mDBT7YxRWmYafzM9Sj0hoLo+9urUz/nbRfV9stOFi4E2KibT36xDVAGoaO5WOcp6rDYDGK63GSj5leFJZOO12ewSaOb/+oAJX3Q==',
                     'description' => 'Test credit card',
                     'customer' => self::customerWithoutAddress(),
                 ],
@@ -91,23 +99,33 @@ class CreditCardBuilderTest extends TestCase
                 ],
             ],
         ];
+    }
 
-        foreach ($dataProvider as $data) {
-            $gateway = $data[0];
-            $data = $data[1];
-            $creditCardBuilder = MultiPayment::setGateway($gateway)->newCreditCard();
-            $customer = $this->createCustomer($gateway, $data['customer']);
-            $creditCardBuilder->setCustomerId($customer->id);
-            if (!empty($data['token'])) {
-                $creditCardBuilder->setToken($data['token']);
-            }
-            if (!empty($data['description'])) {
-                $creditCardBuilder->setDescription($data['description']);
-            }
-            $creditCard = $creditCardBuilder->create();
-            $this->assertNotNull($creditCard->id);
-            $this->assertEquals($gateway, $creditCard->gateway);
+    /**
+     * Should create a credit card using token.
+     *
+     * @dataProvider shouldCreateACreditCardWithHashDataProvider
+     *
+     * @param $gateway
+     * @param $data
+     *
+     * @return void
+     */
+    public function testShouldCreateACreditCardWithHash($gateway, $data)
+    {
+
+        $creditCardBuilder = MultiPayment::setGateway($gateway)->newCreditCard();
+        $customer = $this->createCustomer($gateway, $data['customer']);
+        $creditCardBuilder->setCustomerId($customer->id);
+        if (!empty($data['token'])) {
+            $creditCardBuilder->setToken($data['token']);
         }
+        if (!empty($data['description'])) {
+            $creditCardBuilder->setDescription($data['description']);
+        }
+        $creditCard = $creditCardBuilder->create();
+        $this->assertNotNull($creditCard->id);
+        $this->assertEquals($gateway, $creditCard->gateway);
 
     }
 
