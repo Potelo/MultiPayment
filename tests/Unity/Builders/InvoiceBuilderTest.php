@@ -45,7 +45,7 @@ class InvoiceBuilderTest extends TestCase
             );
         }
         foreach ($data['items'] as $item) {
-            $invoiceBuilder->addItem($item['description'], $item['quantity'], $item['price']);
+            $invoiceBuilder->addItem($item['description'], $item['price'], $item['quantity']);
         }
         if (isset($data['expiresAt'])) {
             $invoiceBuilder->setExpiresAt($data['expiresAt']);
