@@ -11,7 +11,7 @@ jobs:
       - name: Build container
         run: docker build -t multi-payment .
       - name: Install Dependencies
-        run: docker run -it -v $(pwd):/app multi-payment composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+        run: docker run -v $(pwd):/app multi-payment composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
       - name: Execute tests (Unit and Feature tests) via PHPUnit
         env:
           APP_ENV: testing
