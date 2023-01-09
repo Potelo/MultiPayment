@@ -4,37 +4,12 @@ namespace Potelo\MultiPayment\Tests;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
-/**
- * Overwrite sleep function in tests
- *
- * @param  int  $seconds
- *
- * @return mixed
- */
-function sleep(int $seconds)
-{
-    return TestCase::sleep($seconds);
-}
-
 class TestCase extends \Orchestra\Testbench\TestCase
 {
-    public static $functions;
     public function __construct(?string $name = null, array $data = [], $dataName = '')
     {
         parent::__construct($name, $data, $dataName);
         \Iugu::setLogErrors(false);
-    }
-
-    /**
-     * sleep for the triple that was informed
-     *
-     * @param  int  $seconds
-     *
-     * @return mixed
-     */
-    public static function sleep(int $seconds)
-    {
-        return sleep($seconds * 3);
     }
 
     protected function getPackageProviders($app): array
