@@ -15,6 +15,7 @@ class Invoice extends Model
     public const STATUS_PAID = 'paid';
     public const STATUS_CANCELED = 'canceled';
     public const STATUS_REFUNDED = 'refunded';
+    public const STATUS_PARTIALLY_REFUNDED = 'partially_refunded';
 
     public const PAYMENT_METHOD_CREDIT_CARD = 'credit_card';
     public const PAYMENT_METHOD_BANK_SLIP = 'bank_slip';
@@ -39,6 +40,16 @@ class Invoice extends Model
      * @var int|null
      */
     public ?int $amount;
+
+    /**
+     * @var int|null
+     */
+    public ?int $paidAmount;
+
+    /**
+     * @var int|null
+     */
+    public ?int $refundedAmount;
 
     /**
      * @var Customer|null
