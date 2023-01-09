@@ -22,8 +22,8 @@ jobs:
           MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
           MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
         run: |
-          docker run -v $(pwd):/app multi-payment \
-          vendor/bin/phpunit \
+          docker run 
+            --volume $(pwd):/app \
             --configuration phpunit.xml \
             --env APP_ENV \
             --env MULTIPAYMENT_DEFAULT \
@@ -32,4 +32,4 @@ jobs:
             --env IUGU_APIKEY \
             --env MOIP_APITOKEN \
             --env MOIP_APIKEY \
-            tests
+            multi-payment vendor/bin/phpunit tests
