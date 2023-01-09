@@ -22,7 +22,7 @@ jobs:
           MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
           MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
         run: |
-          docker run 
+          docker run \
             --volume $(pwd):/app \
             --configuration phpunit.xml \
             --env APP_ENV \
