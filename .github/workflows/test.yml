@@ -21,4 +21,15 @@ jobs:
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
           MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
           MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
-        run: docker run -v $(pwd):/app multi-payment vendor/bin/phpunit --configuration phpunit.xml tests
+        run: |
+          docker run -v $(pwd):/app multi-payment \
+          vendor/bin/phpunit \
+            --configuration phpunit.xml \
+            --env APP_ENV \
+            --env MULTIPAYMENT_DEFAULT \
+            --env MULTIPAYMENT_FALLBACK \
+            --env IUGU_ID \
+            --env IUGU_APIKEY \
+            --env MOIP_APITOKEN \
+            --env MOIP_APIKEY \
+            tests
