@@ -30,6 +30,7 @@ class IuguGateway implements Gateway
     private const STATUS_DRAFT = 'draft';
     private const STATUS_PARTIALLY_PAID = 'partially_paid';
     private const STATUS_REFUNDED = 'refunded';
+    private const STATUS_PARTIALLY_REFUNDED = 'partially_refunded';
     private const STATUS_EXPIRED = 'expired';
     private const STATUS_IN_PROTEST = 'in_protest';
     private const STATUS_CHARGEBACK = 'chargeback';
@@ -201,6 +202,8 @@ class IuguGateway implements Gateway
             case self::STATUS_REFUNDED:
             case self::STATUS_CHARGEBACK:
                 return Invoice::STATUS_REFUNDED;
+            case self::STATUS_PARTIALLY_REFUNDED:
+                return Invoice::STATUS_PARTIALLY_REFUNDED;
             default:
                 throw new GatewayException('Unexpected Iugu status: ' . $iuguStatus);
         }
@@ -361,10 +364,12 @@ class IuguGateway implements Gateway
         $iuguInvoice = new \Iugu_Invoice(['id' => $invoice->id]);
 
         try {
-            $refunded = $iuguInvoice->refund();
+            $refunded = $iuguInvoice->refund($invoice->refundedAmount ?? null);
             if (!$refunded) {
-                throw new GatewayException("Error refunding invoice");
+                throw new GatewayException("Error refunding invoice", $iuguInvoice->errors ?? []);
             }
+        } catch (GatewayException $e) {
+            throw $e;
         } catch (\Exception $e) {
             throw new GatewayException("Error refunding invoice: {$e->getMessage()}");
         }
@@ -397,6 +402,8 @@ class IuguGateway implements Gateway
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
         $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->amount = $iuguInvoice->total_cents;
+        $invoice->paidAmount = $iuguInvoice->paid_cents;
+        $invoice->refundedAmount = $iuguInvoice->refunded_cents;
 
         $invoice->customer = new Customer();
         $invoice->customer->id = $iuguInvoice->customer_id;

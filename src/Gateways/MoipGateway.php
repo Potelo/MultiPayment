@@ -352,8 +352,19 @@ class MoipGateway implements Gateway
             }
         }
         $invoice->amount = $moipOrder->getAmountTotal();
+        $invoice->paidAmount = $moipOrder->getAmountPaid();
         $invoice->fee = $moipOrder->getAmountFees() ?? null;
         $invoice->url = $moipOrder->getLinks()->getLink('checkout')->payCheckout->redirectHref ?? null;
+        $invoice->refundedAmount = $moipOrder->getAmountRefunds() ?? null;
+
+        if (!empty($invoice->refundedAmount)) {
+            if ($invoice->refundedAmount == $invoice->amount) {
+                $invoice->status = Invoice::STATUS_REFUNDED;
+            } else {
+                $invoice->status = Invoice::STATUS_PARTIALLY_REFUNDED;
+            }
+        }
+
         $invoice->gateway = 'moip';
         $invoice->original = $moipOrder;
         $invoice->createdAt = new Carbon($moipOrder->getCreatedAt());
@@ -457,7 +468,7 @@ class MoipGateway implements Gateway
     public function refundInvoice(Invoice $invoice): Invoice
     {
         $this->init();
-        $this->moip->refunds()->creditCard($invoice->id);
+        $this->moip->refunds()->creditCard($invoice->id, $invoice->refundedAmount ?? null);
 
         return $this->getInvoice($invoice->id);
     }
