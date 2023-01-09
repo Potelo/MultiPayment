@@ -1,6 +1,10 @@
 name: Tests
 
-on: [pull_request, push]
+on:
+    push:
+        branches: [ main ]
+    pull_request_target:
+      types: [ assigned, opened, synchronize, reopened ]
 
 jobs:
   phpunit-tests:
