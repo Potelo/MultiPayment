@@ -5,7 +5,7 @@ on: [pull_request, push]
 jobs:
   phpunit-tests:
 
-    runs-on: multi-payment
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - name: Build container
