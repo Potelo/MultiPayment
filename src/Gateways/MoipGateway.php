@@ -124,7 +124,7 @@ class MoipGateway implements Gateway
             }
 
             if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-                if (Config::get('environment') != 'production') {
+                if (Config::get('multi-payment.environment') != 'production') {
                     $payment->authorize();
                     $order = $order->get($order->getId());
                     /** @noinspection PhpParamsInspection */
@@ -224,7 +224,7 @@ class MoipGateway implements Gateway
 
         try {
             $payment->execute();
-            if (Config::get('environment') != 'production') {
+            if (Config::get('multi-payment.environment') != 'production') {
                 $payment->authorize();
             }
 
