@@ -229,7 +229,7 @@ class MoipGateway implements Gateway
             }
 
             //wait for the payment to be authorized
-            $maxAttempts = 3;
+            $maxAttempts = 5;
             $attempt = 0;
             while ($attempt < $maxAttempts) {
                 $attempt++;
@@ -240,7 +240,8 @@ class MoipGateway implements Gateway
                     if ($attempt == $maxAttempts) {
                         throw $exception;
                     } else {
-                        sleep(1);
+                        set_time_limit(300);
+                        sleep(pow(2, $attempt));
                     }
                 }
             }
