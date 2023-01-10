@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "ae002a6fff36a3af2a2bf3e2d69ecc34",
+    "content-hash": "2422962980cce91a835b7b3ea307a508",
     "packages": [
         {
             "name": "brick/math",
@@ -504,11 +504,11 @@
         },
         {
             "name": "iugu/iugu",
-            "version": "dev-master",
+            "version": "dev-reembolso-parcial",
             "source": {
                 "type": "git",
                 "url": "https://github.com/Potelo/iugu-php.git",
-                "reference": "6afd20ba53b3eff3374ca492393b9e8ee52fcfd8"
+                "reference": "e2ed1948166b044cc5a4ca1f584f355433632d53"
             },
             "require": {
                 "ext-curl": "*",
@@ -520,7 +520,6 @@
                 "php-vcr/php-vcr": "^1.4",
                 "phpunit/phpunit": "^6"
             },
-            "default-branch": true,
             "type": "library",
             "autoload": {
                 "classmap": [
@@ -548,7 +547,7 @@
                 "iugu",
                 "pagamentos"
             ],
-            "time": "2022-07-27T22:20:21+00:00"
+            "time": "2023-01-09T17:27:23+00:00"
         },
         {
             "name": "laravel/framework",
