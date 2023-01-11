@@ -29,6 +29,12 @@
         }
     },
     "minimum-stability": "dev",
+    "scripts": {
+        "test": [
+            "Composer\\Config::disableProcessTimeout",
+            "phpunit"
+        ]
+    },
     "repositories": [
         {
             "type": "git",

@@ -22,13 +22,14 @@
         <testsuite name="Unit">
             <directory suffix="Test.php">./tests/Unit</directory>
         </testsuite>
-        <testsuite name="Feature">
-            <directory suffix="Test.php">./tests/Feature</directory>
-        </testsuite>
     </testsuites>
     <php>
         <env name="APP_ENV" value="testing"/>
-        <env name="MULTIPAYMENT_DEFAULT" value="iugu"/>
         <env name="APP_KEY" value="base64:2fl+Ktvkfl+Fuz4Qp/A75G2RTiWVA/ZoKZvp6fiiM10="/>
+        <env name="MULTIPAYMENT_DEFAULT" value="iugu" />
+        <env name="IUGU_ID" value="" />
+        <env name="IUGU_APIKEY" value="" />
+        <env name="MOIP_APITOKEN" value="" />
+        <env name="MOIP_APIKEY" value="" />
     </php>
 </phpunit>
