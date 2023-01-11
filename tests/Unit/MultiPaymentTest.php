@@ -1,6 +1,6 @@
 <?php
 
-namespace Potelo\MultiPayment\Tests\Unity;
+namespace Potelo\MultiPayment\Tests\Unit;
 
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
@@ -108,7 +108,7 @@ class MultiPaymentTest extends TestCase
 
         );
         $invoice = $invoiceBuilder->create();
-        sleep(3); // Aguarda a criação da fatura no gateway (moip)
+        sleep(30); // Aguarda a criação da fatura no gateway (moip)
 
         $refundedInvoice = $multiPayment->refundInvoice($invoice->id, $refundedAmount);
 

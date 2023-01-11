@@ -124,7 +124,7 @@ class MoipGateway implements Gateway
             }
 
             if ($invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
-                if (Config::get('environment') != 'production') {
+                if (Config::get('multi-payment.environment') != 'production') {
                     $payment->authorize();
                     $order = $order->get($order->getId());
                     /** @noinspection PhpParamsInspection */
@@ -224,12 +224,28 @@ class MoipGateway implements Gateway
 
         try {
             $payment->execute();
-            if (Config::get('environment') != 'production') {
+            if (Config::get('multi-payment.environment') != 'production') {
                 $payment->authorize();
             }
+
             //wait for the payment to be authorized
-            sleep(3);
-            $payment->refunds()->creditCardFull();
+            $maxAttempts = 5;
+            $attempt = 0;
+            while ($attempt < $maxAttempts) {
+                $attempt++;
+                try {
+                    $payment->refunds()->creditCardFull();
+                    break;
+                } catch (\Exception $exception) {
+                    if ($attempt == $maxAttempts) {
+                        throw $exception;
+                    } else {
+                        set_time_limit(300);
+                        sleep(pow(2, $attempt));
+                    }
+                }
+            }
+
         } catch (ValidationException $exception) {
             throw new GatewayException('Error creating credit card: ' . $exception->getMessage(), $exception->getErrors());
         } catch (UnexpectedException|UnautorizedException $exception) {

@@ -6,10 +6,10 @@ use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
 class TestCase extends \Orchestra\Testbench\TestCase
 {
-    public function setUp(): void
+    public function __construct(?string $name = null, array $data = [], $dataName = '')
     {
-        parent::setUp();
-        // additional setup
+        parent::__construct($name, $data, $dataName);
+        \Iugu::setLogErrors(false);
     }
 
     protected function getPackageProviders($app): array
@@ -17,11 +17,6 @@ class TestCase extends \Orchestra\Testbench\TestCase
         return [
             MultiPaymentServiceProvider::class,
         ];
-    }
-
-    protected function getEnvironmentSetUp($app)
-    {
-        // perform environment setup
     }
 
     public static function customerWithoutAddress(): array
