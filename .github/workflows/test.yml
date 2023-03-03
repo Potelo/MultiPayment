@@ -3,22 +3,30 @@ name: Tests
 on: [pull_request]
 
 jobs:
-  phpunity-tests:
+  phpunit-tests:
 
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v3
+      - name: Build container
+        run: docker build -t multi-payment .
       - name: Install Dependencies
-        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
-
-      - name: Execute tests (Unit and Feature tests) via PHPUnit
+        run: docker run -v $(pwd):/app multi-payment composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+      - name: Execute tests via PHPUnit
         env:
           APP_ENV: testing
           MULTIPAYMENT_DEFAULT: iugu
-          MULTIPAYMENT_FALLBACK: true
           IUGU_ID: ${{ secrets.IUGU_ID }}
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
           MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
           MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
-        run: vendor/bin/phpunit --configuration phpunit.xml tests
+        run: |
+          docker run \
+            --volume $(pwd):/app \
+            --env APP_ENV \
+            --env MULTIPAYMENT_DEFAULT \
+            --env IUGU_ID \
+            --env IUGU_APIKEY \
+            --env MOIP_APITOKEN \
+            --env MOIP_APIKEY \
+            multi-payment composer test
