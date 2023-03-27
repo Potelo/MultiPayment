@@ -504,7 +504,7 @@
             "source": {
                 "type": "git",
                 "url": "https://github.com/Potelo/iugu-php.git",
-                "reference": "7b736d6dbb06c000de7f28531b8d485197d52e21"
+                "reference": "d5464b1119c7d7925aa7c53b1db805aedc9f41cd"
             },
             "require": {
                 "ext-curl": "*",
@@ -543,7 +543,7 @@
                 "iugu",
                 "pagamentos"
             ],
-            "time": "2023-03-27T14:51:20+00:00"
+            "time": "2023-03-27T18:46:50+00:00"
         },
         {
             "name": "laravel/framework",

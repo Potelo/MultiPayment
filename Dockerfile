@@ -12,8 +12,10 @@ RUN apt-get update && \
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 
-VOLUME /app
-
 WORKDIR /app
 
-CMD ["composer", "install"]
+COPY . /app
+
+VOLUME /app
+
+RUN composer install
