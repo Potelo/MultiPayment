@@ -186,7 +186,7 @@ class MoipGateway implements Gateway
     {
         $this->init();
         $customer = $this->moip->customers()->get($creditCard->customer->id);
-        $verificationValue = rand(200, 300);
+        $verificationValue = random_int(500, 800);
         $verificationOrder = $this->moip->orders()->setOwnId(uniqid())
             ->addItem(
                 'Verificação de Cartão',
