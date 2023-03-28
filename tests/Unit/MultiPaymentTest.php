@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Tests\Unit;
 
 use Potelo\MultiPayment\Tests\TestCase;
+use Potelo\MultiPayment\Models\Invoice;
 
 class MultiPaymentTest extends TestCase
 {
@@ -78,7 +79,7 @@ class MultiPaymentTest extends TestCase
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
-    public function testShouldRefundInvoice(string $gateway, array $data)
+    public function testShouldRefundInvoice(string $gateway, array $data, string $status, ?int $refundedAmount)
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
 
@@ -91,8 +92,10 @@ class MultiPaymentTest extends TestCase
             $data['customer']['phoneArea'] ?? null,
             $data['customer']['phoneNumber'] ?? null
         );
+        $total = 0;
         foreach ($data['items'] as $item) {
-            $invoiceBuilder->addItem($item['description'], $item['quantity'], $item['price']);
+            $invoiceBuilder->addItem($item['description'], $item['price'], $item['quantity']);
+            $total += $item['price'] * $item['quantity'];
         }
         $invoiceBuilder->setPaymentMethod($data['paymentMethod']);
         $invoiceBuilder->addCreditCard(
@@ -107,9 +110,14 @@ class MultiPaymentTest extends TestCase
         $invoice = $invoiceBuilder->create();
         sleep(30); // Aguarda a criação da fatura no gateway (moip)
 
-        $refundedInvoice = $multiPayment->refundInvoice($invoice->id);
+        $refundedInvoice = $multiPayment->refundInvoice($invoice->id, $refundedAmount);
 
-        $this->assertEquals($invoice::STATUS_REFUNDED, $refundedInvoice->status);
+        if (is_null($refundedAmount)) {
+            $refundedAmount = $total;
+        }
+        $this->assertEquals($status, $refundedInvoice->status);
+        $this->assertEquals($refundedAmount, $refundedInvoice->refundedAmount);
+        $this->assertEquals($total - $refundedAmount, $refundedInvoice->paidAmount);
     }
 
     /**
@@ -126,6 +134,8 @@ class MultiPaymentTest extends TestCase
                     'paymentMethod' => 'credit_card',
                     'creditCard' => self::creditCard(),
                 ],
+                'status' => Invoice::STATUS_REFUNDED,
+                'refundedAmount' => null,
             ],
             'moip - credit card - full refund' => [
                 'gateway' => 'moip',
@@ -135,6 +145,30 @@ class MultiPaymentTest extends TestCase
                     'paymentMethod' => 'credit_card',
                     'creditCard' => self::creditCard(),
                 ],
+                'status' => Invoice::STATUS_REFUNDED,
+                'refundedAmount' => null,
+            ],
+            'iugu - credit card - partial refund' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => self::creditCard(),
+                ],
+                'status' => Invoice::STATUS_PARTIALLY_REFUNDED,
+                'refundedAmount' => 5000,
+            ],
+            'moip - credit card - partial refund' => [
+                'gateway' => 'moip',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => self::creditCard(),
+                ],
+                'status' => Invoice::STATUS_PARTIALLY_REFUNDED,
+                'refundedAmount' => 5000,
             ],
         ];
     }

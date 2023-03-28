@@ -45,7 +45,7 @@ class InvoiceBuilderTest extends TestCase
             );
         }
         foreach ($data['items'] as $item) {
-            $invoiceBuilder->addItem($item['description'], $item['quantity'], $item['price']);
+            $invoiceBuilder->addItem($item['description'], $item['price'], $item['quantity']);
         }
         if (isset($data['expiresAt'])) {
             $invoiceBuilder->setExpiresAt($data['expiresAt']);
@@ -66,7 +66,7 @@ class InvoiceBuilderTest extends TestCase
         }
         $invoice = $invoiceBuilder->create();
         $this->assertInstanceOf(\Potelo\MultiPayment\Models\Invoice::class, $invoice);
-        $this->assertObjectHasAttribute('id', $invoice);
+        $this->assertNotEmpty($invoice->id);
     }
 
     /**

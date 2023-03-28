@@ -107,15 +107,20 @@ class MultiPayment
      * Refund an invoice
      *
      * @param  string  $id
+     * @param  int|null  $partialValueCents
      *
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function refundInvoice(string $id): Invoice
+    public function refundInvoice(string $id, ?int $partialValueCents = null): Invoice
     {
         $invoice = new Invoice();
         $invoice->id = $id;
         $invoice->gateway = $this->gateway;
+
+        if ($partialValueCents) {
+            $invoice->refundedAmount = $partialValueCents;
+        }
 
         return $invoice->refund();
 
