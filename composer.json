@@ -46,12 +46,12 @@
         "moip/moip-sdk-php": "^3.1",
         "rmccue/requests": "v1.7.0",
         "nesbot/carbon": "2.65.*",
-        "illuminate/config": "^8.0",
-        "illuminate/support": "^8.0",
+        "illuminate/config": "^8.0|^9.0",
+        "illuminate/support": "^8.0|^9.0",
         "iugu/iugu": "dev-master"
     },
     "require-dev": {
         "phpunit/phpunit": "^9.5",
-        "orchestra/testbench": "6.x-dev"
+        "orchestra/testbench": "~7.0"
     }
 }
