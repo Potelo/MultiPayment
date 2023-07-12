@@ -63,6 +63,15 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
+
+        $iuguInvoiceData['custom_variables'] = [];
+        foreach ($invoice->customVariables as $customVariable) {
+            $iuguInvoiceData['custom_variables'][] = [
+                'name' => $customVariable->name,
+                'value' => $customVariable->value,
+            ];
+        }
+
         $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
             ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
@@ -95,7 +104,7 @@ class IuguGateway implements Gateway
             }
             try {
                 $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\IuguRequestException|IuguObjectNotFound $e) {
+            } catch (\IuguRequestException | IuguObjectNotFound $e) {
                 if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                     throw new GatewayNotAvailableException($e->getMessage());
                 } else {
@@ -152,7 +161,7 @@ class IuguGateway implements Gateway
 
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-        } catch (\IuguRequestException|IuguObjectNotFound $e) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
@@ -278,7 +287,7 @@ class IuguGateway implements Gateway
                 'customer_id' => $creditCard->customer->id,
                 'description' => $creditCard->description ?? 'CREDIT CARD',
             ]);
-        } catch (\IuguRequestException|IuguObjectNotFound $e) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
@@ -316,7 +325,7 @@ class IuguGateway implements Gateway
     {
         try {
             $iuguInvoice = \Iugu_Invoice::fetch($id);
-        } catch (\IuguRequestException|IuguObjectNotFound $e ) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
@@ -414,7 +423,7 @@ class IuguGateway implements Gateway
 
         $invoice->items = [];
 
-        foreach($iuguInvoice->items as $itemIugu) {
+        foreach ($iuguInvoice->items as $itemIugu) {
             $invoiceItem = new InvoiceItem();
             $invoiceItem->description = $itemIugu->description;
             $invoiceItem->price = $itemIugu->price_cents;

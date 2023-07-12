@@ -62,6 +62,11 @@ class Invoice extends Model
     public ?array $items;
 
     /**
+     * @var InvoiceCustomVariable[]|null
+     */
+    public ?array $customVariables;
+
+    /**
      * @var string|null
      */
     public ?string $paymentMethod;
@@ -128,8 +133,7 @@ class Invoice extends Model
             ]);
             $this->items[] = $invoiceItem;
             unset($data['amount']);
-        }
-        elseif (!empty($data['items'])) {
+        } elseif (!empty($data['items'])) {
             $this->items = [];
             foreach ($data['items'] as $item) {
                 $invoiceItem = $item;
@@ -140,6 +144,19 @@ class Invoice extends Model
                 $this->items[] = $invoiceItem;
             }
             unset($data['items']);
+        }
+
+        if (!empty($data['custom_variables']) && is_array($data['custom_variables'])) {
+            $this->customVariables = [];
+            foreach ($data['custom_variables'] as $customVariable) {
+                $invoiceCustomVariable = $customVariable;
+                if (!empty($customVariable) && is_array($customVariable)) {
+                    $invoiceCustomVariable = new InvoiceCustomVariable();
+                    $invoiceCustomVariable->fill($customVariable);
+                }
+                $this->customVariables[] = $invoiceCustomVariable;
+            }
+            unset($data['custom_variables']);
         }
 
         if (!empty($data['customer']) && is_array($data['customer'])) {
@@ -185,10 +202,10 @@ class Invoice extends Model
             throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
         }
 
-        if (in_array('paymentMethod', $attributes) &&
+        if (
+            in_array('paymentMethod', $attributes) &&
             !empty($this->paymentMethod) &&
-            (
-                $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
+            ($this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
                 $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX
             ) &&
             empty($this->expiresAt)
@@ -196,7 +213,8 @@ class Invoice extends Model
             throw new ModelAttributeValidationException('The `expiresAt` attribute is required for bank_slip or pix payment method.');
         }
 
-        if (in_array('paymentMethod', $attributes) &&
+        if (
+            in_array('paymentMethod', $attributes) &&
             !empty($this->paymentMethod) &&
             $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP &&
             empty($this->customer->address)
@@ -233,6 +251,21 @@ class Invoice extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
+    public function validateCustomVariablesAttribute()
+    {
+        foreach ($this->customVariables as $customVariable) {
+            if ($customVariable instanceof InvoiceCustomVariable) {
+                $customVariable->validate();
+            } else {
+                throw ModelAttributeValidationException::invalid('Invoice', 'customVariables', 'items must be an array of InvoiceCustomVariables');
+            }
+        }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
     public function validatePaymentMethodAttribute()
     {
         if (!in_array($this->paymentMethod, [
@@ -242,7 +275,7 @@ class Invoice extends Model
         ])) {
             throw ModelAttributeValidationException::invalid(
                 'Invoice',
-                'paymentMethod' ,
+                'paymentMethod',
                 'paymentMethod must be one of: ' . implode(', ', [
                     Invoice::PAYMENT_METHOD_CREDIT_CARD,
                     Invoice::PAYMENT_METHOD_BANK_SLIP,
