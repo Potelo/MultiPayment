@@ -90,6 +90,8 @@ class IuguGateway implements Gateway
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
 
             try {
+                $iuguInvoiceData['invoice_id'] = \Iugu_Invoice::create($iuguInvoiceData);
+                unset($iuguInvoiceData['items']);
                 $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
             } catch (\Exception $e) {
                 throw new GatewayException($e->getMessage());
