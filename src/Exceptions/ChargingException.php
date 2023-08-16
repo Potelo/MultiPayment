@@ -5,13 +5,7 @@ namespace Potelo\MultiPayment\Exceptions;
 class ChargingException extends MultiPaymentException
 {
     /**
-     * @var int|string
+     * @var mixed $chargeResponse The charge response from the gateway
      */
-    protected $code;
-
-    public function __construct($message = "", $code = 0, Throwable $previous = null)
-    {
-        parent::__construct($message, $code, $previous);
-        $this->code = $code;
-    }
+    public $chargeResponse;
 }

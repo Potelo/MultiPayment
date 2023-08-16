@@ -89,7 +89,9 @@ class IuguGateway implements Gateway
             if ($iuguCharge->errors) {
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
             } elseif (!$iuguCharge->success) {
-                throw new ChargingException('Error charging invoice: ' . $iuguCharge->info_message, $iuguCharge->LR);
+                $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
+                $exception->chargeResponse = $iuguCharge;
+                throw $exception;
             }
             $iuguInvoice = $iuguCharge->invoice();
         } else {
