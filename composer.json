@@ -43,8 +43,6 @@
     ],
     "require": {
         "php": ">=7.4.0",
-        "moip/moip-sdk-php": "^3.1",
-        "rmccue/requests": "v1.7.0",
         "nesbot/carbon": "2.65.*",
         "illuminate/config": "^8.0|^9.0",
         "illuminate/support": "^8.0|^9.0",
