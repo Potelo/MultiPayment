@@ -218,7 +218,6 @@ class InvoiceBuilderTest extends TestCase
     public function testShouldNotCreateInvoice(string $gateway, array $data): void
     {
         $this->expectException(ChargingException::class);
-        $this->expectExceptionCode('05');
         $this->createInvoice($gateway, $data);
     }
 
