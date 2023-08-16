@@ -18,6 +18,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -46,7 +47,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws ModelAttributeValidationException
+     * @throws ModelAttributeValidationException|ChargingException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -87,6 +88,10 @@ class IuguGateway implements Gateway
             }
             if ($iuguCharge->errors) {
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
+            } elseif (!$iuguCharge->success) {
+                $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
+                $exception->chargeResponse = $iuguCharge;
+                throw $exception;
             }
             $iuguInvoice = $iuguCharge->invoice();
         } else {
