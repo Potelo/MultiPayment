@@ -1,6 +1,6 @@
 ## Introdução
 
-MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu e Moip.
+MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu.
 
 - [Introdução](#introdução)
 - [Requisitos](#requisitos)
@@ -45,10 +45,6 @@ MULTIPAYMENT_DEFAULT=iugu
 #iugu  
 IUGU_ID=
 IUGU_APIKEY=
-
-#moip
-MOIP_APITOKEN=
-MOIP_APIKEY=  
 ```  
 
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
@@ -64,7 +60,7 @@ class User extends Authenticatable
 Usando o Trait:
 ```php
 $usuario = User::find(1);
-$usuario->charge($options, 'moip', 10000);  
+$usuario->charge($options, 'iugu', 10000);  
 ```
 Também é possível utilizar o Facade:
 ```php
@@ -81,7 +77,7 @@ $payment = new \Potelo\MultiPayment\MultiPayment(); // gateway default será usa
 $payment = new \Potelo\MultiPayment\MultiPayment('iugu');
 // ou  
 $payment = new \Potelo\MultiPayment\MultiPayment();
-$payment->setGateway('moip');
+$payment->setGateway('iugu');
 ```
 #### InvoiceBuilder
 ```php
@@ -109,8 +105,8 @@ Confira `src/MultiPayment/Builders/CustomerBuilder.php` para saber quais método
 
 #### getInvoice
 ```php
-$invoiceId = 'ORD-312ASDHGZXSGRTET';
-$payment = new \Potelo\MultiPayment\MultiPayment('moip');
+$invoiceId = '312ASDHGZXSGRTET312ASDHGZXSGRTET';
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
 $foundInvoice = $payment->getInvoice($invoiceId);
 ```
 
@@ -159,7 +155,7 @@ $options = [
 ];
 
 $payment = new \Potelo\MultiPayment\MultiPayment();
-$payment->setGateway('moip')->charge($options);
+$payment->setGateway('iugu')->charge($options);
 ```
 
 | atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                               |
@@ -168,7 +164,7 @@ $payment->setGateway('moip')->charge($options);
 | `customer`                    | **obrigatório**                                                     | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`    |
 | `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                   |
 | `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`               |
-| `customer.tax_document`       | **obrigatório** no gateway moip                                     | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
+| `customer.tax_document`       |                                                                     | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
 | `birth_date`                  |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'01/01/1990'`                        |
 | `customer.phone_number`       |                                                                     | string                         | telefone                                  | `'999999999'`                         |
 | `customer.phone_area`         |                                                                     | string                         | DDD                                       | `'999999999'`                         |
