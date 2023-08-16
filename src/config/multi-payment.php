@@ -38,11 +38,5 @@ return [
             'customer_column' => 'iugu_id',
             'class' => \Potelo\MultiPayment\Gateways\IuguGateway::class,
         ],
-        'moip' => [
-            'api_token' => env('MOIP_APITOKEN'),
-            'api_key' => env('MOIP_APIKEY'),
-            'customer_column' => 'moip_id',
-            'class' => \Potelo\MultiPayment\Gateways\MoipGateway::class,
-        ],
     ],
 ];

@@ -65,10 +65,6 @@ class CreditCardBuilderTest extends TestCase
                 'iugu',
                 array_merge(self::creditCard(), ['customer' => self::customerWithoutAddress()])
             ],
-            'moip - with credit card data' => [
-                'moip',
-                array_merge(self::creditCard(), ['customer' => self::customerWithoutAddress()])
-            ],
         ];
     }
 
@@ -80,14 +76,6 @@ class CreditCardBuilderTest extends TestCase
     public function shouldCreateACreditCardWithHashDataProvider(): array
     {
         return [
-            'moip - with hash' => [
-                'moip',
-                [
-                    'token' => 'Sx1VgvxJmgHpOR33qikO+91FHRSIGFArF1DeS4ln2f6YLxk7Km7wfeQWPQOg4SNVGIMvvXoBmra3t8v/dbmeF5QOQxIcyOEK1aM3aaQBq7s2g3BVc8/lvvtOVGg66qmFLinr/87cCNhJ3nYVTYnwbGi5ILYDtV28ysPpRWiXeNzQf8Vx6bH7XZlDwX/Llku9utsdhEsQsWU80L62AALWt10utpn60oQraciZQ7VGjnMpa/ILNp0mDBT7YxRWmYafzM9Sj0hoLo+9urUz/nbRfV9stOFi4E2KibT36xDVAGoaO5WOcp6rDYDGK63GSj5leFJZOO12ewSaOb/+oAJX3Q==',
-                    'description' => 'Test credit card',
-                    'customer' => self::customerWithoutAddress(),
-                ],
-            ],
             'iugu - with hash' => [
                 'iugu',
                 [
