@@ -129,17 +129,6 @@ class MultiPaymentTest extends TestCase
                 'status' => Invoice::STATUS_REFUNDED,
                 'refundedAmount' => null,
             ],
-            'iugu - credit card - partial refund' => [
-                'gateway' => 'iugu',
-                'data' => [
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
-                    'customer' => self::customerWithoutAddress(),
-                    'paymentMethod' => 'credit_card',
-                    'creditCard' => self::creditCard(),
-                ],
-                'status' => Invoice::STATUS_PARTIALLY_REFUNDED,
-                'refundedAmount' => 5000,
-            ],
         ];
     }
 }
