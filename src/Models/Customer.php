@@ -86,19 +86,6 @@ class Customer extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    protected function validateTaxDocumentAttribute(): void
-    {
-        //regex for 11 or 14 digits
-        $pattern = '/^[0-9]{11,14}$/';
-        if (!preg_match($pattern, $this->taxDocument)) {
-            throw ModelAttributeValidationException::invalid($this->getClassName(), 'taxDocument', 'The taxDocument must be a string with 11 or 14 digits.');
-        }
-    }
-
-    /**
-     * @return void
-     * @throws ModelAttributeValidationException
-     */
     protected function validateBirthDateAttribute(): void
     {
         $pattern = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/';
