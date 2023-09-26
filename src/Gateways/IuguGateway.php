@@ -65,11 +65,13 @@ class IuguGateway implements Gateway
         }
 
         $iuguInvoiceData['custom_variables'] = [];
-        foreach ($invoice->customVariables as $customVariable) {
-            $iuguInvoiceData['custom_variables'][] = [
-                'name' => $customVariable->name,
-                'value' => $customVariable->value,
-            ];
+        if (!empty($invoice->customVariables)) {
+            foreach ($invoice->customVariables as $customVariable) {
+                $iuguInvoiceData['custom_variables'][] = [
+                    'name' => $customVariable->name,
+                    'value' => $customVariable->value,
+                ];
+            }
         }
 
         $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
