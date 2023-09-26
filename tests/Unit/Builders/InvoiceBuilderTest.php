@@ -62,6 +62,13 @@ class InvoiceBuilderTest extends TestCase
 
             );
         }
+
+        if (isset($data['customVariables'])) {
+            foreach ($data['customVariables'] as $key => $value) {
+                $invoiceBuilder->addCustomVariable($key, $value);
+            }
+        }
+
         return $invoiceBuilder->create();
     }
 
@@ -82,6 +89,99 @@ class InvoiceBuilderTest extends TestCase
         $invoice = $this->createInvoice($gateway, $data);
         $this->assertInstanceOf(\Potelo\MultiPayment\Models\Invoice::class, $invoice);
         $this->assertNotEmpty($invoice->id);
+        $this->assertNotEmpty($invoice->status);
+
+        $this->assertEquals($data['customer']['name'], $invoice->customer->name);
+        $this->assertEquals($data['customer']['email'], $invoice->customer->email);
+        $this->assertEquals($data['customer']['taxDocument'], $invoice->customer->taxDocument);
+        $this->assertEquals($data['customer']['birthDate'], $invoice->customer->birthDate);
+        $this->assertEquals($data['customer']['phoneArea'], $invoice->customer->phoneArea);
+        $this->assertEquals($data['customer']['phoneNumber'], $invoice->customer->phoneNumber);
+
+        if (isset($data['customer']['address'])) {
+            $this->assertEquals($data['customer']['address']['zipCode'], $invoice->customer->address->zipCode);
+            $this->assertEquals($data['customer']['address']['street'], $invoice->customer->address->street);
+            $this->assertEquals($data['customer']['address']['number'], $invoice->customer->address->number);
+            $this->assertEquals($data['customer']['address']['complement'], $invoice->customer->address->complement);
+            $this->assertEquals($data['customer']['address']['district'], $invoice->customer->address->district);
+            $this->assertEquals($data['customer']['address']['city'], $invoice->customer->address->city);
+            $this->assertEquals($data['customer']['address']['state'], $invoice->customer->address->state);
+            $this->assertEquals($data['customer']['address']['country'], $invoice->customer->address->country);
+        }
+
+        foreach ($data['items'] as $key => $item) {
+            $this->assertEquals($item['description'], $invoice->items[$key]->description);
+            $this->assertEquals($item['price'], $invoice->items[$key]->price);
+            $this->assertEquals($item['quantity'], $invoice->items[$key]->quantity);
+        }
+
+        if (isset($data['expiresAt'])) {
+            $this->assertEquals($data['expiresAt'], $invoice->expiresAt->format('Y-m-d'));
+        }
+
+        if (isset($data['paymentMethod'])) {
+            $this->assertEquals($data['paymentMethod'], $invoice->paymentMethod);
+        }
+
+        if (isset($data['creditCard'])) {
+            $this->assertEquals($data['creditCard']['number'], $invoice->creditCard->number);
+            $this->assertEquals($data['creditCard']['month'], $invoice->creditCard->month);
+            $this->assertEquals($data['creditCard']['year'], $invoice->creditCard->year);
+            $this->assertEquals($data['creditCard']['cvv'], $invoice->creditCard->cvv);
+            $this->assertEquals($data['creditCard']['firstName'], $invoice->creditCard->firstName);
+            $this->assertEquals($data['creditCard']['lastName'], $invoice->creditCard->lastName);
+            $this->assertNotEmpty($invoice->creditCard->token);
+            $this->assertNotEmpty($invoice->creditCard->id);
+        }
+
+        if (isset($data['customVariables'])) {
+            foreach ($invoice->customVariables as $customVariable) {
+                $this->assertArrayHasKey($customVariable->name, $data['customVariables']);
+                $this->assertEquals($data['customVariables'][$customVariable->name], $customVariable->value);
+            }
+        }
+
+        // Verifica se a fatura foi criada no gateway com os dados corretos
+        $invoice = $invoice->get($invoice->id, $gateway);
+
+        $this->assertNotEmpty($invoice->status);
+
+        $this->assertEquals($data['customer']['name'], $invoice->customer->name);
+        $this->assertEquals($data['customer']['email'], $invoice->customer->email);
+        $this->assertEquals($data['customer']['phoneArea'], $invoice->customer->phoneArea);
+        $this->assertEquals($data['customer']['phoneNumber'], $invoice->customer->phoneNumber);
+
+        if (isset($data['customVariables'])) {
+            foreach ($invoice->customVariables as $customVariable) {
+                $this->assertArrayHasKey($customVariable->name, $data['customVariables']);
+                $this->assertEquals($data['customVariables'][$customVariable->name], $customVariable->value);
+            }
+        }
+
+        foreach ($data['items'] as $key => $item) {
+            $this->assertEquals($item['description'], $invoice->items[$key]->description);
+            $this->assertEquals($item['price'], $invoice->items[$key]->price);
+            $this->assertEquals($item['quantity'], $invoice->items[$key]->quantity);
+        }
+
+        if (isset($data['expiresAt'])) {
+            $this->assertEquals($data['expiresAt'], $invoice->expiresAt->format('Y-m-d'));
+        }
+
+        if (isset($data['paymentMethod']) && $invoice->status === $invoice::STATUS_PAID) {
+            $this->assertEquals($data['paymentMethod'], $invoice->paymentMethod);
+        }
+
+        if (isset($data['customer']['address'])) {
+            $this->assertEquals($data['customer']['address']['zipCode'], $invoice->customer->address->zipCode);
+            $this->assertEquals($data['customer']['address']['street'], $invoice->customer->address->street);
+            $this->assertEquals($data['customer']['address']['number'], $invoice->customer->address->number);
+            $this->assertEquals($data['customer']['address']['complement'], $invoice->customer->address->complement);
+            $this->assertEquals($data['customer']['address']['district'], $invoice->customer->address->district);
+            $this->assertEquals($data['customer']['address']['city'], $invoice->customer->address->city);
+            $this->assertEquals($data['customer']['address']['state'], $invoice->customer->address->state);
+            $this->assertEquals($data['customer']['address']['country'], $invoice->customer->address->country);
+        }
     }
 
     /**
@@ -96,6 +196,18 @@ class InvoiceBuilderTest extends TestCase
                     'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
+                ]
+            ],
+            'iugu - without payment method - with custom variable' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'customVariables' => [
+                        'custom_variable_1' => 'value_1',
+                        'custom_variable_2' => 'value_2',
+                    ]
                 ]
             ],
             'iugu - company with address without payment method' => [
@@ -195,12 +307,12 @@ class InvoiceBuilderTest extends TestCase
     public static function address(): array
     {
         $address['zipCode'] = '41820330';
-        $address['street'] = 'Rua Exemplo';
+        $address['street'] = 'Rua Deputado Mário Lima';
         $address['number'] = '123';
-        $address['district'] = 'Bairro Exemplo';
+        $address['district'] = 'Caminho das Arvores';
         $address['complement'] = 'Apto. 123';
-        $address['city'] = 'Cidade Exemplo';
-        $address['state'] = 'Estado';
+        $address['city'] = 'Salvador';
+        $address['state'] = 'BA';
         $address['country'] = 'Brasil';
         return $address;
     }

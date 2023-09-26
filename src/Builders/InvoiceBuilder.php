@@ -10,6 +10,7 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Models\InvoiceCustomVariable;
 
 /**
  * invoice builder
@@ -105,6 +106,36 @@ class InvoiceBuilder extends Builder
     }
 
     /**
+     * Set the invoice custom variables
+     *
+     * @param  InvoiceCustomVariable[]  $customVariables
+     *
+     * @return InvoiceBuilder
+     */
+    public function setCustomVariables(array $customVariables): InvoiceBuilder
+    {
+        $this->model->customVariables = $customVariables;
+        return $this;
+    }
+
+    /**
+     * Add an custom variable to the invoice
+     *
+     * @param  string  $name
+     * @param  string  $value
+     *
+     * @return $this
+     */
+    public function addCustomVariable(string $name, string $value): InvoiceBuilder
+    {
+        $invoiceCustomVariable = new InvoiceCustomVariable();
+        $invoiceCustomVariable->name = $name;
+        $invoiceCustomVariable->value = $value;
+        $this->model->customVariables[] = $invoiceCustomVariable;
+        return $this;
+    }
+
+    /**
      * Add a Customer instance to the invoice
      * @param  Customer  $customer
      *
@@ -137,8 +168,7 @@ class InvoiceBuilder extends Builder
         ?string $phoneArea = null,
         ?string $phoneNumber = null,
         ?string $phoneCountryCode = '55'
-    ): InvoiceBuilder
-    {
+    ): InvoiceBuilder {
         if (empty($this->model->customer)) {
             $this->model->customer = new Customer();
         }
@@ -271,8 +301,7 @@ class InvoiceBuilder extends Builder
         string $lastName,
         $customer = null,
         string $description = 'Cartão de crédito'
-    ): InvoiceBuilder
-    {
+    ): InvoiceBuilder {
         $this->model->creditCard = new CreditCard();
         $this->model->creditCard->number = $number;
         $this->model->creditCard->month = $month;
