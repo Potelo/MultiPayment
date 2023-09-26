@@ -85,15 +85,37 @@ class IuguGateway implements Gateway
             }
         }
 
+        if (!empty($invoice->paymentMethod)) {
+            $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
+        }
+
+        try {
+            $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
+        if ($iuguInvoice->errors) {
+            throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
+        }
+
+        // se for cartão de crédito, tenta cobrar
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
+            $iuguInvoiceData['invoice_id'] = \Iugu_Invoice::create($iuguInvoiceData);
+            unset($iuguInvoiceData['items']);
 
             try {
-                $iuguInvoiceData['invoice_id'] = \Iugu_Invoice::create($iuguInvoiceData);
-                unset($iuguInvoiceData['items']);
                 $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
             } catch (\Exception $e) {
                 throw new GatewayException($e->getMessage());
@@ -102,26 +124,6 @@ class IuguGateway implements Gateway
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
             }
             $iuguInvoice = $iuguCharge->invoice();
-        } else {
-            if (!empty($invoice->paymentMethod)) {
-                $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
-            }
-            try {
-                $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\IuguRequestException | IuguObjectNotFound $e) {
-                if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                    throw new GatewayNotAvailableException($e->getMessage());
-                } else {
-                    throw new GatewayException($e->getMessage());
-                }
-            } catch (\IuguAuthenticationException $e) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } catch (\Exception $e) {
-                throw new GatewayException($e->getMessage());
-            }
-            if ($iuguInvoice->errors) {
-                throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
-            }
         }
 
         $invoice->id = $iuguInvoice->id;
