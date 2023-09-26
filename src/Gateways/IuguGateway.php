@@ -18,6 +18,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Models\InvoiceCustomVariable;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -435,6 +436,18 @@ class IuguGateway implements Gateway
             $invoiceItem->price = $itemIugu->price_cents;
             $invoiceItem->quantity = $itemIugu->quantity;
             $invoice->items[] = $invoiceItem;
+        }
+
+        $invoice->customVariables = [];
+        if (!empty($iuguInvoice->custom_variables)) {
+            foreach ($iuguInvoice->custom_variables as $customVariableIugu) {
+                $customVariable = new InvoiceCustomVariable();
+                $customVariable->fill([
+                    'name' => $customVariableIugu->name,
+                    'value' => $customVariableIugu->value,
+                ]);
+                $invoice->customVariables[] = $customVariable;
+            }
         }
 
         $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
