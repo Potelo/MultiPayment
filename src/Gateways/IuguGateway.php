@@ -112,7 +112,7 @@ class IuguGateway implements Gateway
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-            $iuguInvoiceData['invoice_id'] = \Iugu_Invoice::create($iuguInvoiceData);
+            $iuguInvoiceData['invoice_id'] = $iuguInvoice->id;
             unset($iuguInvoiceData['items']);
 
             try {
