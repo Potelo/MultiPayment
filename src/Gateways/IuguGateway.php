@@ -463,7 +463,7 @@ class IuguGateway implements Gateway
             $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
             $invoice->customer->address->street = $iuguInvoice->payer_address_street;
             $invoice->customer->address->number = $iuguInvoice->payer_address_number;
-            $invoice->customer->address->district = $iuguInvoice->payer_address_disctrict;
+            $invoice->customer->address->district = $iuguInvoice->payer_address_district;
             $invoice->customer->address->city = $iuguInvoice->payer_address_city;
             $invoice->customer->address->state = $iuguInvoice->payer_address_state;
             $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;
