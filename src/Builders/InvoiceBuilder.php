@@ -110,7 +110,6 @@ class InvoiceBuilder extends Builder
      * Add an custom variable to the invoice
      *
      * @param  string  $name
-     *
      * @param  string  $value
      *
      * @return $this
