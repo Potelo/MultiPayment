@@ -6,6 +6,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
 interface Gateway
@@ -60,6 +61,16 @@ interface Gateway
      * @throws GatewayException
      */
     public function refundInvoice(Invoice $invoice): Invoice;
+
+    /**
+     * charge an invoice
+     *
+     * @param  Invoice  $invoice
+     *
+     * @return Invoice
+     * @throws GatewayException|ChargingException
+     */
+    public function chargeInvoice(Invoice $invoice): Invoice;
 
     /**
      * String representation of the gateway

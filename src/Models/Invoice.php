@@ -99,6 +99,11 @@ class Invoice extends Model
     /**
      * @var string|null
      */
+    public ?string $orderId;
+
+    /**
+     * @var string|null
+     */
     public ?string $gateway;
 
     /**
@@ -321,5 +326,22 @@ class Invoice extends Model
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
         return $gateway->refundInvoice($this);
+    }
+
+    /**
+     * Charge the invoice
+     *
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function charge(): Invoice
+    {
+        $this->validateRequiredAttributes(['id', 'gateway', 'paymentMethod', 'customer' => ['id'], 'creditCard']);
+
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+        return $gateway->chargeInvoice($this);
     }
 }

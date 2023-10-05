@@ -136,6 +136,19 @@ class InvoiceBuilder extends Builder
     }
 
     /**
+     * Set the invoice order id
+     *
+     * @param  string  $orderId
+     *
+     * @return $this
+     */
+    public function setOrderId(string $orderId): InvoiceBuilder
+    {
+        $this->model->orderId = $orderId;
+        return $this;
+    }
+
+    /**
      * Add a Customer instance to the invoice
      * @param  Customer  $customer
      *
