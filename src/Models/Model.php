@@ -162,4 +162,30 @@ abstract class Model
         }
         return $gateway->$method($id);
     }
+
+    /**
+     * Validate the required attributes listed in an array.
+     *
+     * @param  array  $attributes
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    protected function validateRequiredAttributes(array $attributes): void
+    {
+        foreach ($attributes as $attribute => $value) {
+            if (is_numeric($attribute)) {
+                $attribute = $value;
+            }
+
+            if (empty($this->$attribute)) {
+                throw ModelAttributeValidationException::required($this->getClassName(), $attribute);
+            }
+
+            if (is_array($value)) {
+                $this->$attribute->validateRequiredAttributes($value);
+            }
+        }
+    }
+
 }
