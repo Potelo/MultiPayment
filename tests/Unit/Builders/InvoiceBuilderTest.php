@@ -45,8 +45,8 @@ class InvoiceBuilderTest extends TestCase
         foreach ($data['items'] as $item) {
             $invoiceBuilder->addItem($item['description'], $item['price'], $item['quantity']);
         }
-        if (isset($data['expiresAt'])) {
-            $invoiceBuilder->setExpiresAt($data['expiresAt']);
+        if (isset($data['dueAt'])) {
+            $invoiceBuilder->setDueAt($data['dueAt']);
         }
         if (isset($data['paymentMethod'])) {
             $invoiceBuilder->setPaymentMethod($data['paymentMethod']);
@@ -115,8 +115,8 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($item['quantity'], $invoice->items[$key]->quantity);
         }
 
-        if (isset($data['expiresAt'])) {
-            $this->assertEquals($data['expiresAt'], $invoice->expiresAt->format('Y-m-d'));
+        if (isset($data['dueAt'])) {
+            $this->assertEquals($data['dueAt'], $invoice->dueAt->format('Y-m-d'));
         }
 
         if (isset($data['paymentMethod'])) {
@@ -164,8 +164,8 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($item['quantity'], $invoice->items[$key]->quantity);
         }
 
-        if (isset($data['expiresAt'])) {
-            $this->assertEquals($data['expiresAt'], $invoice->expiresAt->format('Y-m-d'));
+        if (isset($data['dueAt'])) {
+            $this->assertEquals($data['dueAt'], $invoice->dueAt->format('Y-m-d'));
         }
 
         if (isset($data['paymentMethod']) && $invoice->status === $invoice::STATUS_PAID) {
@@ -193,7 +193,7 @@ class InvoiceBuilderTest extends TestCase
             'iugu - without payment method' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'dueAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
                 ]
@@ -201,7 +201,7 @@ class InvoiceBuilderTest extends TestCase
             'iugu - without payment method - with custom variable' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'dueAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
                     'customVariables' => [
@@ -213,7 +213,7 @@ class InvoiceBuilderTest extends TestCase
             'iugu - company with address without payment method' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'dueAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::companyWithAddress(),
                 ]
@@ -239,7 +239,7 @@ class InvoiceBuilderTest extends TestCase
             'iugu - bank slip with address' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'dueAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
                     'paymentMethod' => 'bank_slip',
@@ -248,7 +248,7 @@ class InvoiceBuilderTest extends TestCase
             'iugu - pix with address' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'dueAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
                     'paymentMethod' => 'pix',
@@ -257,7 +257,7 @@ class InvoiceBuilderTest extends TestCase
             'iugu - pix without address' => [
                 'gateway' => 'iugu',
                 'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'dueAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithoutAddress(),
                     'paymentMethod' => 'pix',
