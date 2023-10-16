@@ -56,7 +56,7 @@ class IuguGateway implements Gateway
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;
-        $iuguInvoiceData['expires_in'] = 0;
+        $iuguInvoiceData['expires_in'] = $invoice->expirationDays ?? 0;
 
         $iuguInvoiceData['items'] = [];
         foreach ($invoice->items as $item) {
@@ -424,6 +424,7 @@ class IuguGateway implements Gateway
         $invoice->amount = $iuguInvoice->total_cents;
         $invoice->paidAmount = $iuguInvoice->paid_cents;
         $invoice->refundedAmount = $iuguInvoice->refunded_cents;
+        $invoice->expirationDays = $iuguInvoice->expires_in;
 
         $invoice->customer = new Customer();
         $invoice->customer->id = $iuguInvoice->customer_id;

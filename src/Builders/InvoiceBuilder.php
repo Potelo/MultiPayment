@@ -74,6 +74,19 @@ class InvoiceBuilder extends Builder
     }
 
     /**
+     * set invoice expirationDays
+     *
+     * @param  int  $expirationDays
+     *
+     * @return InvoiceBuilder
+     */
+    public function setExpirationDays(int $expirationDays): InvoiceBuilder
+    {
+        $this->model->expirationDays = $expirationDays;
+        return $this;
+    }
+
+    /**
      * Set the invoice items
      *
      * @param  InvoiceItem[]  $items

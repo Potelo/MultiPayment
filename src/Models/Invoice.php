@@ -94,6 +94,11 @@ class Invoice extends Model
     /**
      * @var int|null
      */
+    public ?int $expirationDays;
+
+    /**
+     * @var int|null
+     */
     public ?int $fee;
 
     /**
