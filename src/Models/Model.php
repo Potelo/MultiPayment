@@ -12,6 +12,11 @@ abstract class Model
 {
 
     /**
+     * @var array $gatewayAdicionalOptions Gateway adicional options Can be used to send adicional options to the gateway and override the default options
+     */
+    public array $gatewayAdicionalOptions = [];
+
+    /**
      * Create a new instance of the model with an array of attributes.
      *
      * @param  array  $data

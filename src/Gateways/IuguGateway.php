@@ -53,10 +53,10 @@ class IuguGateway implements Gateway
     public function createInvoice(Invoice $invoice): Invoice
     {
         $iuguInvoiceData = [];
+
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;
-        $iuguInvoiceData['expires_in'] = $invoice->expirationDays ?? 0;
 
         $iuguInvoiceData['items'] = [];
         foreach ($invoice->items as $item) {
@@ -77,9 +77,10 @@ class IuguGateway implements Gateway
             }
         }
 
-        $iuguInvoiceData['due_date'] = !empty($invoice->dueAt)
-            ? $invoice->dueAt->format('Y-m-d')
+        $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
+            ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
+        $iuguInvoiceData['expires_in'] = 0;
 
         if (!empty($invoice->customer->address)) {
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArray();
@@ -91,6 +92,13 @@ class IuguGateway implements Gateway
         if (!empty($invoice->paymentMethod)) {
             $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
         }
+
+        if (!empty($invoice->gatewayAdicionalOptions)) {
+            foreach ($invoice->gatewayAdicionalOptions as $option => $value) {
+                $iuguInvoiceData[$option] = $value;
+            }
+        }
+
         try {
             $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
         } catch (\IuguRequestException|IuguObjectNotFound $e) {
@@ -424,7 +432,6 @@ class IuguGateway implements Gateway
         $invoice->amount = $iuguInvoice->total_cents;
         $invoice->paidAmount = $iuguInvoice->paid_cents;
         $invoice->refundedAmount = $iuguInvoice->refunded_cents;
-        $invoice->expirationDays = $iuguInvoice->expires_in;
 
         $invoice->customer = new Customer();
         $invoice->customer->id = $iuguInvoice->customer_id;
@@ -456,7 +463,7 @@ class IuguGateway implements Gateway
         }
 
         $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
-        $invoice->dueAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+        $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->gateway = 'iugu';

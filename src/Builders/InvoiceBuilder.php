@@ -58,31 +58,18 @@ class InvoiceBuilder extends Builder
     }
 
     /**
-     * set invoice DueAt
+     * set invoice expiresAt
      *
-     * @param  Carbon|string  $dueAt Carbon or string in Y-m-d format
+     * @param  Carbon|string  $expiresAt Carbon or string in Y-m-d format
      *
      * @return InvoiceBuilder
      */
-    public function setDueAt($dueAt): InvoiceBuilder
+    public function setExpiresAt($expiresAt): InvoiceBuilder
     {
-        if (is_string($dueAt)) {
-            $dueAt = Carbon::parse($dueAt);
+        if (is_string($expiresAt)) {
+            $expiresAt = Carbon::parse($expiresAt);
         }
-        $this->model->dueAt = $dueAt;
-        return $this;
-    }
-
-    /**
-     * set invoice expirationDays
-     *
-     * @param  int  $expirationDays
-     *
-     * @return InvoiceBuilder
-     */
-    public function setExpirationDays(int $expirationDays): InvoiceBuilder
-    {
-        $this->model->expirationDays = $expirationDays;
+        $this->model->expiresAt = $expiresAt;
         return $this;
     }
 
