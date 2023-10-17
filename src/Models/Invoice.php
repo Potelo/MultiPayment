@@ -302,7 +302,7 @@ class Invoice extends Model
     /**
      * @inheritDoc
      */
-    public function save($gateway = null, bool $validate = true): void
+    public function save($gateway = null, bool $validate = true, array $gatewayAdicionalOptions = []): void
     {
         if ($validate) {
             $this->validate();
