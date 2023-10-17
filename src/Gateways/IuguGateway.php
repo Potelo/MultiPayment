@@ -50,9 +50,14 @@ class IuguGateway implements Gateway
      * @inheritDoc
      * @throws ModelAttributeValidationException|ChargingException
      */
-    public function createInvoice(Invoice $invoice): Invoice
+    public function createInvoice(Invoice $invoice, array $gatewayAdicionalOptions): Invoice
     {
         $iuguInvoiceData = [];
+
+        foreach ($gatewayAdicionalOptions as $option => $value) {
+            $iuguInvoiceData[$option] = $value;
+        }
+
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;

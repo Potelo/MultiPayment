@@ -25,11 +25,12 @@ interface Gateway
      * create a new invoice
      *
      * @param  Invoice  $invoice
+     * @param  array  $gatewayAdicionalOptions
      *
      * @return Invoice
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function createInvoice(Invoice $invoice): Invoice;
+    public function createInvoice(Invoice $invoice, array $gatewayAdicionalOptions): Invoice;
 
     /**
      * Return one invoice based on the invoice ID

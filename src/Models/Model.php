@@ -33,11 +33,12 @@ abstract class Model
      *
      * @param  Gateway|string|null  $gateway
      * @param  bool  $validate
+     * @param  array  $gatewayAdicionalOptions
      *
      * @return void
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function save($gateway = null, bool $validate = true): void
+    public function save($gateway = null, bool $validate = true, array $gatewayAdicionalOptions = []): void
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
@@ -55,7 +56,7 @@ abstract class Model
         if (!method_exists($gatewayClass, $method)) {
             throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
         }
-        $gatewayClass->$method($this);
+        $gatewayClass->$method($this, $gatewayAdicionalOptions);
     }
 
     /**
