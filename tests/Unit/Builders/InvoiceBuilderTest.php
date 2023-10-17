@@ -69,6 +69,10 @@ class InvoiceBuilderTest extends TestCase
             }
         }
 
+        if (isset($data['gatewayAdicionalOptions'])) {
+            $invoiceBuilder->setGatewayAdicionalOptions($data['gatewayAdicionalOptions']);
+        }
+
         return $invoiceBuilder->create();
     }
 
@@ -141,6 +145,17 @@ class InvoiceBuilderTest extends TestCase
             }
         }
 
+        if (isset($data['gatewayAdicionalOptions'])) {
+            $this->assertEquals($data['gatewayAdicionalOptions'], $invoice->gatewayAdicionalOptions);
+            if ($gateway == 'iugu') {
+                foreach ($invoice->gatewayAdicionalOptions as $key => $value) {
+                    $this->assertNotEmpty(array_filter($invoice->original->variables, function ($variable) use ($key, $value) {
+                        return $variable->variable == $key && $variable->value == $value;
+                    }));
+                }
+            }
+        }
+
         // Verifica se a fatura foi criada no gateway com os dados corretos
         $invoice = $invoice->get($invoice->id, $gateway);
 
@@ -207,6 +222,17 @@ class InvoiceBuilderTest extends TestCase
                     'customVariables' => [
                         'custom_variable_1' => 'value_1',
                         'custom_variable_2' => 'value_2',
+                    ]
+                ]
+            ],
+            'iugu - without payment method - with adicional options' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'gatewayAdicionalOptions' => [
+                        'expires_in' => 5,
                     ]
                 ]
             ],
