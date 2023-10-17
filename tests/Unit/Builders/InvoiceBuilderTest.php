@@ -4,23 +4,21 @@ namespace Potelo\MultiPayment\Tests\Unit\Builders;
 
 use Carbon\Carbon;
 use Potelo\MultiPayment\Tests\TestCase;
+use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Exceptions\ChargingException;
 
 class InvoiceBuilderTest extends TestCase
 {
 
     /**
-     * Create invoice test.
-     *
-     * @dataProvider shouldCreateInvoiceDataProvider
+     * Create a invoice with mocked data
      *
      * @param  string  $gateway
      * @param  array  $data
      *
-     * @return void
-     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
-     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @return \Potelo\MultiPayment\Models\Invoice
      */
-    public function testShouldCreateInvoice(string $gateway, array $data): void
+    private function createInvoice(string $gateway, array $data): Invoice
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
         $invoiceBuilder = $multiPayment->newInvoice();
@@ -64,7 +62,29 @@ class InvoiceBuilderTest extends TestCase
 
             );
         }
-        $invoice = $invoiceBuilder->create();
+
+        if (isset($data['gatewayAdicionalOptions'])) {
+            $invoiceBuilder->setGatewayAdicionalOptions($data['gatewayAdicionalOptions']);
+        }
+
+        return $invoiceBuilder->create();
+    }
+
+    /**
+     * Create invoice test.
+     *
+     * @dataProvider shouldCreateInvoiceDataProvider
+     *
+     * @param  string  $gateway
+     * @param  array  $data
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function testShouldCreateInvoice(string $gateway, array $data): void
+    {
+        $invoice = $this->createInvoice($gateway, $data);
         $this->assertInstanceOf(\Potelo\MultiPayment\Models\Invoice::class, $invoice);
         $this->assertNotEmpty($invoice->id);
         $this->assertNotEmpty($invoice->status);
@@ -110,6 +130,17 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($data['creditCard']['lastName'], $invoice->creditCard->lastName);
             $this->assertNotEmpty($invoice->creditCard->token);
             $this->assertNotEmpty($invoice->creditCard->id);
+        }
+
+        if (isset($data['gatewayAdicionalOptions'])) {
+            $this->assertEquals($data['gatewayAdicionalOptions'], $invoice->gatewayAdicionalOptions);
+            if ($gateway == 'iugu') {
+                foreach ($invoice->gatewayAdicionalOptions as $key => $value) {
+                    $this->assertNotEmpty(array_filter($invoice->original->variables, function ($variable) use ($key, $value) {
+                        return $variable->variable == $key && $variable->value == $value;
+                    }));
+                }
+            }
         }
 
         // Verifica se a fatura foi criada no gateway com os dados corretos
@@ -160,6 +191,17 @@ class InvoiceBuilderTest extends TestCase
                     'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
+                ]
+            ],
+            'iugu - without payment method - with adicional options' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'gatewayAdicionalOptions' => [
+                        'expires_in' => 5,
+                    ]
                 ]
             ],
             'iugu - company with address without payment method' => [
@@ -218,30 +260,35 @@ class InvoiceBuilderTest extends TestCase
         ];
     }
 
-    public static function customerWithoutAddress(): array
+    /**
+     * Fail to create invoice test.
+     *
+     * @dataProvider shouldNotCreateInvoiceDataProvider
+     *
+     * @param  string  $gateway
+     * @param  array  $data
+     *
+     * @return void
+     */
+    public function testShouldNotCreateInvoice(string $gateway, array $data): void
     {
-        $customer['name'] = 'Fake Customer';
-        $customer['email'] = 'email@exemplo.com';
-        $customer['taxDocument'] = '20176996915';
-        $customer['birthDate'] = '1980-01-01';
-        $customer['phoneArea'] = '71';
-        $customer['phoneNumber'] = '982345678';
-        return $customer;
+        $this->expectException(ChargingException::class);
+        $this->createInvoice($gateway, $data);
     }
 
-    public static function companyWithAddress(): array
+    public function shouldNotCreateInvoiceDataProvider(): array
     {
-        $customer = self::customerWithoutAddress();
-        $customer['address'] = self::address();
-        return $customer;
-    }
-
-    public static function companyWithoutAddress(): array
-    {
-        $customer['name'] = 'Fake Company';
-        $customer['email'] = 'email@exemplo.com';
-        $customer['taxDocument'] = '28585583000189';
-        return $customer;
+        return [
+            'iugu - credit card - charge fail' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithAddress(),
+                    'paymentMethod' => 'credit_card',
+                    'creditCard' => array_merge(self::creditCard(), ['number' => '4012888888881881']),
+                ],
+            ],
+        ];
     }
 
     public static function customerWithAddress(): array
