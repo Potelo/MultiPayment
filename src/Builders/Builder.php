@@ -10,7 +10,6 @@ class Builder
 {
     protected Gateway $gateway;
     protected Model $model;
-    protected array $gatewayAdicionalOptions = [];
 
     /**
      * Builder constructor.
@@ -32,7 +31,7 @@ class Builder
      */
     public function create(): Model
     {
-        $this->model->save($this->gateway, true, $this->gatewayAdicionalOptions);
+        $this->model->save($this->gateway, true);
         return $this->model;
     }
 
@@ -67,7 +66,7 @@ class Builder
      */
     public function setGatewayAdicionalOptions(array $gatewayAdicionalOptions): self
     {
-        $this->gatewayAdicionalOptions = $gatewayAdicionalOptions;
+        $this->model->gatewayAdicionalOptions = $gatewayAdicionalOptions;
 
         return $this;
     }

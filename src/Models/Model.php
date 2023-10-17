@@ -12,6 +12,11 @@ abstract class Model
 {
 
     /**
+     * @var array $gatewayAdicionalOptions Gateway adicional options Can be used to send adicional options to the gateway and override the default options
+     */
+    public array $gatewayAdicionalOptions = [];
+
+    /**
      * Create a new instance of the model with an array of attributes.
      *
      * @param  array  $data
@@ -33,12 +38,11 @@ abstract class Model
      *
      * @param  Gateway|string|null  $gateway
      * @param  bool  $validate
-     * @param  array  $gatewayAdicionalOptions
      *
      * @return void
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function save($gateway = null, bool $validate = true, array $gatewayAdicionalOptions = []): void
+    public function save($gateway = null, bool $validate = true): void
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
@@ -56,7 +60,7 @@ abstract class Model
         if (!method_exists($gatewayClass, $method)) {
             throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
         }
-        $gatewayClass->$method($this, $gatewayAdicionalOptions);
+        $gatewayClass->$method($this);
     }
 
     /**
