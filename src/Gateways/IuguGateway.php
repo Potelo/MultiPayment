@@ -57,7 +57,6 @@ class IuguGateway implements Gateway
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;
-        $iuguInvoiceData['expires_in'] = 0;
 
         $iuguInvoiceData['items'] = [];
         foreach ($invoice->items as $item) {
@@ -81,6 +80,7 @@ class IuguGateway implements Gateway
         $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
             ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
+        $iuguInvoiceData['expires_in'] = 0;
 
         if (!empty($invoice->customer->address)) {
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArray();
