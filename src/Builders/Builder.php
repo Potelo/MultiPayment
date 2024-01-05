@@ -31,7 +31,7 @@ class Builder
      */
     public function create(): Model
     {
-        $this->model->save($this->gateway);
+        $this->model->save($this->gateway, true);
         return $this->model;
     }
 
@@ -53,6 +53,20 @@ class Builder
     public function setGateway($gateway = null): self
     {
         $this->gateway = ConfigurationHelper::resolveGateway($gateway);
+
+        return $this;
+    }
+
+    /**
+     * Set the gateway adicional options.
+     *
+     * @param  array  $gatewayAdicionalOptions
+     *
+     * @return $this
+     */
+    public function setGatewayAdicionalOptions(array $gatewayAdicionalOptions): self
+    {
+        $this->model->gatewayAdicionalOptions = $gatewayAdicionalOptions;
 
         return $this;
     }

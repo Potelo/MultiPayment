@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Builders;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Models\Model;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
@@ -14,7 +15,6 @@ use Potelo\MultiPayment\Models\InvoiceCustomVariable;
 /**
  * invoice builder
  *
- * @method Invoice create()
  * @method Invoice get()
  */
 class InvoiceBuilder extends Builder
@@ -30,6 +30,18 @@ class InvoiceBuilder extends Builder
     {
         parent::__construct($gateway);
         $this->model = new Invoice();
+    }
+
+    /**
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function create(): Invoice
+    {
+        return parent::create();
     }
 
     /**
@@ -110,7 +122,6 @@ class InvoiceBuilder extends Builder
      * Add an custom variable to the invoice
      *
      * @param  string  $name
-     *
      * @param  string  $value
      *
      * @return $this

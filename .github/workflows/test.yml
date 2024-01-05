@@ -1,6 +1,10 @@
 name: Tests
 
-on: [pull_request]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
   phpunit-tests:
@@ -18,8 +22,6 @@ jobs:
           MULTIPAYMENT_DEFAULT: iugu
           IUGU_ID: ${{ secrets.IUGU_ID }}
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
-          MOIP_APITOKEN: ${{ secrets.MOIP_APITOKEN }}
-          MOIP_APIKEY: ${{ secrets.MOIP_APIKEY }}
         run: |
           docker run \
             --volume $(pwd):/app \
@@ -27,6 +29,4 @@ jobs:
             --env MULTIPAYMENT_DEFAULT \
             --env IUGU_ID \
             --env IUGU_APIKEY \
-            --env MOIP_APITOKEN \
-            --env MOIP_APIKEY \
             multi-payment composer test

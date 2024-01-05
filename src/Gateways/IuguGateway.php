@@ -18,6 +18,8 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Models\InvoiceCustomVariable;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -46,11 +48,12 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws ModelAttributeValidationException
+     * @throws ModelAttributeValidationException|ChargingException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
         $iuguInvoiceData = [];
+
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;
@@ -65,16 +68,19 @@ class IuguGateway implements Gateway
         }
 
         $iuguInvoiceData['custom_variables'] = [];
-        foreach ($invoice->customVariables as $customVariable) {
-            $iuguInvoiceData['custom_variables'][] = [
-                'name' => $customVariable->name,
-                'value' => $customVariable->value,
-            ];
+        if (!empty($invoice->customVariables)) {
+            foreach ($invoice->customVariables as $customVariable) {
+                $iuguInvoiceData['custom_variables'][] = [
+                    'name' => $customVariable->name,
+                    'value' => $customVariable->value,
+                ];
+            }
         }
 
         $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
             ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
+        $iuguInvoiceData['expires_in'] = 0;
 
         if (!empty($invoice->customer->address)) {
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArray();
@@ -83,43 +89,54 @@ class IuguGateway implements Gateway
             }
         }
 
+        if (!empty($invoice->paymentMethod)) {
+            $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
+        }
+
+        if (!empty($invoice->gatewayAdicionalOptions)) {
+            foreach ($invoice->gatewayAdicionalOptions as $option => $value) {
+                $iuguInvoiceData[$option] = $value;
+            }
+        }
+
+        try {
+            $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
+        } catch (\IuguRequestException|IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
+        if ($iuguInvoice->errors) {
+            throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
+        }
+
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
+            $iuguInvoiceData['invoice_id'] = $iuguInvoice->id;
+            unset($iuguInvoiceData['items']);
 
             try {
-                $iuguInvoiceData['invoice_id'] = \Iugu_Invoice::create($iuguInvoiceData);
-                unset($iuguInvoiceData['items']);
                 $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
             } catch (\Exception $e) {
                 throw new GatewayException($e->getMessage());
             }
             if ($iuguCharge->errors) {
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
+            } elseif (!$iuguCharge->success) {
+                $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
+                $exception->chargeResponse = $iuguCharge;
+                throw $exception;
             }
             $iuguInvoice = $iuguCharge->invoice();
-        } else {
-            if (!empty($invoice->paymentMethod)) {
-                $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
-            }
-            try {
-                $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\IuguRequestException | IuguObjectNotFound $e) {
-                if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                    throw new GatewayNotAvailableException($e->getMessage());
-                } else {
-                    throw new GatewayException($e->getMessage());
-                }
-            } catch (\IuguAuthenticationException $e) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } catch (\Exception $e) {
-                throw new GatewayException($e->getMessage());
-            }
-            if ($iuguInvoice->errors) {
-                throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
-            }
         }
 
         $invoice->id = $iuguInvoice->id;
@@ -433,6 +450,18 @@ class IuguGateway implements Gateway
             $invoice->items[] = $invoiceItem;
         }
 
+        $invoice->customVariables = [];
+        if (!empty($iuguInvoice->custom_variables)) {
+            foreach ($iuguInvoice->custom_variables as $customVariableIugu) {
+                $customVariable = new InvoiceCustomVariable();
+                $customVariable->fill([
+                    'name' => $customVariableIugu->name,
+                    'value' => $customVariableIugu->value,
+                ]);
+                $invoice->customVariables[] = $customVariable;
+            }
+        }
+
         $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
         $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
@@ -446,7 +475,7 @@ class IuguGateway implements Gateway
             $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
             $invoice->customer->address->street = $iuguInvoice->payer_address_street;
             $invoice->customer->address->number = $iuguInvoice->payer_address_number;
-            $invoice->customer->address->district = $iuguInvoice->payer_address_disctrict;
+            $invoice->customer->address->district = $iuguInvoice->payer_address_district;
             $invoice->customer->address->city = $iuguInvoice->payer_address_city;
             $invoice->customer->address->state = $iuguInvoice->payer_address_state;
             $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;

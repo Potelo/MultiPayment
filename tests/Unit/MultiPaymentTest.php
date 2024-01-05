@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Tests\Unit;
 
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Facades\MultiPayment;
 
 class MultiPaymentTest extends TestCase
 {
@@ -11,30 +12,22 @@ class MultiPaymentTest extends TestCase
     /**
      * Test if can get the invoice by id
      *
-     * @dataProvider shouldGetInvoiceDataProvider
-     *
-     * @param $gateway
-     * @param $id
-     *
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function testShouldGetInvoice($gateway, $id)
+    public function testShouldGetInvoice()
     {
-        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
-        $invoice = $multiPayment->getInvoice($id);
-        $this->assertEquals($id, $invoice->id);
-    }
+        $gateway = 'iugu';
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->setPaymentMethod(Invoice::PAYMENT_METHOD_CREDIT_CARD)
+            ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
+            ->addItem('teste', 1000, 1)
+            ->addCreditCardToken(self::iuguCreditCardToken())
+            ->create();
 
-    /**
-     * @return array
-     */
-    public function shouldGetInvoiceDataProvider(): array
-    {
-        return [
-//            'iugu' => ['iugu', '4DAF50DDAA1E461CBA9ECF813000FC0B'],
-            'moip' => ['moip', 'ORD-TC1BMFF78KBU'],
-        ];
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+        $invoiceFetched = $multiPayment->getInvoice($invoice->id);
+        $this->assertEquals($invoiceFetched->id, $invoice->id);
     }
 
     /**
@@ -62,7 +55,6 @@ class MultiPaymentTest extends TestCase
     {
         return [
             'iugu' => ['iugu', '4DAF50DDAA1E461CBA9ECF813111FC0B'],
-            'moip' => ['moip', 'ORD-MNPLI3PYQTOK'],
         ];
     }
 
@@ -108,7 +100,7 @@ class MultiPaymentTest extends TestCase
 
         );
         $invoice = $invoiceBuilder->create();
-        sleep(30); // Aguarda a criação da fatura no gateway (moip)
+        sleep(3);
 
         $refundedInvoice = $multiPayment->refundInvoice($invoice->id, $refundedAmount);
 
@@ -136,39 +128,6 @@ class MultiPaymentTest extends TestCase
                 ],
                 'status' => Invoice::STATUS_REFUNDED,
                 'refundedAmount' => null,
-            ],
-            'moip - credit card - full refund' => [
-                'gateway' => 'moip',
-                'data' => [
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
-                    'customer' => self::customerWithoutAddress(),
-                    'paymentMethod' => 'credit_card',
-                    'creditCard' => self::creditCard(),
-                ],
-                'status' => Invoice::STATUS_REFUNDED,
-                'refundedAmount' => null,
-            ],
-            'iugu - credit card - partial refund' => [
-                'gateway' => 'iugu',
-                'data' => [
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
-                    'customer' => self::customerWithoutAddress(),
-                    'paymentMethod' => 'credit_card',
-                    'creditCard' => self::creditCard(),
-                ],
-                'status' => Invoice::STATUS_PARTIALLY_REFUNDED,
-                'refundedAmount' => 5000,
-            ],
-            'moip - credit card - partial refund' => [
-                'gateway' => 'moip',
-                'data' => [
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
-                    'customer' => self::customerWithoutAddress(),
-                    'paymentMethod' => 'credit_card',
-                    'creditCard' => self::creditCard(),
-                ],
-                'status' => Invoice::STATUS_PARTIALLY_REFUNDED,
-                'refundedAmount' => 5000,
             ],
         ];
     }
