@@ -55,12 +55,12 @@ class TestCase extends \Orchestra\Testbench\TestCase
     public static function address(): array
     {
         $address['zipCode'] = '41820330';
-        $address['street'] = 'Rua Deputado Mário Lima';
+        $address['street'] = 'Rua Exemplo';
         $address['number'] = '123';
-        $address['district'] = 'Caminho das Arvores';
+        $address['district'] = 'Bairro Exemplo';
         $address['complement'] = 'Apto. 123';
-        $address['city'] = 'Salvador';
-        $address['state'] = 'BA';
+        $address['city'] = 'Cidade Exemplo';
+        $address['state'] = 'Estado';
         $address['country'] = 'Brasil';
         return $address;
     }
