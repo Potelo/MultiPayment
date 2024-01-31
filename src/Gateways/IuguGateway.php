@@ -18,6 +18,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -47,6 +48,7 @@ class IuguGateway implements Gateway
     /**
      * @inheritDoc
      * @throws ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
@@ -74,12 +76,17 @@ class IuguGateway implements Gateway
             }
         }
 
+        if (!empty($invoice->gatewayAdicionalOptions)) {
+            foreach ($invoice->gatewayAdicionalOptions as $option => $value) {
+                $iuguInvoiceData[$option] = $value;
+            }
+        }
+
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-
             try {
                 $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
             } catch (\Exception $e) {
@@ -87,6 +94,10 @@ class IuguGateway implements Gateway
             }
             if ($iuguCharge->errors) {
                 throw new GatewayException('Error charging invoice', $iuguCharge->errors);
+            } elseif (!$iuguCharge->success) {
+                $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
+                $exception->chargeResponse = $iuguCharge;
+                throw $exception;
             }
             $iuguInvoice = $iuguCharge->invoice();
         } else {
