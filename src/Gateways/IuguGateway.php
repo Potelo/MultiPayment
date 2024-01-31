@@ -77,6 +77,10 @@ class IuguGateway implements Gateway
             }
         }
 
+        if (!empty($invoice->paymentMethod)) {
+            $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
+        }
+
         if (!empty($invoice->gatewayAdicionalOptions)) {
             foreach ($invoice->gatewayAdicionalOptions as $option => $value) {
                 $iuguInvoiceData[$option] = $value;
@@ -102,9 +106,6 @@ class IuguGateway implements Gateway
             }
             $iuguInvoice = $iuguCharge->invoice();
         } else {
-            if (!empty($invoice->paymentMethod)) {
-                $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
-            }
             try {
                 $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
             } catch (\IuguRequestException|IuguObjectNotFound $e) {
@@ -328,7 +329,7 @@ class IuguGateway implements Gateway
     {
         try {
             $iuguInvoice = \Iugu_Invoice::fetch($id);
-        } catch (\IuguRequestException | IuguObjectNotFound $e ) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
