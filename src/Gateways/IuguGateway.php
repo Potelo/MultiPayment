@@ -47,8 +47,7 @@ class IuguGateway implements Gateway
 
     /**
      * @inheritDoc
-     * @throws ModelAttributeValidationException
-     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws ModelAttributeValidationException|ChargingException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
