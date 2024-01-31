@@ -52,6 +52,7 @@ class IuguGateway implements Gateway
     public function createInvoice(Invoice $invoice): Invoice
     {
         $iuguInvoiceData = [];
+
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;
@@ -67,6 +68,7 @@ class IuguGateway implements Gateway
         $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
             ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
+        $iuguInvoiceData['expires_in'] = 0;
 
         if (!empty($invoice->customer->address)) {
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArray();
@@ -162,7 +164,7 @@ class IuguGateway implements Gateway
 
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-        } catch (\IuguRequestException|IuguObjectNotFound $e) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
@@ -288,7 +290,7 @@ class IuguGateway implements Gateway
                 'customer_id' => $creditCard->customer->id,
                 'description' => $creditCard->description ?? 'CREDIT CARD',
             ]);
-        } catch (\IuguRequestException|IuguObjectNotFound $e) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
@@ -326,7 +328,7 @@ class IuguGateway implements Gateway
     {
         try {
             $iuguInvoice = \Iugu_Invoice::fetch($id);
-        } catch (\IuguRequestException|IuguObjectNotFound $e ) {
+        } catch (\IuguRequestException | IuguObjectNotFound $e ) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
             } else {
@@ -357,7 +359,7 @@ class IuguGateway implements Gateway
             Invoice::PAYMENT_METHOD_CREDIT_CARD
         ];
         if (!empty($iuguPaymentMethod)) {
-            foreach ($multiPaymentPaymentMethod as $paymentMethod) {
+            foreach($multiPaymentPaymentMethod as $paymentMethod) {
                 if (str_contains($iuguPaymentMethod, $paymentMethod)) {
                     return $paymentMethod;
                 }

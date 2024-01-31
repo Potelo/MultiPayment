@@ -128,8 +128,7 @@ class Invoice extends Model
             ]);
             $this->items[] = $invoiceItem;
             unset($data['amount']);
-        }
-        elseif (!empty($data['items'])) {
+        } elseif (!empty($data['items'])) {
             $this->items = [];
             foreach ($data['items'] as $item) {
                 $invoiceItem = $item;
@@ -185,7 +184,8 @@ class Invoice extends Model
             throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
         }
 
-        if (in_array('paymentMethod', $attributes) &&
+        if (
+            in_array('paymentMethod', $attributes) &&
             !empty($this->paymentMethod) &&
             (
                 $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
@@ -196,7 +196,8 @@ class Invoice extends Model
             throw new ModelAttributeValidationException('The `expiresAt` attribute is required for bank_slip or pix payment method.');
         }
 
-        if (in_array('paymentMethod', $attributes) &&
+        if (
+            in_array('paymentMethod', $attributes) &&
             !empty($this->paymentMethod) &&
             $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP &&
             empty($this->customer->address)
@@ -242,7 +243,7 @@ class Invoice extends Model
         ])) {
             throw ModelAttributeValidationException::invalid(
                 'Invoice',
-                'paymentMethod' ,
+                'paymentMethod',
                 'paymentMethod must be one of: ' . implode(', ', [
                     Invoice::PAYMENT_METHOD_CREDIT_CARD,
                     Invoice::PAYMENT_METHOD_BANK_SLIP,
