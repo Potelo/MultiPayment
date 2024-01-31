@@ -359,7 +359,7 @@ class IuguGateway implements Gateway
             Invoice::PAYMENT_METHOD_CREDIT_CARD
         ];
         if (!empty($iuguPaymentMethod)) {
-            foreach($multiPaymentPaymentMethod as $paymentMethod) {
+            foreach ($multiPaymentPaymentMethod as $paymentMethod) {
                 if (str_contains($iuguPaymentMethod, $paymentMethod)) {
                     return $paymentMethod;
                 }
@@ -426,7 +426,7 @@ class IuguGateway implements Gateway
 
         $invoice->items = [];
 
-        foreach($iuguInvoice->items as $itemIugu) {
+        foreach ($iuguInvoice->items as $itemIugu) {
             $invoiceItem = new InvoiceItem();
             $invoiceItem->description = $itemIugu->description;
             $invoiceItem->price = $itemIugu->price_cents;
