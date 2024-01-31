@@ -19,7 +19,6 @@ use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
-use Potelo\MultiPayment\Models\InvoiceCustomVariable;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -66,17 +65,6 @@ class IuguGateway implements Gateway
                 'price_cents' => $item->price,
             ];
         }
-
-        $iuguInvoiceData['custom_variables'] = [];
-        if (!empty($invoice->customVariables)) {
-            foreach ($invoice->customVariables as $customVariable) {
-                $iuguInvoiceData['custom_variables'][] = [
-                    'name' => $customVariable->name,
-                    'value' => $customVariable->value,
-                ];
-            }
-        }
-
         $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
             ? $invoice->expiresAt->format('Y-m-d')
             : Carbon::now()->format('Y-m-d');
@@ -99,31 +87,11 @@ class IuguGateway implements Gateway
             }
         }
 
-        try {
-            $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-        } catch (\IuguRequestException|IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
-        } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
-        }
-        if ($iuguInvoice->errors) {
-            throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
-        }
-
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-            $iuguInvoiceData['invoice_id'] = $iuguInvoice->id;
-            unset($iuguInvoiceData['items']);
-
             try {
                 $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
             } catch (\Exception $e) {
@@ -137,6 +105,23 @@ class IuguGateway implements Gateway
                 throw $exception;
             }
             $iuguInvoice = $iuguCharge->invoice();
+        } else {
+            try {
+                $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
+            } catch (\IuguRequestException|IuguObjectNotFound $e) {
+                if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                    throw new GatewayNotAvailableException($e->getMessage());
+                } else {
+                    throw new GatewayException($e->getMessage());
+                }
+            } catch (\IuguAuthenticationException $e) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } catch (\Exception $e) {
+                throw new GatewayException($e->getMessage());
+            }
+            if ($iuguInvoice->errors) {
+                throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
+            }
         }
 
         $invoice->id = $iuguInvoice->id;
@@ -448,18 +433,6 @@ class IuguGateway implements Gateway
             $invoiceItem->price = $itemIugu->price_cents;
             $invoiceItem->quantity = $itemIugu->quantity;
             $invoice->items[] = $invoiceItem;
-        }
-
-        $invoice->customVariables = [];
-        if (!empty($iuguInvoice->custom_variables)) {
-            foreach ($iuguInvoice->custom_variables as $customVariableIugu) {
-                $customVariable = new InvoiceCustomVariable();
-                $customVariable->fill([
-                    'name' => $customVariableIugu->name,
-                    'value' => $customVariableIugu->value,
-                ]);
-                $invoice->customVariables[] = $customVariable;
-            }
         }
 
         $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);

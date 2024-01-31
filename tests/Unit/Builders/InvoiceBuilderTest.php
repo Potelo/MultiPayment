@@ -63,12 +63,6 @@ class InvoiceBuilderTest extends TestCase
             );
         }
 
-        if (isset($data['customVariables'])) {
-            foreach ($data['customVariables'] as $key => $value) {
-                $invoiceBuilder->addCustomVariable($key, $value);
-            }
-        }
-
         if (isset($data['gatewayAdicionalOptions'])) {
             $invoiceBuilder->setGatewayAdicionalOptions($data['gatewayAdicionalOptions']);
         }
@@ -138,13 +132,6 @@ class InvoiceBuilderTest extends TestCase
             $this->assertNotEmpty($invoice->creditCard->id);
         }
 
-        if (isset($data['customVariables'])) {
-            foreach ($invoice->customVariables as $customVariable) {
-                $this->assertArrayHasKey($customVariable->name, $data['customVariables']);
-                $this->assertEquals($data['customVariables'][$customVariable->name], $customVariable->value);
-            }
-        }
-
         if (isset($data['gatewayAdicionalOptions'])) {
             $this->assertEquals($data['gatewayAdicionalOptions'], $invoice->gatewayAdicionalOptions);
             if ($gateway == 'iugu') {
@@ -165,13 +152,6 @@ class InvoiceBuilderTest extends TestCase
         $this->assertEquals($data['customer']['email'], $invoice->customer->email);
         $this->assertEquals($data['customer']['phoneArea'], $invoice->customer->phoneArea);
         $this->assertEquals($data['customer']['phoneNumber'], $invoice->customer->phoneNumber);
-
-        if (isset($data['customVariables'])) {
-            foreach ($invoice->customVariables as $customVariable) {
-                $this->assertArrayHasKey($customVariable->name, $data['customVariables']);
-                $this->assertEquals($data['customVariables'][$customVariable->name], $customVariable->value);
-            }
-        }
 
         foreach ($data['items'] as $key => $item) {
             $this->assertEquals($item['description'], $invoice->items[$key]->description);
@@ -211,18 +191,6 @@ class InvoiceBuilderTest extends TestCase
                     'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
-                ]
-            ],
-            'iugu - without payment method - with custom variable' => [
-                'gateway' => 'iugu',
-                'data' => [
-                    'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
-                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
-                    'customer' => self::customerWithAddress(),
-                    'customVariables' => [
-                        'custom_variable_1' => 'value_1',
-                        'custom_variable_2' => 'value_2',
-                    ]
                 ]
             ],
             'iugu - without payment method - with adicional options' => [

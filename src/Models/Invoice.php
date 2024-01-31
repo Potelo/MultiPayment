@@ -62,11 +62,6 @@ class Invoice extends Model
     public ?array $items;
 
     /**
-     * @var InvoiceCustomVariable[]|null
-     */
-    public ?array $customVariables;
-
-    /**
      * @var string|null
      */
     public ?string $paymentMethod;
@@ -146,19 +141,6 @@ class Invoice extends Model
             unset($data['items']);
         }
 
-        if (!empty($data['custom_variables']) && is_array($data['custom_variables'])) {
-            $this->customVariables = [];
-            foreach ($data['custom_variables'] as $customVariable) {
-                $invoiceCustomVariable = $customVariable;
-                if (!empty($customVariable) && is_array($customVariable)) {
-                    $invoiceCustomVariable = new InvoiceCustomVariable();
-                    $invoiceCustomVariable->fill($customVariable);
-                }
-                $this->customVariables[] = $invoiceCustomVariable;
-            }
-            unset($data['custom_variables']);
-        }
-
         if (!empty($data['customer']) && is_array($data['customer'])) {
             $this->customer = new Customer();
             $this->customer->fill($data['customer']);
@@ -205,7 +187,8 @@ class Invoice extends Model
         if (
             in_array('paymentMethod', $attributes) &&
             !empty($this->paymentMethod) &&
-            ($this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
+            (
+                $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
                 $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX
             ) &&
             empty($this->expiresAt)
@@ -243,21 +226,6 @@ class Invoice extends Model
                 $item->validate();
             } else {
                 throw ModelAttributeValidationException::invalid('Invoice', 'items', 'items must be an array of InvoiceItem');
-            }
-        }
-    }
-
-    /**
-     * @return void
-     * @throws ModelAttributeValidationException
-     */
-    public function validateCustomVariablesAttribute()
-    {
-        foreach ($this->customVariables as $customVariable) {
-            if ($customVariable instanceof InvoiceCustomVariable) {
-                $customVariable->validate();
-            } else {
-                throw ModelAttributeValidationException::invalid('Invoice', 'customVariables', 'items must be an array of InvoiceCustomVariables');
             }
         }
     }
