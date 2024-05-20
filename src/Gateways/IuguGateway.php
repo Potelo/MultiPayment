@@ -417,6 +417,7 @@ class IuguGateway implements Gateway
 
         foreach ($iuguInvoice->items as $itemIugu) {
             $invoiceItem = new InvoiceItem();
+            $itemIugu = (object) $itemIugu;
             $invoiceItem->description = $itemIugu->description;
             $invoiceItem->price = $itemIugu->price_cents;
             $invoiceItem->quantity = $itemIugu->quantity;
