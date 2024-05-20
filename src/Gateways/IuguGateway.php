@@ -141,6 +141,28 @@ class IuguGateway implements Gateway
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
         }
+        if (!empty($iuguInvoice->credit_card_transaction)) {
+            if (empty($invoice->creditCard)) {
+                $invoice->creditCard = new CreditCard();
+            }
+            $invoice->creditCard->brand = $iuguInvoice->credit_card_brand ?? null;
+            $holderName = null;
+            foreach ($iuguInvoice->variables as $iuguInvoiceVariable) {
+                if ($iuguInvoiceVariable->variable == 'payment_data.holder_name') {
+                    $holderName = $iuguInvoiceVariable->value;
+                    break;
+                }
+            }
+
+            if (!empty($holderName)) {
+                $names = explode(' ', $holderName);
+                $invoice->creditCard->firstName = $names[0] ?? null;
+                $invoice->creditCard->lastName = $names[array_key_last($names)] ?? null;
+            }
+
+            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4;
+            $invoice->creditCard->gateway = 'iugu';
+        }
 
         $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->url = $iuguInvoice->secure_url;
@@ -316,7 +338,7 @@ class IuguGateway implements Gateway
             $creditCard->firstName = $names[0] ?? null;
             $creditCard->lastName = $names[array_key_last($names)] ?? null;
         }
-        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
+        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? substr($iuguCreditCard->data->display_number, -4);
         $creditCard->gateway = 'iugu';
         $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
@@ -467,6 +489,28 @@ class IuguGateway implements Gateway
             $invoice->pix = new Pix();
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
+        }
+        if (!empty($iuguInvoice->credit_card_transaction)) {
+            if (empty($invoice->creditCard)) {
+                $invoice->creditCard = new CreditCard();
+            }
+            $invoice->creditCard->brand = $iuguInvoice->credit_card_brand ?? null;
+            $holderName = null;
+            foreach ($iuguInvoice->variables as $iuguInvoiceVariable) {
+                if ($iuguInvoiceVariable->variable == 'payment_data.holder_name') {
+                    $holderName = $iuguInvoiceVariable->value;
+                    break;
+                }
+            }
+
+            if (!empty($holderName)) {
+                $names = explode(' ', $holderName);
+                $invoice->creditCard->firstName = $names[0] ?? null;
+                $invoice->creditCard->lastName = $names[array_key_last($names)] ?? null;
+            }
+
+            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4;
+            $invoice->creditCard->gateway = 'iugu';
         }
 
         return $invoice;
