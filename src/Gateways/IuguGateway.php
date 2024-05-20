@@ -400,8 +400,11 @@ class IuguGateway implements Gateway
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->paidAmount = $iuguInvoice->paid_cents;
         $invoice->refundedAmount = $iuguInvoice->refunded_cents;
-        $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
         $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+
+        if (empty($invoice->paymentMethod)) {
+            $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
+        }
 
         if (empty($invoice->customer)) {
             $invoice->customer = new Customer();
