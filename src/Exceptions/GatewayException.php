@@ -15,8 +15,8 @@ class GatewayException extends MultiPaymentException
      */
     public function __construct(string $message = "", $errors = null)
     {
-        parent::__construct($message);
         $this->errors = $errors;
+        parent::__construct($message . ' - ' . $this->getFirstError());
     }
 
     /**
@@ -25,6 +25,22 @@ class GatewayException extends MultiPaymentException
     public function getErrors(): array
     {
         return $this->errors;
+    }
+
+    /**
+     * returns the first error message.
+     *
+     * @return string
+     */
+    public function getFirstError(): string
+    {
+        if (is_string($this->errors)) {
+            return $this->errors;
+        }
+        if (is_array($this->errors)) {
+            return $this->errors[array_key_first($this->errors)];
+        }
+        return '';
     }
 
     /**
