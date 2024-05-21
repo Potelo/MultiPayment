@@ -90,6 +90,8 @@ class IuguGateway implements Gateway
         if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
+            } elseif (!empty($invoice->creditCard->id) && empty($invoice->creditCard->token)) {
+                $invoice->creditCard = $this->getCreditCard($invoice->creditCard, $invoice->customer->id);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
             try {
@@ -294,6 +296,51 @@ class IuguGateway implements Gateway
             $creditCard->lastName = $names[array_key_last($names)] ?? null;
         }
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? substr($iuguCreditCard->data->display_number, -4);
+        $creditCard->gateway = 'iugu';
+        $creditCard->original = $iuguCreditCard;
+        $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
+        return $creditCard;
+    }
+
+    /**
+     * Get customer's credit card
+     *
+     * @param CreditCard $creditCard
+     * @param String $customerId
+     * @return void
+     */
+    public function getCreditCard(CreditCard $creditCard, $customerId)
+    {
+        try {
+            $iuguCreditCard = Iugu_PaymentMethod::search([
+                'customer_id' => $customerId,
+                'id' => $creditCard->id,
+            ]);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
+        if ($iuguCreditCard->errors) {
+            throw new GatewayException('Error getting creditCard: ', $iuguCreditCard->errors);
+        }
+
+        $creditCard->id = $iuguCreditCard->id ?? null;
+        $creditCard->brand = $iuguCreditCard->data->brand ?? null;
+        $creditCard->year = $iuguCreditCard->data->year ?? null;
+        $creditCard->month = $iuguCreditCard->data->month ?? null;
+        if (!empty($iuguCreditCard->data->holder_name)) {
+            $names = explode(' ', $iuguCreditCard->data->holder_name);
+            $creditCard->firstName = $names[0] ?? null;
+            $creditCard->lastName = $names[array_key_last($names)] ?? null;
+        }
+        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
         $creditCard->gateway = 'iugu';
         $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
