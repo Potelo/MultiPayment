@@ -124,30 +124,7 @@ class IuguGateway implements Gateway
             }
         }
 
-        $invoice->id = $iuguInvoice->id;
-        $invoice->gateway = 'iugu';
-        $invoice->status = $this->iuguStatusToMultiPayment($iuguInvoice->status);
-        $invoice->amount = $iuguInvoice->total_cents;
-
-        if (!empty($iuguInvoice->bank_slip)) {
-            $invoice->bankSlip = new BankSlip();
-            $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
-            $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
-            $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
-            $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
-        }
-        if (!empty($iuguInvoice->pix)) {
-            $invoice->pix = new Pix();
-            $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
-            $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
-        }
-
-        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
-        $invoice->url = $iuguInvoice->secure_url;
-        $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
-        $invoice->original = $iuguInvoice;
-        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
-        return $invoice;
+        return $this->parseInvoice($iuguInvoice, $invoice);
     }
 
     /**
@@ -316,7 +293,7 @@ class IuguGateway implements Gateway
             $creditCard->firstName = $names[0] ?? null;
             $creditCard->lastName = $names[array_key_last($names)] ?? null;
         }
-        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? null;
+        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? substr($iuguCreditCard->data->display_number, -4);
         $creditCard->gateway = 'iugu';
         $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
@@ -413,13 +390,26 @@ class IuguGateway implements Gateway
         $invoice = $invoice ?? new Invoice();
 
         $invoice->id = $iuguInvoice->id;
+        $invoice->gateway = 'iugu';
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
-        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
         $invoice->amount = $iuguInvoice->total_cents;
+        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
+        $invoice->url = $iuguInvoice->secure_url;
+        $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
+        $invoice->original = $iuguInvoice;
+        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->paidAmount = $iuguInvoice->paid_cents;
         $invoice->refundedAmount = $iuguInvoice->refunded_cents;
+        $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
 
-        $invoice->customer = new Customer();
+        if (empty($invoice->paymentMethod)) {
+            $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
+        }
+
+        if (empty($invoice->customer)) {
+            $invoice->customer = new Customer();
+        }
+
         $invoice->customer->id = $iuguInvoice->customer_id;
         $invoice->customer->name = $iuguInvoice->customer_name;
         $invoice->customer->email = $iuguInvoice->email;
@@ -430,22 +420,17 @@ class IuguGateway implements Gateway
 
         foreach ($iuguInvoice->items as $itemIugu) {
             $invoiceItem = new InvoiceItem();
+            $itemIugu = (object) $itemIugu;
             $invoiceItem->description = $itemIugu->description;
             $invoiceItem->price = $itemIugu->price_cents;
             $invoiceItem->quantity = $itemIugu->quantity;
             $invoice->items[] = $invoiceItem;
         }
 
-        $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
-        $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
-        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
-        $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
-        $invoice->gateway = 'iugu';
-        $invoice->original = $iuguInvoice;
-        $invoice->url = $iuguInvoice->secure_url;
-
         if (!empty($iuguInvoice->payer_address_zip_code)) {
-            $invoice->customer->address = new Address();
+            if (empty($invoice->customer->address)) {
+                $invoice->customer->address = new Address();
+            }
             $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
             $invoice->customer->address->street = $iuguInvoice->payer_address_street;
             $invoice->customer->address->number = $iuguInvoice->payer_address_number;
@@ -457,16 +442,44 @@ class IuguGateway implements Gateway
         }
 
         if (!empty($iuguInvoice->bank_slip)) {
-            $invoice->bankSlip = new BankSlip();
+            if (empty($invoice->bankSlip)) {
+                $invoice->bankSlip = new BankSlip();
+            }
             $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
             $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
             $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
             $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
         }
+
         if (!empty($iuguInvoice->pix)) {
-            $invoice->pix = new Pix();
+            if (empty($invoice->pix)) {
+                $invoice->pix = new Pix();
+            }
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
+        }
+
+        if (!empty($iuguInvoice->credit_card_transaction)) {
+            if (empty($invoice->creditCard)) {
+                $invoice->creditCard = new CreditCard();
+            }
+            $invoice->creditCard->brand = $iuguInvoice->credit_card_brand ?? null;
+            $holderName = null;
+            foreach ($iuguInvoice->variables as $iuguInvoiceVariable) {
+                if ($iuguInvoiceVariable->variable == 'payment_data.holder_name') {
+                    $holderName = $iuguInvoiceVariable->value;
+                    break;
+                }
+            }
+
+            if (!empty($holderName)) {
+                $names = explode(' ', $holderName);
+                $invoice->creditCard->firstName = $names[array_key_first($names)] ?? null;
+                $invoice->creditCard->lastName = $names[array_key_last($names)] ?? null;
+            }
+
+            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4;
+            $invoice->creditCard->gateway = 'iugu';
         }
 
         return $invoice;
