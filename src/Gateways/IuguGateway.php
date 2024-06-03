@@ -464,11 +464,14 @@ class IuguGateway implements Gateway
                 $invoice->creditCard = new CreditCard();
             }
             $invoice->creditCard->brand = $iuguInvoice->credit_card_brand ?? null;
+            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4 ?? $iuguInvoice->credit_card_transaction->last4;
+
             $holderName = null;
             foreach ($iuguInvoice->variables as $iuguInvoiceVariable) {
                 if ($iuguInvoiceVariable->variable == 'payment_data.holder_name') {
                     $holderName = $iuguInvoiceVariable->value;
-                    break;
+                } else if (empty($invoice->creditCard->lastDigits) && $iuguInvoiceVariable->variable == 'payment_data.display_number') {
+                    $invoice->creditCard->lastDigits = substr($iuguInvoiceVariable->value, -4);
                 }
             }
 
@@ -478,7 +481,6 @@ class IuguGateway implements Gateway
                 $invoice->creditCard->lastName = $names[array_key_last($names)] ?? null;
             }
 
-            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4;
             $invoice->creditCard->gateway = 'iugu';
         }
 

@@ -128,6 +128,7 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($data['creditCard']['cvv'], $invoice->creditCard->cvv);
             $this->assertEquals($data['creditCard']['firstName'], $invoice->creditCard->firstName);
             $this->assertEquals($data['creditCard']['lastName'], $invoice->creditCard->lastName);
+            $this->assertEquals(substr($data['creditCard']['number'], -4), $invoice->creditCard->lastDigits);
             $this->assertNotEmpty($invoice->creditCard->token);
             $this->assertNotEmpty($invoice->creditCard->id);
         }
