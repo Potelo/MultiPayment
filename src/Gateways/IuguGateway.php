@@ -464,7 +464,7 @@ class IuguGateway implements Gateway
                 $invoice->creditCard = new CreditCard();
             }
             $invoice->creditCard->brand = $iuguInvoice->credit_card_brand ?? null;
-            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4 ?? $iuguInvoice->credit_card_transaction->last_4;
+            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4 ?? $iuguInvoice->credit_card_transaction->last4;
 
             $holderName = null;
             foreach ($iuguInvoice->variables as $iuguInvoiceVariable) {
