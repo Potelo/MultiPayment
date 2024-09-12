@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Tests\Unit;
 
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Facades\MultiPayment;
@@ -128,6 +129,103 @@ class MultiPaymentTest extends TestCase
                 ],
                 'status' => Invoice::STATUS_REFUNDED,
                 'refundedAmount' => null,
+            ],
+        ];
+    }
+
+
+    /**
+     * Test if can refund the invoice
+     *
+     * @dataProvider shouldChargeInvoiceWithCreditCard
+     *
+     * @param  string  $gateway
+     * @param  array  $data
+     * @param  string  $status
+     * @param  string  $creditCardDataMethod
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\MultiPaymentException
+     */
+    public function testShouldChargeInvoiceWithCreditCard(string $gateway, array $data, string $status, string $creditCardDataMethod)
+    {
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+
+        $invoiceBuilder = $multiPayment->newInvoice();
+        $invoiceBuilder->addCustomer(
+            $data['customer']['name'] ?? null,
+            $data['customer']['email'] ?? null,
+            $data['customer']['taxDocument'] ?? null,
+            $data['customer']['birthDate'] ?? null,
+            $data['customer']['phoneArea'] ?? null,
+            $data['customer']['phoneNumber'] ?? null
+        );
+        foreach ($data['items'] as $item) {
+            $invoiceBuilder->addItem($item['description'], $item['price'], $item['quantity']);
+        }
+        $invoice = $invoiceBuilder->create();
+        sleep(3);
+
+        if ($creditCardDataMethod == 'creditCard') {
+            $invoice->creditCard = new CreditCard();
+            $invoice->creditCard->fill(self::creditCard());
+            $invoice->creditCard->customer = $invoice->customer;
+            $invoice->creditCard->save();
+
+            $invoice = $multiPayment->chargeInvoiceWithCreditCard($invoice);
+        } elseif ($creditCardDataMethod == 'token') {
+            $creditCardToken = self::iuguCreditCardToken();
+            $invoice = $multiPayment->chargeInvoiceWithCreditCard($invoice->id, $creditCardToken);
+        } elseif ($creditCardDataMethod == 'id') {
+            $creditCard = new CreditCard();
+            $creditCard->fill(self::creditCard());
+            $creditCard->customer = $invoice->customer;
+            $creditCard->save();
+            $invoice = $multiPayment->chargeInvoiceWithCreditCard($invoice->id, null, $creditCard->id);
+        }
+
+        $this->assertEquals($status, $invoice->status);
+    }
+
+    /**
+     * @return array
+     */
+    public function shouldChargeInvoiceWithCreditCard(): array
+    {
+        return [
+            'iugu - credit card object' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                ],
+                'status' => Invoice::STATUS_PAID,
+                'creditCardDataMethod' => 'creditCard',
+            ],
+            'iugu - credit card token' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                ],
+                'status' => Invoice::STATUS_PAID,
+                'creditCardDataMethod' => 'token',
+            ],
+            'iugu - credit card id' => [
+                'gateway' => 'iugu',
+                'data' => [
+                    'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
+                    'customer' => self::customerWithoutAddress(),
+                    'paymentMethod' => 'credit_card',
+                ],
+                'status' => Invoice::STATUS_PAID,
+                'creditCardDataMethod' => 'id',
             ],
         ];
     }

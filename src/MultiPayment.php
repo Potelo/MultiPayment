@@ -2,6 +2,8 @@
 
 namespace Potelo\MultiPayment;
 
+use Potelo\MultiPayment\Exceptions\MultiPaymentException;
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\Gateway;
@@ -124,5 +126,50 @@ class MultiPayment
 
         return $invoice->refund();
 
+    }
+
+    /**
+     * Charge invoice with credit card
+     *
+     * @param  Invoice|string  $invoice
+     * @param  string|null  $creditCardToken
+     * @param  string|null  $creditCardId
+     *
+     * @return \Potelo\MultiPayment\Models\Invoice
+     *
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\MultiPaymentException
+     */
+    public function chargeInvoiceWithCreditCard($invoice, ?string $creditCardToken = null, ?string $creditCardId = null): Invoice
+    {
+        if (is_string($invoice)) {
+            $invoiceInstance = new Invoice();
+            $invoiceInstance->id = $invoice;
+            $invoice = $invoiceInstance;
+        }
+
+        if (!empty($creditCardToken) && !empty($creditCardId)) {
+            throw new MultiPaymentException('"creditCardToken" and "creditCardId" are mutually exclusive');
+        }
+
+        if (!empty($creditCardToken)) {
+            $invoice->creditCard = new CreditCard();
+            $invoice->creditCard->token = $creditCardToken;
+        } elseif (!empty($creditCardId)) {
+            $invoice->creditCard = new CreditCard();
+            $invoice->creditCard->id = $creditCardId;
+        }
+
+        if (empty($invoice->creditCard)) {
+            throw new MultiPaymentException('"invoice->creditCard" or "creditCardToken" or "creditCardId" must be provided');
+        }
+
+        $invoice->gateway = $this->gateway;
+        $invoice->creditCard->gateway = $this->gateway;
+
+        return $invoice->chargeInvoiceWithCreditCard();
     }
 }

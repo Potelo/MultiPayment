@@ -290,4 +290,23 @@ class Invoice extends Model
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
         return $gateway->refundInvoice($this);
     }
+
+    /**
+     * Charge invoice with credit card
+     *
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function chargeInvoiceWithCreditCard(?CreditCard $creditCard = null): Invoice
+    {
+        if (!empty($creditCard)) {
+            $this->creditCard = $creditCard;
+        }
+
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+
+        return $gateway->chargeInvoiceWithCreditCard($this);
+    }
 }
