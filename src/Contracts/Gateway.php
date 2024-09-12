@@ -66,5 +66,17 @@ interface Gateway
      *
      * @return string
      */
+
+    /**
+     * Charge an invoice with a credit card
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice;
+
     public function __toString();
 }

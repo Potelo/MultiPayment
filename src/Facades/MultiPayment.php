@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static CustomerBuilder newCustomer()
  * @method static CreditCardBuilder newCreditCard()
  * @method static \Potelo\MultiPayment\MultiPayment setGateway($gateway)
+ * @method static Invoice chargeInvoiceWithCreditCard($invoice, ?string $creditCardToken = null, ?string $creditCardId = null)
  */
 class MultiPayment extends Facade
 {

@@ -92,19 +92,7 @@ class IuguGateway implements Gateway
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-            try {
-                $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
-            } catch (\Exception $e) {
-                throw new GatewayException($e->getMessage());
-            }
-            if ($iuguCharge->errors) {
-                throw new GatewayException('Error charging invoice', $iuguCharge->errors);
-            } elseif (!$iuguCharge->success) {
-                $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
-                $exception->chargeResponse = $iuguCharge;
-                throw $exception;
-            }
-            $iuguInvoice = $iuguCharge->invoice();
+            $iuguInvoice = $this->chargeIuguInvoice($iuguInvoiceData);
         } else {
             try {
                 $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
@@ -485,5 +473,64 @@ class IuguGateway implements Gateway
         }
 
         return $invoice;
+    }
+
+    /**
+     * @inheritDoc
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice
+    {
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+
+        if (empty($invoice->creditCard)) {
+            throw ModelAttributeValidationException::required('Invoice', 'creditCard');
+        }
+
+        if (empty($invoice->creditCard->token) && empty($invoice->creditCard->id)) {
+            throw new ModelAttributeValidationException('Credit card token or id is required');
+        }
+
+        $iuguInvoiceData = [];
+        $iuguInvoiceData['invoice_id'] = $invoice->id;
+
+        if (!empty($invoice->creditCard->id)) {
+            $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
+        } else {
+            $iuguInvoiceData['token'] = $invoice->creditCard->token;
+        }
+
+        $iuguInvoice = $this->chargeIuguInvoice($iuguInvoiceData);
+
+        return $this->parseInvoice($iuguInvoice, $invoice);
+    }
+
+    /**
+     * @param  array  $iuguInvoiceData
+     * @return mixed
+     * @throws \Potelo\MultiPayment\Exceptions\ChargingException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    private function chargeIuguInvoice(array $iuguInvoiceData)
+    {
+        try {
+            $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
+        if ($iuguCharge->errors) {
+            throw new GatewayException('Error charging invoice', $iuguCharge->errors);
+        } elseif (!$iuguCharge->success) {
+            $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
+            $exception->chargeResponse = $iuguCharge;
+            throw $exception;
+        }
+        return $iuguCharge->invoice();
     }
 }
