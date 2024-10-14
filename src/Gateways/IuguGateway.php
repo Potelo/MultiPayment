@@ -26,6 +26,7 @@ class IuguGateway implements Gateway
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
+    private const STATUS_EXTERNALLY_PAID = 'externally_paid';
     private const STATUS_CANCELED = 'canceled';
     private const STATUS_IN_ANALYSIS = 'in_analysis';
     private const STATUS_DRAFT = 'draft';
@@ -172,6 +173,7 @@ class IuguGateway implements Gateway
             case self::STATUS_PARTIALLY_PAID:
                 return Invoice::STATUS_PENDING;
             case self::STATUS_PAID:
+            case self::STATUS_EXTERNALLY_PAID:
             case self::STATUS_AUTHORIZED:
             case self::STATUS_IN_PROTEST:
                 return Invoice::STATUS_PAID;
