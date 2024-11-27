@@ -18,4 +18,4 @@ COPY . /app
 
 VOLUME /app
 
-RUN composer install
+RUN composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
