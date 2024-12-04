@@ -55,6 +55,7 @@ class IuguGateway implements Gateway
         $iuguInvoiceData = [];
 
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
+        $iuguInvoiceData['payer']['name'] = $invoice->customer->name;
         $iuguInvoiceData['payer']['cpf_cnpj'] = $invoice->customer->taxDocument;
         $iuguInvoiceData['email'] = $invoice->customer->email;
 
