@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Exceptions;
 
-use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 
 class ConfigurationException extends MultiPaymentException
 {
@@ -15,7 +15,7 @@ class ConfigurationException extends MultiPaymentException
      */
     public static function GatewayInvalidInterface($gateway): self
     {
-        return new static("Gateway [" . get_class($gateway) . "] must implement " . Gateway::class . " interface");
+        return new static("Gateway [" . get_class($gateway) . "] must implement " . GatewayContract::class . " interface");
     }
 
     /**

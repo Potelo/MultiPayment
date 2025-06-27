@@ -6,7 +6,7 @@ use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
-use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Builders\CreditCardBuilder;
@@ -21,12 +21,12 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 class MultiPayment
 {
 
-    private Gateway $gateway;
+    private GatewayContract $gateway;
 
     /**
      * MultiPayment constructor.
      *
-     * @param  Gateway|string|null  $gateway
+     * @param  GatewayContract|string|null  $gateway
      */
     public function __construct($gateway = null)
     {
@@ -34,7 +34,7 @@ class MultiPayment
     }
 
     /**
-     * @param  Gateway|string|null  $gateway
+     * @param  GatewayContract|string|null  $gateway
      * @return MultiPayment
      */
     public function setGateway($gateway): MultiPayment

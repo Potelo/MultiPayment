@@ -3,7 +3,7 @@
 namespace Potelo\MultiPayment\Builders;
 
 use Potelo\MultiPayment\Models\Customer;
-use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Models\CreditCard;
 
 /**
@@ -18,7 +18,7 @@ class CreditCardBuilder extends Builder
     /**
      * CustomerBuilder constructor.
      *
-     * @param  Gateway  $gateway
+     * @param  GatewayContract  $gateway
      */
     public function __construct($gateway = null)
     {

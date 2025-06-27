@@ -4,7 +4,7 @@ namespace Potelo\MultiPayment\Builders;
 
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
-use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 
 /**
  * CustomerBuilder class
@@ -18,7 +18,7 @@ class CustomerBuilder extends Builder
     /**
      * CustomerBuilder constructor.
      *
-     * @param  Gateway  $gateway
+     * @param  GatewayContract  $gateway
      */
     public function __construct($gateway = null)
     {

@@ -2,7 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
-use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
@@ -36,7 +36,7 @@ abstract class Model
     /**
      * If gateway is set, then we will use it to save the model
      *
-     * @param  Gateway|string|null  $gateway
+     * @param  GatewayContract|string|null  $gateway
      * @param  bool  $validate
      *
      * @return void
@@ -153,7 +153,7 @@ abstract class Model
      * Get the model instance by id in the gateway.
      *
      * @param  string  $id
-     * @param  Gateway|string|null  $gateway
+     * @param  GatewayContract|string|null  $gateway
      *
      * @return static
      * @throws GatewayException

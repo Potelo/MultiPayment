@@ -15,14 +15,14 @@ use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
-use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements Gateway
+class IuguGateway implements GatewayContract
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';

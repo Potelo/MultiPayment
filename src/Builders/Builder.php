@@ -3,18 +3,18 @@
 namespace Potelo\MultiPayment\Builders;
 
 use Potelo\MultiPayment\Models\Model;
-use Potelo\MultiPayment\Contracts\Gateway;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 
 class Builder
 {
-    protected Gateway $gateway;
+    protected GatewayContract $gateway;
     protected Model $model;
 
     /**
      * Builder constructor.
      *
-     * @param  Gateway|string|null  $gateway
+     * @param  GatewayContract|string|null  $gateway
      */
     public function __construct($gateway = null)
     {
@@ -48,7 +48,7 @@ class Builder
     /**
      * Set the gateway.
      *
-     * @param  Gateway|string|null  $gateway
+     * @param  GatewayContract|string|null  $gateway
      */
     public function setGateway($gateway = null): self
     {

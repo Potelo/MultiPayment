@@ -8,18 +8,8 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
-interface Gateway
+interface InvoiceContract
 {
-
-    /**
-     * Create a new customer and return the customer
-     *
-     * @param  Customer  $customer
-     *
-     * @return Customer
-     * @throws GatewayException|GatewayNotAvailableException
-     */
-    public function createCustomer(Customer $customer): Customer;
 
     /**
      * create a new invoice
@@ -40,16 +30,6 @@ interface Gateway
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function getInvoice(string $id): Invoice;
-
-    /**
-     * Create a credit card
-     *
-     * @param CreditCard $creditCard
-     *
-     * @return CreditCard
-     * @throws GatewayException|GatewayNotAvailableException
-     */
-    public function createCreditCard(CreditCard $creditCard): CreditCard;
 
     /**
      * Refund an invoice
@@ -77,6 +57,4 @@ interface Gateway
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
     public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice;
-
-    public function __toString();
 }

@@ -3,13 +3,12 @@
 namespace Potelo\MultiPayment\Builders;
 
 use Carbon\Carbon;
-use Potelo\MultiPayment\Models\Model;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
-use Potelo\MultiPayment\Contracts\Gateway;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 
 /**
  * invoice builder
@@ -22,7 +21,7 @@ class InvoiceBuilder extends Builder
     /**
      * InvoiceBuilder constructor.
      *
-     * @param  Gateway|string  $gateway
+     * @param  GatewayContract|string  $gateway
      *
      */
     public function __construct($gateway = null)
