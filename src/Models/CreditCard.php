@@ -14,77 +14,77 @@ class CreditCard extends Model
     /**
      * @var mixed
      */
-    public $id;
+    public $id = null;
 
     /**
      * @var Customer|null
      */
-    public ?Customer $customer;
+    public ?Customer $customer = null;
 
     /**
      * @var string|null
      */
-    public ?string $description;
+    public ?string $description = null;
 
     /**
      * @var string|null
      */
-    public ?string $number;
+    public ?string $number = null;
 
     /**
      * @var string|null
      */
-    public ?string $brand;
+    public ?string $brand = null;
 
     /**
      * @var string|null
      */
-    public ?string $month;
+    public ?string $month = null;
 
     /**
      * @var string|null
      */
-    public ?string $year;
+    public ?string $year = null;
 
     /**
      * @var string|null
      */
-    public ?string $cvv;
+    public ?string $cvv = null;
 
     /**
      * @var string|null
      */
-    public ?string $lastDigits;
+    public ?string $lastDigits = null;
 
     /**
      * @var string|null
      */
-    public ?string $firstName;
+    public ?string $firstName = null;
 
     /**
      * @var string|null
      */
-    public ?string $lastName;
+    public ?string $lastName = null;
 
     /**
      * @var string|null
      */
-    public ?string $token;
+    public ?string $token = null;
 
     /**
      * @var string|null
      */
-    public ?string $gateway;
+    public ?string $gateway = null;
 
     /**
      * @var mixed The original object that was received from the gateway
      */
-    public $original;
+    public $original = null;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $createdAt;
+    public ?Carbon $createdAt = null;
 
     /**
      * @return void

@@ -20,42 +20,42 @@ class Address extends Model
     /**
      * @var string|null
      */
-    public ?string $street;
+    public ?string $street = null;
 
     /**
      * @var string|null
      */
-    public ?string $number;
+    public ?string $number = null;
 
     /**
      * @var string|null
      */
-    public ?string $district;
+    public ?string $district = null;
 
     /**
      * @var string|null
      */
-    public ?string $city;
+    public ?string $city = null;
 
     /**
      * @var string|null
      */
-    public ?string $state;
+    public ?string $state = null;
 
     /**
      * @var string|null
      */
-    public ?string $zipCode;
+    public ?string $zipCode = null;
 
     /**
      * @var string|null
      */
-    public ?string $complement;
+    public ?string $complement = null;
 
     /**
      * @var string|null
      */
-    public ?string $country;
+    public ?string $country = null;
 
     /**
      * @return void

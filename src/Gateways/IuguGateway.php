@@ -122,14 +122,7 @@ class IuguGateway implements GatewayContract
      */
     public function createCustomer(Customer $customer): Customer
     {
-        $iuguCustomerData = $this->multiPaymentToIuguData($customer->toArray());
-
-        if (!empty($customer->address)) {
-            $iuguCustomerData = array_merge($iuguCustomerData, $this->multiPaymentToIuguData($customer->address->toArray()));
-            if (empty($customer->address->number)) {
-                $iuguCustomerData['number'] = 'S/N';
-            }
-        }
+        $iuguCustomerData = $this->customerToIuguData($customer);
 
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
@@ -535,5 +528,157 @@ class IuguGateway implements GatewayContract
             throw $exception;
         }
         return $iuguCharge->invoice();
+    }
+
+    public function getCustomer(string $id): Customer
+    {
+        try {
+            $iuguCustomer = Iugu_Customer::fetch($id);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\Exception $e) {
+            throw new GatewayException("Error getting customer: {$e->getMessage()}");
+        }
+
+        if (!empty($iuguCustomer->errors)) {
+            throw new GatewayException('Error getting customer', $iuguCustomer->errors);
+        }
+
+        return $this->parseCustomer($iuguCustomer);
+    }
+
+    public function updateCustomer(Customer $customer): Customer
+    {
+        if (empty($customer->id)) {
+            throw ModelAttributeValidationException::required('Customer', 'id');
+        }
+
+        $iuguCustomerData = $this->customerToIuguData($customer);
+
+        try {
+            $iuguCustomer = Iugu_Customer::fetch($customer->id);
+            foreach ($iuguCustomerData as $key => $value) {
+                $iuguCustomer->{$key} = $value;
+            }
+            $iuguCustomer->save();
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException($e->getMessage());
+        }
+
+        if ($iuguCustomer->errors) {
+            throw new GatewayException('Error updating customer', $iuguCustomer->errors);
+        }
+
+        return $this->parseCustomer($iuguCustomer, $customer);
+    }
+
+    /**
+     * Parse the Iugu customer into a MultiPayment customer
+     *
+     * @param $iuguCustomer
+     * @param  \Potelo\MultiPayment\Models\Customer|null  $customer
+     *
+     * @return \Potelo\MultiPayment\Models\Customer
+     */
+    private function parseCustomer($iuguCustomer, ?Customer $customer = null): Customer
+    {
+        $customer = $customer ?? new Customer();
+
+        $valuesInsideCustomVariables = ['birth_date' => null, 'country' => null];
+
+        if (!empty($iuguCustomer->custom_variables)) {
+            foreach ($iuguCustomer->custom_variables as $variable) {
+                if (in_array($variable->name, array_keys($valuesInsideCustomVariables))) {
+                    $valuesInsideCustomVariables[$variable->name] = $variable->value;
+                }
+            }
+        }
+
+        $customer->id = $iuguCustomer->id;
+        $customer->name = $iuguCustomer->name;
+        $customer->email = $iuguCustomer->email;
+        $customer->taxDocument = $iuguCustomer->cpf_cnpj;
+        $customer->phoneNumber = $iuguCustomer->phone;
+        $customer->phoneArea = $iuguCustomer->phone_prefix;
+        $customer->birthDate = !empty($valuesInsideCustomVariables['birth_date'])
+            ? Carbon::createFromFormat('Y-m-d', $valuesInsideCustomVariables['birth_date'])
+            : null;
+        $customer->gateway = 'iugu';
+        $customer->createdAt = new Carbon($iuguCustomer->created_at_iso);
+        $customer->original = $iuguCustomer;
+
+        if (!empty($iuguCustomer->zip_code) || !empty($iuguCustomer->street) || !empty($iuguCustomer->number) || !empty($iuguCustomer->district) || !empty($iuguCustomer->city) || !empty($iuguCustomer->state) || !empty($iuguCustomer->complement) || !empty($iuguCustomer->country)) {
+            if (empty($customer->address)) {
+                $customer->address = new Address();
+            }
+            $customer->address->zipCode = $iuguCustomer?->zip_code ?? null;
+            $customer->address->street = $iuguCustomer?->street ?? null;
+            $customer->address->number = $iuguCustomer?->number ?? null;
+            $customer->address->district = $iuguCustomer?->district ?? null;
+            $customer->address->city = $iuguCustomer?->city ?? null;
+            $customer->address->state = $iuguCustomer?->state ?? null;
+            $customer->address->complement = $iuguCustomer?->complement ?? null;
+            $customer->address->country = $valuesInsideCustomVariables['country'] ?? null;
+        }
+
+        return $customer;
+    }
+
+    /**
+     * Convert a MultiPayment Customer model to Iugu data format.
+     *
+     * @param  \Potelo\MultiPayment\Models\Customer  $customer
+     * @return array
+     */
+    private function customerToIuguData(Customer $customer): array
+    {
+        $iuguCustomerData = [
+            'name' => $customer->name,
+            'email' => $customer->email,
+            'cpf_cnpj' => $customer->taxDocument,
+            'phone_prefix' => $customer->phoneArea,
+            'phone' => $customer->phoneNumber,
+        ];
+
+        if (!empty($customer->address)) {
+            $iuguCustomerData = array_merge($iuguCustomerData, $this->multiPaymentToIuguData($customer->address->toArray()));
+            if (empty($customer->address->number)) {
+                $iuguCustomerData['number'] = 'S/N';
+            }
+        }
+
+        if (!empty($customer->birthDate)) {
+            if (empty($iuguCustomerData['custom_variables'])) {
+                $iuguCustomerData['custom_variables'] = [];
+            }
+            $iuguCustomerData['custom_variables'][] = [
+                'name' => 'birth_date',
+                'value' => $customer->birthDate->format('Y-m-d'),
+            ];
+        }
+
+        if (!empty($customer->address->country)) {
+            if (empty($iuguCustomerData['custom_variables'])) {
+                $iuguCustomerData['custom_variables'] = [];
+            }
+            $iuguCustomerData['custom_variables'][] = [
+                'name' => 'country',
+                'value' => $customer->address->country,
+            ];
+        }
+
+        return $iuguCustomerData;
     }
 }
