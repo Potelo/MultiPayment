@@ -11,10 +11,10 @@ class Pix extends Model
     /**
      * @var string|null
      */
-    public ?string $qrCodeImageUrl;
+    public ?string $qrCodeImageUrl = null;
 
     /**
      * @var string|null
      */
-    public ?string $qrCodeText;
+    public ?string $qrCodeText = null;
 }

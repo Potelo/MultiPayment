@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Builders;
 
+use Carbon\Carbon;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Contracts\GatewayContract;
@@ -85,12 +86,16 @@ class CustomerBuilder extends Builder
     /**
      * Set the customer birthdate
      *
-     * @param  string  $birthDate Format: Y-m-d
+     * @param  string|\Carbon\Carbon  $birthDate Format: Y-m-d
      *
      * @return $this
      */
-    public function setBirthDate(string $birthDate): CustomerBuilder
+    public function setBirthDate(string|Carbon $birthDate): CustomerBuilder
     {
+        if (is_string($birthDate)) {
+            $birthDate = Carbon::createFromFormat('Y-m-d', $birthDate);
+        }
+
         $this->model->birthDate = $birthDate;
         return $this;
     }

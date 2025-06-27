@@ -97,12 +97,27 @@ class MultiPayment
      *
      * @param  string  $id
      *
-     * @return Invoice
-     * @throws GatewayException
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function getInvoice(string $id): Invoice
     {
         return Invoice::get($id, $this->gateway);
+    }
+
+    /**
+     * Return an Customer based on the customer ID
+     *
+     * @param  string  $id
+     *
+     * @return \Potelo\MultiPayment\Models\Customer
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function getCustomer(string $id): Customer
+    {
+        return Customer::get($id, $this->gateway);
     }
 
     /**

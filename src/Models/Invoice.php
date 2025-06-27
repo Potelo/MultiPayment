@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -24,94 +25,94 @@ class Invoice extends Model
     /**
      * @var string|null
      */
-    public ?string $id;
+    public ?string $id = null;
 
     /**
      * @var string|null
      */
-    public ?string $status;
+    public ?string $status = null;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $paidAt;
+    public ?Carbon $paidAt = null;
 
     /**
      * @var int|null
      */
-    public ?int $amount;
+    public ?int $amount = null;
 
     /**
      * @var int|null
      */
-    public ?int $paidAmount;
+    public ?int $paidAmount = null;
 
     /**
      * @var int|null
      */
-    public ?int $refundedAmount;
+    public ?int $refundedAmount = null;
 
     /**
      * @var Customer|null
      */
-    public ?Customer $customer;
+    public ?Customer $customer = null;
 
     /**
      * @var InvoiceItem[]|null
      */
-    public ?array $items;
+    public ?array $items = null;
 
     /**
      * @var string|null
      */
-    public ?string $paymentMethod;
+    public ?string $paymentMethod = null;
 
     /**
      * @var CreditCard|null
      */
-    public ?CreditCard $creditCard;
+    public ?CreditCard $creditCard = null;
 
     /**
      * @var BankSlip|null
      */
-    public ?BankSlip $bankSlip;
+    public ?BankSlip $bankSlip = null;
 
     /**
      * @var Pix|null
      */
-    public ?Pix $pix;
+    public ?Pix $pix = null;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $expiresAt;
+    public ?Carbon $expiresAt = null;
 
     /**
      * @var int|null
      */
-    public ?int $fee;
+    public ?int $fee = null;
 
     /**
      * @var string|null
      */
-    public ?string $gateway;
+    public ?string $gateway = null;
 
     /**
      * @var string|null
      */
-    public ?string $url;
+    public ?string $url = null;
 
     /**
      * The original invoice response of the gateway, in case need additional information.
      *
      * @var mixed|null
      */
-    public $original;
+    public $original = null;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $createdAt;
+    public ?Carbon $createdAt = null;
 
     /**
      * @inheritDoc
@@ -265,7 +266,7 @@ class Invoice extends Model
     /**
      * @inheritDoc
      */
-    public function save($gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string $gateway = null, bool $validate = true): void
     {
         if ($validate) {
             $this->validate();
