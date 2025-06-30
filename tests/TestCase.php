@@ -58,7 +58,7 @@ class TestCase extends \Orchestra\Testbench\TestCase
         $address['zipCode'] = '41820330';
         $address['street'] = 'Rua Deputado Mário Lima';
         $address['number'] = '123';
-        $address['district'] = 'Caminho das Árvores';
+        $address['district'] = 'Caminho das Arvores';
         $address['complement'] = 'Apto. 123';
         $address['city'] = 'Salvador';
         $address['state'] = 'BA';
