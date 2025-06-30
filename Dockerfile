@@ -14,14 +14,13 @@ COPY --from=composer /usr/bin/composer /usr/bin/composer
 
 WORKDIR /app
 
-COPY composer.json /app/composer.json
-COPY composer.lock /app/composer.lock
+COPY --chown=www-data:www-data composer.json composer.lock ./
 
 RUN composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
 
-COPY . /app
+COPY --chown=www-data:www-data . .
 
-VOLUME /app
+RUN chown -R www-data:www-data vendor
 
 USER www-data
 
