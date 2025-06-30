@@ -121,7 +121,7 @@ class InvoiceBuilder extends Builder
      * @param  string|null  $name
      * @param  string|null  $email
      * @param  string|null  $taxDocument
-     * @param  string|null  $birthDate
+     * @param  string|\Carbon\Carbon|null  $birthDate
      * @param  string|null  $phoneArea
      * @param  string|null  $phoneNumber
      * @param  string|null  $phoneCountryCode
@@ -132,7 +132,7 @@ class InvoiceBuilder extends Builder
         ?string $name = null,
         ?string $email = null,
         ?string $taxDocument = null,
-        ?string $birthDate = null,
+        string|Carbon|null $birthDate = null,
         ?string $phoneArea = null,
         ?string $phoneNumber = null,
         ?string $phoneCountryCode = '55'
@@ -144,7 +144,9 @@ class InvoiceBuilder extends Builder
         $this->model->customer->name = $name;
         $this->model->customer->email = $email;
         $this->model->customer->taxDocument = $taxDocument;
-        $this->model->customer->birthDate = $birthDate;
+        if (!is_null($birthDate)) {
+            $this->model->customer->birthDate = $birthDate instanceof Carbon ? $birthDate : Carbon::parse($birthDate);
+        }
         $this->model->customer->phoneArea = $phoneArea;
         $this->model->customer->phoneNumber = $phoneNumber;
         $this->model->customer->phoneCountryCode = $phoneCountryCode;
