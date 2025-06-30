@@ -202,7 +202,7 @@ class CustomerBuilderTest extends TestCase
             'phoneNumber' => '987654321',
             'birthDate' => '1990-01-01',
             'address' => [
-                'zipCode' => '123456789',
+                'zipCode' => '40170130',
                 'street' => 'Avenida Anita Garibaldi',
                 'number' => '2229',
                 'complement' => 'Apto. 207',

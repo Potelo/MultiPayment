@@ -85,7 +85,7 @@ class InvoiceBuilderTest extends TestCase
     public function testShouldCreateInvoice(string $gateway, array $data): void
     {
         $invoice = $this->createInvoice($gateway, $data);
-        $this->assertInstanceOf(\Potelo\MultiPayment\Models\Invoice::class, $invoice);
+        $this->assertInstanceOf(Invoice::class, $invoice);
         $this->assertNotEmpty($invoice->id);
         $this->assertNotEmpty($invoice->status);
 
@@ -322,36 +322,5 @@ class InvoiceBuilderTest extends TestCase
                 ],
             ],
         ];
-    }
-
-    public static function customerWithAddress(): array
-    {
-        $customer = self::customerWithoutAddress();
-        $customer['address'] = self::address();
-        return $customer;
-    }
-
-    public static function address(): array
-    {
-        $address['zipCode'] = '41820330';
-        $address['street'] = 'Rua Deputado Mário Lima';
-        $address['number'] = '123';
-        $address['district'] = 'Caminho das Arvores';
-        $address['complement'] = 'Apto. 123';
-        $address['city'] = 'Salvador';
-        $address['state'] = 'BA';
-        $address['country'] = 'Brasil';
-        return $address;
-    }
-
-    public static function creditCard(): array
-    {
-        $creditCard['number'] = '4111111111111111';
-        $creditCard['month'] = '12';
-        $creditCard['year'] = \Carbon\Carbon::now()->addYear()->format('Y');
-        $creditCard['cvv'] = '123';
-        $creditCard['firstName'] = 'Faker';
-        $creditCard['lastName'] = 'Teste';
-        return $creditCard;
     }
 }
