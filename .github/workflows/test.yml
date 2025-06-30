@@ -22,7 +22,6 @@ jobs:
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
         run: |
           docker run \
-            --volume $(pwd):/app \
             --env APP_ENV \
             --env MULTIPAYMENT_DEFAULT \
             --env IUGU_ID \
