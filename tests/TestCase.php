@@ -13,6 +13,13 @@ class TestCase extends \Orchestra\Testbench\TestCase
         \Iugu::setLogErrors(false);
     }
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // pausa para evitar problemas com o Iugu
+        sleep(12);
+    }
+
     protected function getPackageProviders($app): array
     {
         return [
