@@ -679,7 +679,7 @@ class IuguGateway implements GatewayContract
             ];
         }
 
-        if (!empty($customer->)) {
+        if (!empty($customer->gatewayAdicionalOptions)) {
             foreach ($customer->gatewayAdicionalOptions as $option => $value) {
                 $iuguCustomerData[$option] = $value;
             }
