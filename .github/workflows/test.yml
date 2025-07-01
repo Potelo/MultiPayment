@@ -8,14 +8,45 @@ on:
 
 jobs:
   phpunit-tests:
-
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Build container
-        run: docker build -t multi-payment .
-      - name: Install Dependencies
-        run: docker run -v $(pwd):/app multi-payment composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Configura o QEMU (boa prática para buildx)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Configura o Docker Buildx, que é um builder avançado com suporte a cache
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      # --- OTIMIZAÇÃO DE CACHE #1: CACHE DO COMPOSER ---
+      # Cacheia os pacotes baixados pelo Composer para acelerar o 'composer install'
+      - name: Cache Composer packages
+        id: composer-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/composer-cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      # Constrói a imagem usando o cache do GitHub Actions.
+      # 'load: true' torna a imagem disponível para os passos seguintes.
+      - name: Build Docker image with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: multi-payment:latest
+          # Define o diretório de cache do composer dentro do build
+          build-args: |
+            COMPOSER_CACHE_DIR=/tmp/composer-cache
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Execute tests via PHPUnit
         env:
           APP_ENV: testing
@@ -23,10 +54,9 @@ jobs:
           IUGU_ID: ${{ secrets.IUGU_ID }}
           IUGU_APIKEY: ${{ secrets.IUGU_APIKEY }}
         run: |
-          docker run \
-            --volume $(pwd):/app \
+          docker run --rm \
             --env APP_ENV \
             --env MULTIPAYMENT_DEFAULT \
             --env IUGU_ID \
             --env IUGU_APIKEY \
-            multi-payment composer test
+            multi-payment:latest composer test

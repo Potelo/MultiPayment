@@ -10,15 +10,15 @@ class InvoiceItem extends Model
     /**
      * @var string|null
      */
-    public ?string $description;
+    public ?string $description = null;
 
     /**
      * @var int|null
      */
-    public ?int $price;
+    public ?int $price = null;
 
     /**
      * @var int|null
      */
-    public ?int $quantity;
+    public ?int $quantity = null;
 }

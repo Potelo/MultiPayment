@@ -14,62 +14,62 @@ class Customer extends Model
     /**
      * @var string|null
      */
-    public ?string $id;
+    public ?string $id = null;
 
     /**
      * @var string|null
      */
-    public ?string $name;
+    public ?string $name = null;
 
     /**
      * @var string|null
      */
-    public ?string $email;
+    public ?string $email = null;
 
     /**
      * @var string|null
      */
-    public ?string $taxDocument;
-
-    /**
-     * @var string|null
-     */
-    public ?string $birthDate;
-
-    /**
-     * @var string|null
-     */
-    public ?string $phoneCountryCode;
-
-    /**
-     * @var string|null
-     */
-    public ?string $phoneArea;
-
-    /**
-     * @var string|null
-     */
-    public ?string $phoneNumber;
-
-    /**
-     * @var Address|null
-     */
-    public ?Address $address;
-
-    /**
-     * @var string|null
-     */
-    public ?string $gateway;
-
-    /**
-     * @var mixed|null
-     */
-    public $original;
+    public ?string $taxDocument = null;
 
     /**
      * @var Carbon|null
      */
-    public ?Carbon $createdAt;
+    public ?Carbon $birthDate = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $phoneCountryCode = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $phoneArea = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $phoneNumber = null;
+
+    /**
+     * @var Address|null
+     */
+    public ?Address $address = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $gateway = null;
+
+    /**
+     * @var mixed|null
+     */
+    public $original = null;
+
+    /**
+     * @var Carbon|null
+     */
+    public ?Carbon $createdAt = null;
 
     /**
      * @return void
@@ -79,18 +79,6 @@ class Customer extends Model
     {
         if (!filter_var($this->email, FILTER_VALIDATE_EMAIL)) {
             throw ModelAttributeValidationException::invalid($this->getClassName(), 'email', 'The email must be a valid email.');
-        }
-    }
-
-    /**
-     * @return void
-     * @throws ModelAttributeValidationException
-     */
-    protected function validateBirthDateAttribute(): void
-    {
-        $pattern = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/';
-        if (!preg_match($pattern, $this->birthDate)) {
-            throw ModelAttributeValidationException::invalid($this->getClassName(), 'birthDate', 'The birthDate must be a string with the format YYYY-MM-DD.');
         }
     }
 

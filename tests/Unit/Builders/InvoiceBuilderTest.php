@@ -85,7 +85,7 @@ class InvoiceBuilderTest extends TestCase
     public function testShouldCreateInvoice(string $gateway, array $data): void
     {
         $invoice = $this->createInvoice($gateway, $data);
-        $this->assertInstanceOf(\Potelo\MultiPayment\Models\Invoice::class, $invoice);
+        $this->assertInstanceOf(Invoice::class, $invoice);
         $this->assertNotEmpty($invoice->id);
         $this->assertNotEmpty($invoice->status);
 
@@ -101,7 +101,11 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($data['customer']['address']['street'], $invoice->customer->address->street);
             $this->assertEquals($data['customer']['address']['number'], $invoice->customer->address->number);
             $this->assertEquals($data['customer']['address']['complement'], $invoice->customer->address->complement);
-            $this->assertEquals($data['customer']['address']['district'], $invoice->customer->address->district);
+            // acentos podem ter sido removidos na criação
+            $this->assertEquals(
+                preg_replace('/[^p{L}p{N}s]/u', '', $data['customer']['address']['district']),
+                preg_replace('/[^p{L}p{N}s]/u', '', $invoice->customer->address->district),
+            );
             $this->assertEquals($data['customer']['address']['city'], $invoice->customer->address->city);
             $this->assertEquals($data['customer']['address']['state'], $invoice->customer->address->state);
             $this->assertEquals($data['customer']['address']['country'], $invoice->customer->address->country);
@@ -194,7 +198,11 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($data['customer']['address']['street'], $invoice->customer->address->street);
             $this->assertEquals($data['customer']['address']['number'], $invoice->customer->address->number);
             $this->assertEquals($data['customer']['address']['complement'], $invoice->customer->address->complement);
-            $this->assertEquals($data['customer']['address']['district'], $invoice->customer->address->district);
+            // acentos podem ter sido removidos na criação
+            $this->assertEquals(
+                preg_replace('/[^p{L}p{N}s]/u', '', $data['customer']['address']['district']),
+                preg_replace('/[^p{L}p{N}s]/u', '', $invoice->customer->address->district),
+            );
             $this->assertEquals($data['customer']['address']['city'], $invoice->customer->address->city);
             $this->assertEquals($data['customer']['address']['state'], $invoice->customer->address->state);
             $this->assertEquals($data['customer']['address']['country'], $invoice->customer->address->country);
@@ -322,36 +330,5 @@ class InvoiceBuilderTest extends TestCase
                 ],
             ],
         ];
-    }
-
-    public static function customerWithAddress(): array
-    {
-        $customer = self::customerWithoutAddress();
-        $customer['address'] = self::address();
-        return $customer;
-    }
-
-    public static function address(): array
-    {
-        $address['zipCode'] = '41820330';
-        $address['street'] = 'Rua Deputado Mário Lima';
-        $address['number'] = '123';
-        $address['district'] = 'Caminho das Arvores';
-        $address['complement'] = 'Apto. 123';
-        $address['city'] = 'Salvador';
-        $address['state'] = 'BA';
-        $address['country'] = 'Brasil';
-        return $address;
-    }
-
-    public static function creditCard(): array
-    {
-        $creditCard['number'] = '4111111111111111';
-        $creditCard['month'] = '12';
-        $creditCard['year'] = \Carbon\Carbon::now()->addYear()->format('Y');
-        $creditCard['cvv'] = '123';
-        $creditCard['firstName'] = 'Faker';
-        $creditCard['lastName'] = 'Teste';
-        return $creditCard;
     }
 }

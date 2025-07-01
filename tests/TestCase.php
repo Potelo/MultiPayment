@@ -1,6 +1,7 @@
 <?php
 namespace Potelo\MultiPayment\Tests;
 
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
@@ -10,6 +11,13 @@ class TestCase extends \Orchestra\Testbench\TestCase
     {
         parent::__construct($name, $data, $dataName);
         \Iugu::setLogErrors(false);
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // pausa para evitar problemas com o Iugu
+        sleep(12);
     }
 
     protected function getPackageProviders($app): array
@@ -24,7 +32,7 @@ class TestCase extends \Orchestra\Testbench\TestCase
         $customer['name'] = 'Fake Customer';
         $customer['email'] = 'email@exemplo.com';
         $customer['taxDocument'] = '20176996915';
-        $customer['birthDate'] = '1980-01-01';
+        $customer['birthDate'] = Carbon::createFromFormat('Y-m-d', '1980-01-01');
         $customer['phoneArea'] = '71';
         $customer['phoneNumber'] = '982345678';
         return $customer;
@@ -57,7 +65,7 @@ class TestCase extends \Orchestra\Testbench\TestCase
         $address['zipCode'] = '41820330';
         $address['street'] = 'Rua Deputado Mário Lima';
         $address['number'] = '123';
-        $address['district'] = 'Caminho das Arvores';
+        $address['district'] = 'Caminho das Árvores';
         $address['complement'] = 'Apto. 123';
         $address['city'] = 'Salvador';
         $address['state'] = 'BA';

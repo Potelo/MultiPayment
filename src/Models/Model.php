@@ -36,18 +36,20 @@ abstract class Model
     /**
      * If gateway is set, then we will use it to save the model
      *
-     * @param  GatewayContract|string|null  $gateway
+     * @param  string|GatewayContract|null  $gateway
      * @param  bool  $validate
      *
      * @return void
-     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
      */
-    public function save($gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string $gateway = null, bool $validate = true): void
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
             $method = 'update';
             $validate = false;
+            // If gateway from the model is set, we will use it
+            $gateway = property_exists($this, 'gateway') && !empty($this->gateway) ? $this->gateway : $gateway;
         } else {
             $method = 'create';
         }
@@ -153,14 +155,15 @@ abstract class Model
      * Get the model instance by id in the gateway.
      *
      * @param  string  $id
-     * @param  GatewayContract|string|null  $gateway
+     * @param  string|GatewayContract|null  $gateway
      *
      * @return static
-     * @throws GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public static function get(string $id, $gateway = null): Model
+    public static function get(string $id, GatewayContract|string $gateway = null): static
     {
-        $method = 'get' . self::getClassName();
+        $method = 'get' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
