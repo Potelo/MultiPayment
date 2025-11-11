@@ -42,16 +42,32 @@ class InvoiceBuilder extends Builder
         return parent::create();
     }
 
+
     /**
-     * Set the invoice payment method
+     * Set the invoice available payment methods
+     *
+     * @param  string[]  $paymentMethods
+     *
+     * @return InvoiceBuilder
+     */
+    public function setAvailablePaymentMethods(array $paymentMethods): InvoiceBuilder
+    {
+        $this->model->availablePaymentMethods = $paymentMethods;
+        return $this;
+    }
+
+    /**
+     * Add the invoice available payment methods
      *
      * @param  string  $paymentMethod
      *
      * @return InvoiceBuilder
      */
-    public function setPaymentMethod(string $paymentMethod): InvoiceBuilder
+    public function addAvailablePaymentMethod(string $paymentMethod): InvoiceBuilder
     {
-        $this->model->paymentMethod = $paymentMethod;
+        $paymentMethods = is_array($this->model->availablePaymentMethods) ? $this->model->availablePaymentMethods : [];
+        $paymentMethods[] = $paymentMethod;
+        $this->model->availablePaymentMethods = $paymentMethods;
         return $this;
     }
 

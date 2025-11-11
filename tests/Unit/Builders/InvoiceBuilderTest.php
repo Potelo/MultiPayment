@@ -49,7 +49,7 @@ class InvoiceBuilderTest extends TestCase
             $invoiceBuilder->setExpiresAt($data['expiresAt']);
         }
         if (isset($data['paymentMethod'])) {
-            $invoiceBuilder->setPaymentMethod($data['paymentMethod']);
+            $invoiceBuilder->addAvailablePaymentMethod($data['paymentMethod']);
         }
         if (isset($data['creditCard'])) {
             $invoiceBuilder->addCreditCard(
