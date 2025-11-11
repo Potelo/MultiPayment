@@ -284,4 +284,19 @@ class Invoice extends Model
 
         return $gateway->chargeInvoiceWithCreditCard($this);
     }
+
+    /**
+     * Duplicate the invoice
+     *
+     * @param  \Carbon\Carbon  $expiresAt
+     * @param  array  $gatewayOptions
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function duplicate(Carbon $expiresAt, array $gatewayOptions = []): Invoice
+    {
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+        return $gateway->duplicateInvoice($this, $expiresAt, $gatewayOptions);
+    }
 }

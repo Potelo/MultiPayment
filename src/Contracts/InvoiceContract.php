@@ -2,6 +2,7 @@
 
 namespace  Potelo\MultiPayment\Contracts;
 
+use Carbon\Carbon;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
@@ -57,4 +58,15 @@ interface InvoiceContract
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
     public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice;
+
+    /**
+     * Duplicate an invoice
+     *
+     * @param  Invoice  $invoice
+     * @param  \Carbon\Carbon  $expiresAt
+     * @param  array  $gatewayOptions
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice;
 }
