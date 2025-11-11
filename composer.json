@@ -1,7 +1,6 @@
 {
     "name": "potelo/multi-payment",
     "description": "Fornece uma interface para controlar pagamentos de múltiplos gateways",
-    "version": "2.2.3",
     "license": "MIT",
     "autoload": {
         "psr-4": {
