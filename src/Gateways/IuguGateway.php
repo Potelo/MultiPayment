@@ -79,8 +79,8 @@ class IuguGateway implements GatewayContract
             }
         }
 
-        if (!empty($invoice->paymentMethod)) {
-            $iuguInvoiceData['payable_with'] = $invoice->paymentMethod;
+        if (!empty($invoice->availablePaymentMethods)) {
+            $iuguInvoiceData['payable_with'] = $invoice->availablePaymentMethods;
         }
 
         if (!empty($invoice->gatewayAdicionalOptions)) {
@@ -89,7 +89,11 @@ class IuguGateway implements GatewayContract
             }
         }
 
-        if (!empty($invoice->paymentMethod) && $invoice->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD) {
+        if (
+            !empty($invoice->availablePaymentMethods) &&
+            in_array(Invoice::PAYMENT_METHOD_CREDIT_CARD, $invoice->availablePaymentMethods) &&
+            !empty($invoice->creditCard)
+        ) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
@@ -388,6 +392,25 @@ class IuguGateway implements GatewayContract
 
         if (empty($invoice->paymentMethod)) {
             $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
+        }
+
+        if (!empty(($iuguInvoice->payable_with))) {
+
+            $payableWith = $iuguInvoice->payable_with;
+            if (is_string($payableWith)) {
+                $payableWith = [$payableWith];
+            }
+
+            foreach ($payableWith as $pm) {
+                $method = $this->iuguToMultiPaymentPaymentMethod($pm);
+                if (is_null($method) && $pm === 'all') {
+                    $invoice->availablePaymentMethods = [
+                        Invoice::PAYMENT_METHOD_CREDIT_CARD,
+                        Invoice::PAYMENT_METHOD_BANK_SLIP,
+                        Invoice::PAYMENT_METHOD_PIX,
+                    ];
+                }
+            }
         }
 
         if (empty($invoice->customer)) {

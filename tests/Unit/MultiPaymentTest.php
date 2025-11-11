@@ -20,7 +20,7 @@ class MultiPaymentTest extends TestCase
     {
         $gateway = 'iugu';
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
-            ->setPaymentMethod(Invoice::PAYMENT_METHOD_CREDIT_CARD)
+            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_CREDIT_CARD)
             ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
             ->addItem('teste', 1000, 1)
             ->addCreditCardToken(self::iuguCreditCardToken())
@@ -90,7 +90,7 @@ class MultiPaymentTest extends TestCase
             $invoiceBuilder->addItem($item['description'], $item['price'], $item['quantity']);
             $total += $item['price'] * $item['quantity'];
         }
-        $invoiceBuilder->setPaymentMethod($data['paymentMethod']);
+        $invoiceBuilder->addAvailablePaymentMethod($data['paymentMethod']);
         $invoiceBuilder->addCreditCard(
             $data['creditCard']['number'] ?? null,
             $data['creditCard']['month'] ?? null,

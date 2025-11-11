@@ -68,6 +68,11 @@ class Invoice extends Model
     public ?string $paymentMethod = null;
 
     /**
+     * @var string[]|null
+     */
+    public ?array $availablePaymentMethods = null;
+
+    /**
      * @var CreditCard|null
      */
     public ?CreditCard $creditCard = null;
@@ -175,36 +180,6 @@ class Invoice extends Model
         if (in_array('amount', $attributes) && in_array('items', $attributes) && empty($this->amount) && empty($this->items)) {
             throw ModelAttributeValidationException::required($model, 'amount or items');
         }
-
-        if (
-            in_array('paymentMethod', $attributes) &&
-            !empty($this->paymentMethod) &&
-            $this->paymentMethod == Invoice::PAYMENT_METHOD_CREDIT_CARD &&
-            empty($this->creditCard)
-        ) {
-            throw new ModelAttributeValidationException('The `creditCard` attribute is required for credit_card payment method.');
-        }
-
-        if (
-            in_array('paymentMethod', $attributes) &&
-            !empty($this->paymentMethod) &&
-            (
-                $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP ||
-                $this->paymentMethod == Invoice::PAYMENT_METHOD_PIX
-            ) &&
-            empty($this->expiresAt)
-        ) {
-            throw new ModelAttributeValidationException('The `expiresAt` attribute is required for bank_slip or pix payment method.');
-        }
-
-        if (
-            in_array('paymentMethod', $attributes) &&
-            !empty($this->paymentMethod) &&
-            $this->paymentMethod == Invoice::PAYMENT_METHOD_BANK_SLIP &&
-            empty($this->customer->address)
-        ) {
-            throw new ModelAttributeValidationException('The customer address is required for bank_slip payment method');
-        }
     }
 
     /**
@@ -235,22 +210,21 @@ class Invoice extends Model
      * @return void
      * @throws ModelAttributeValidationException
      */
-    public function validatePaymentMethodAttribute()
+    public function validateAvailablePaymentMethodsAttribute()
     {
-        if (!in_array($this->paymentMethod, [
-            Invoice::PAYMENT_METHOD_CREDIT_CARD,
-            Invoice::PAYMENT_METHOD_BANK_SLIP,
-            Invoice::PAYMENT_METHOD_PIX,
-        ])) {
-            throw ModelAttributeValidationException::invalid(
-                'Invoice',
-                'paymentMethod',
-                'paymentMethod must be one of: ' . implode(', ', [
-                    Invoice::PAYMENT_METHOD_CREDIT_CARD,
-                    Invoice::PAYMENT_METHOD_BANK_SLIP,
-                    Invoice::PAYMENT_METHOD_PIX,
-                ])
-            );
+        $meethods = [
+            self::PAYMENT_METHOD_CREDIT_CARD,
+            self::PAYMENT_METHOD_BANK_SLIP,
+            self::PAYMENT_METHOD_PIX,
+        ];
+
+        if (!is_array($this->availablePaymentMethods)) {
+            throw ModelAttributeValidationException::invalid('Invoice', 'availablePaymentMethods', 'availablePaymentMethods must be an array of payment methods');
+        }
+        foreach ($this->availablePaymentMethods as $method) {
+            if (!in_array($method, $meethods)) {
+                throw ModelAttributeValidationException::invalid('Invoice', 'availablePaymentMethods', 'availablePaymentMethods must be one of: ' . implode(', ', $meethods));
+            }
         }
     }
 
