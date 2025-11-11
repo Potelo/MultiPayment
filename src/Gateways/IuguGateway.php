@@ -359,6 +359,34 @@ class IuguGateway implements GatewayContract
     /**
      * @inheritDoc
      */
+    public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
+    {
+        $iuguInvoice = new \Iugu_Invoice(['id' => $invoice->id]);
+
+        $params = array_merge($gatewayOptions, [
+            'due_date' => $expiresAt->format('Y-m-d'),
+        ]);
+        try {
+            $iuguInvoice = $iuguInvoice->duplicate($params);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\Exception $e) {
+            throw new GatewayException("Error getting invoice: {$e->getMessage()}");
+        }
+        if (!empty($iuguInvoice->errors)) {
+            throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
+        }
+
+        return $this->parseInvoice($iuguInvoice);
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function __toString()
     {
         return 'iugu';

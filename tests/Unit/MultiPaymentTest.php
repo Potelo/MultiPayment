@@ -32,6 +32,29 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
+     * Test if can duplicate the invoice
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function testShouldDuplicateInvoice()
+    {
+        $gateway = 'iugu';
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_PIX)
+            ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
+            ->addItem('teste', 1000, 1)
+            ->create();
+
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+        $new = $multiPayment->duplicateInvoice($invoice->id, now()->addDays(7));
+        $this->assertNotEquals($new->id, $invoice->id);
+        $this->assertEquals($new->status, Invoice::STATUS_PENDING);
+        $this->assertTrue($new->expiresAt->isSameDay((now()->addDays(7))));
+
+    }
+
+    /**
      * Test if thorws an exception when not find the invoice
      *
      * @dataProvider shouldNotGetInvoiceDataProvider

@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment;
 
+use Carbon\Carbon;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
@@ -104,6 +105,28 @@ class MultiPayment
     public function getInvoice(string $id): Invoice
     {
         return Invoice::get($id, $this->gateway);
+    }
+
+    /**
+     * Duplicate an invoice
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice|string  $invoice
+     * @param  \Carbon\Carbon  $expiresAt
+     * @param  array  $gatewayOptions
+     *
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function duplicateInvoice(Invoice|string $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
+    {
+        if (is_string($invoice)) {
+            $invoiceInstance = new Invoice();
+            $invoiceInstance->id = $invoice;
+            $invoice = $invoiceInstance;
+        }
+
+        return $invoice->duplicate($expiresAt, $gatewayOptions);
     }
 
     /**
