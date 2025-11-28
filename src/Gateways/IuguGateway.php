@@ -251,12 +251,18 @@ class IuguGateway implements GatewayContract
             ]);
         }
 
+        $options = [
+            'token' => $creditCard->token,
+            'customer_id' => $creditCard->customer->id,
+            'description' => $creditCard->description ?? 'CREDIT CARD',
+        ];
+
+        if (!empty($creditCard->default)) {
+            $options['set_as_default'] = $creditCard->default;
+        }
+
         try {
-            $iuguCreditCard = Iugu_PaymentMethod::create([
-                'token' => $creditCard->token,
-                'customer_id' => $creditCard->customer->id,
-                'description' => $creditCard->description ?? 'CREDIT CARD',
-            ]);
+            $iuguCreditCard = Iugu_PaymentMethod::create($options);
         } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
@@ -682,6 +688,11 @@ class IuguGateway implements GatewayContract
             $customer->address->state = $iuguCustomer?->state ?? null;
             $customer->address->complement = $iuguCustomer?->complement ?? null;
             $customer->address->country = $valuesInsideCustomVariables['country'] ?? null;
+        }
+
+        if (!empty($iuguCustomer->default_payment_method_id)) {
+            $customer->defaultCard = new CreditCard();
+            $customer->defaultCard->id = $iuguCustomer->default_payment_method_id;
         }
 
         return $customer;

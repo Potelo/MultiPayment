@@ -52,9 +52,28 @@ class CreditCardBuilderTest extends TestCase
         if (!empty($data['cvv'])) {
             $creditCardBuilder->setCvv($data['cvv']);
         }
+        if (!empty($data['description'])) {
+            $creditCardBuilder->setDescription($data['description']);
+        }
+        if (!empty($data['default'])) {
+            $creditCardBuilder->setAsDefault($data['default']);
+        }
 
         $creditCard = $creditCardBuilder->create();
+
         $this->assertNotNull($creditCard->id);
+        $this->assertEquals(substr($data['number'], -4), $creditCard->lastDigits);
+        $this->assertEquals('Visa', $creditCard->brand);
+        $this->assertEquals($data['firstName'], $creditCard->firstName);
+        $this->assertEquals($data['lastName'], $creditCard->lastName);
+        $this->assertEquals($data['description'], $creditCard->description);
+        $this->assertEquals($data['default'], $creditCard->default);
+
+        if ($data['default']) {
+            $customer = $customer->get($customer->id);
+            $this->assertEquals($creditCard->id, $customer->defaultCard->id);
+        }
+
         $this->assertEquals($gateway, $creditCard->gateway);
     }
 
