@@ -57,6 +57,11 @@ class Customer extends Model
     public ?Address $address = null;
 
     /**
+     * @var \Potelo\MultiPayment\Models\CreditCard|null
+     */
+    public ?CreditCard $defaultCard = null;
+
+    /**
      * @var string|null
      */
     public ?string $gateway = null;

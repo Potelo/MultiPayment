@@ -72,6 +72,11 @@ class CreditCard extends Model
     public ?string $token = null;
 
     /**
+     * @var bool|null
+     */
+    public ?bool $default = null;
+
+    /**
      * @var string|null
      */
     public ?string $gateway = null;

@@ -166,4 +166,13 @@ class CreditCardBuilder extends Builder
 
         return $this;
     }
+
+    /**
+     * Set as default card.
+     */
+    public function setAsDefault(bool $default = true): self
+    {
+        $this->model->default = $default;
+        return $this;
+    }
 }
