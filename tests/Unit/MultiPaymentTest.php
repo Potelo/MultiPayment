@@ -114,7 +114,6 @@ class MultiPaymentTest extends TestCase
         $customer = $this->createCustomer($gateway, $this->customerWithoutAddress());
 
         $creditCardOne = MultiPayment::setGateway($gateway)->newCreditCard()
-            ->setDescription($data['description'])
             ->setNumber($data['number'])
             ->setCustomerId($customer->id)
             ->setFirstName($data['firstName'])
