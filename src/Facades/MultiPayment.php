@@ -16,7 +16,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static CustomerBuilder newCustomer()
  * @method static CreditCardBuilder newCreditCard()
  * @method static CreditCard getCard(string $customerId, string $creditCardId)
- * @method static CreditCard deleteCard(string $customerId, string $creditCardId)
+ * @method static void deleteCard(string $customerId, string $creditCardId)
  * @method static \Potelo\MultiPayment\MultiPayment setGateway($gateway)
  * @method static Invoice chargeInvoiceWithCreditCard($invoice, ?string $creditCardToken = null, ?string $creditCardId = null)
  */
