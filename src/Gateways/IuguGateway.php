@@ -802,7 +802,6 @@ class IuguGateway implements GatewayContract
             throw new GatewayException('Error getting creditCard: ', $iuguCreditCard->errors);
         }
 
-        $creditCard = new CreditCard();
         return $this->parseIuguCard($iuguCreditCard, $creditCard);
     }
 
