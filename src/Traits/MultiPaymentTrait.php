@@ -100,6 +100,15 @@ trait MultiPaymentTrait
     }
 
     /**
+     * Get a credit card of the customer
+     */
+    public function getCreditCard(string $gatewayName, string $cardId): CreditCard
+    {
+        $payment = new MultiPayment($gatewayName);
+        return $payment->getCard($this->getGatewayCustomerId($gatewayName), $cardId);
+    }
+
+    /**
      * Get the default credit card of the customer
      */
     public function defaultCreditCard(string $gatewayName): ?CreditCard
