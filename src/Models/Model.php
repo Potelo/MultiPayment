@@ -161,13 +161,40 @@ abstract class Model
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public static function get(string $id, GatewayContract|string $gateway = null): static
+    public function get(GatewayContract|string $gateway = null): static
     {
         $method = 'get' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
-        return $gateway->$method($id);
+        return $gateway->$method($this);
+    }
+
+    /**
+     * Delete the model instance by id in the gateway.
+     *
+     * @param  \Potelo\MultiPayment\Contracts\GatewayContract|string|null  $gateway
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function delete(GatewayContract|string $gateway = null): void
+    {
+        $method = 'delete' . static::getClassName();
+        $gateway = ConfigurationHelper::resolveGateway($gateway);
+        if (!method_exists($gateway, $method)) {
+            throw GatewayException::methodNotFound(get_class($gateway), $method);
+        }
+        $gateway->$method($this);
+    }
+
+    /**
+     * Refresh the model instance with the latest data from the gateway.
+     */
+    public function refresh(GatewayContract|string $gateway = null): static
+    {
+        $gateway = ConfigurationHelper::resolveGateway($gateway);
+        return $this->get($gateway);
     }
 }

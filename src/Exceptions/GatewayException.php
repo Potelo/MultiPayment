@@ -16,7 +16,13 @@ class GatewayException extends MultiPaymentException
     public function __construct(string $message = "", $errors = null)
     {
         $this->errors = $errors;
-        parent::__construct($message . ' - ' . $this->parseErrorsToString($errors));
+        $appends = $this->parseErrorsToString($errors);
+
+        if (!empty($appends)) {
+            $message .= ' - ' . $appends;
+        }
+
+        parent::__construct($message);
     }
 
     /**

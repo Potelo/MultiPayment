@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Traits;
 
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\MultiPayment;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
@@ -78,6 +79,34 @@ trait MultiPaymentTrait
     private function getGatewayCustomerColumn($gatewayName)
     {
         return Config::get("multi-payment.gateways.$gatewayName.customer_column");
+    }
+
+    /**
+     * Set the default credit card of the customer
+     */
+    public function setDefaultCreditCard(string $gatewayName, string $cardId): void
+    {
+        $payment = new MultiPayment($gatewayName);
+        $payment->setDefaultCard($this->getGatewayCustomerId($gatewayName), $cardId);
+    }
+
+    /**
+     * Delete a credit card of the customer
+     */
+    public function deleteCreditCard(string $gatewayName, string $cardId): void
+    {
+        $payment = new MultiPayment($gatewayName);
+        $payment->deleteCard($this->getGatewayCustomerId($gatewayName), $cardId);
+    }
+
+    /**
+     * Get the default credit card of the customer
+     */
+    public function defaultCreditCard(string $gatewayName): ?CreditCard
+    {
+        $payment = new MultiPayment($gatewayName);
+        $customer = $payment->getCustomer($this->getGatewayCustomerId($gatewayName));
+        return $customer->defaultCard?->refresh($gatewayName);
     }
 
 }

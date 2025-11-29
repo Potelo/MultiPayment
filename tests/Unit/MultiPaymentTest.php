@@ -32,6 +32,128 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
+     * Test if can get the card by id
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function testShouldGetCard()
+    {
+        $gateway = 'iugu';
+        $data = $this->creditCard();
+        $customer = $this->createCustomer($gateway, $this->customerWithoutAddress());
+
+        $creditCard = MultiPayment::setGateway($gateway)->newCreditCard()
+            ->setDescription($data['description'])
+            ->setNumber($data['number'])
+            ->setCustomerId($customer->id)
+            ->setFirstName($data['firstName'])
+            ->setLastName($data['lastName'])
+            ->setMonth($data['month'])
+            ->setYear($data['year'])
+            ->setCvv($data['cvv'])
+            ->setDescription($data['description'])
+            ->setAsDefault($data['default'])
+            ->create();
+
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+        $card = $multiPayment->getCard($customer->id, $creditCard->id);
+
+        $this->assertEquals($creditCard->id, $card->id);
+        $this->assertEquals(substr($data['number'], -4), $card->lastDigits);
+        $this->assertEquals($data['description'], $card->description);
+        $this->assertEquals($data['firstName'], $card->firstName);
+        $this->assertEquals($data['lastName'], $card->lastName);
+        $this->assertEquals($data['month'], $card->month);
+        $this->assertEquals($data['year'], $card->year);
+    }
+
+    /**
+     * Test if can delete the card by id
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function testShouldDeleteCard()
+    {
+        $gateway = 'iugu';
+        $data = $this->creditCard();
+        $customer = $this->createCustomer($gateway, $this->customerWithoutAddress());
+
+        $creditCard = MultiPayment::setGateway($gateway)->newCreditCard()
+            ->setDescription($data['description'])
+            ->setNumber($data['number'])
+            ->setCustomerId($customer->id)
+            ->setFirstName($data['firstName'])
+            ->setLastName($data['lastName'])
+            ->setMonth($data['month'])
+            ->setYear($data['year'])
+            ->setCvv($data['cvv'])
+            ->setDescription($data['description'])
+            ->setAsDefault($data['default'])
+            ->create();
+
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+        $multiPayment->deleteCard($customer->id, $creditCard->id);
+
+        $this->expectException(\Potelo\MultiPayment\Exceptions\GatewayException::class);
+        $this->expectExceptionMessage('payment_method: not found');
+        $multiPayment->getCard($customer->id, $creditCard->id);
+    }
+
+    /**
+     * Test if can set the card as default
+     *
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function testShouldSetCardAsDefault()
+    {
+        $gateway = 'iugu';
+        $data = $this->creditCard();
+        $customer = $this->createCustomer($gateway, $this->customerWithoutAddress());
+
+        $creditCardOne = MultiPayment::setGateway($gateway)->newCreditCard()
+            ->setDescription($data['description'])
+            ->setNumber($data['number'])
+            ->setCustomerId($customer->id)
+            ->setFirstName($data['firstName'])
+            ->setLastName($data['lastName'])
+            ->setMonth($data['month'])
+            ->setYear($data['year'])
+            ->setCvv($data['cvv'])
+            ->setDescription($data['description'])
+            ->setAsDefault()
+            ->create();
+
+        $customer = $customer->refresh();
+        $this->assertEquals($creditCardOne->id, $customer->defaultCard->id);
+
+        $creditCardTwo = MultiPayment::setGateway($gateway)->newCreditCard()
+            ->setDescription($data['description'])
+            ->setNumber($data['number'])
+            ->setCustomerId($customer->id)
+            ->setFirstName($data['firstName'])
+            ->setLastName($data['lastName'])
+            ->setMonth($data['month'])
+            ->setYear($data['year'])
+            ->setCvv($data['cvv'])
+            ->setDescription($data['description'])
+            ->setAsDefault(false)
+            ->create();
+
+        $customer = $customer->refresh();
+        $this->assertEquals($creditCardOne->id, $customer->defaultCard->id);
+
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
+        $multiPayment->setGateway($gateway);
+        $multiPayment->setDefaultCard($customer->id, $creditCardTwo->id);
+
+        $customer = $customer->refresh();
+        $this->assertEquals($creditCardTwo->id, $customer->defaultCard->id);
+    }
+
+    /**
      * Test if can duplicate the invoice
      *
      * @return void

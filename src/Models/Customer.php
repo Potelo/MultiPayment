@@ -3,7 +3,9 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 
 /**
  * Class Customer
@@ -166,5 +168,52 @@ class Customer extends Model
             $array['address'] = $array['address']->toArray();
         }
         return $array;
+    }
+
+    public function setDefaultCard(string $cardId): Customer
+    {
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+        return $gateway->setCustomerDefaultCard($this, $cardId);
+    }
+
+    /**
+     * Get a customer credit card by id from the gateway.
+     *
+     * @param  string  $creditCardId
+     * @param  string|GatewayContract|null  $gateway
+     *
+     * @return static
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     */
+    public function getCreditCard(string $creditCardId, GatewayContract|string $gateway = null): CreditCard
+    {
+        $gateway = ConfigurationHelper::resolveGateway($gateway);
+        $creditCard = new CreditCard();
+        $creditCard->customer = $this;
+        $creditCard->id = $creditCardId;
+
+        return $gateway->getCreditCard($creditCard);
+    }
+
+    /**
+     * Delete a customer credit card by id from the gateway.
+     *
+     * @param  string  $creditCardId
+     * @param  \Potelo\MultiPayment\Contracts\GatewayContract|string|null  $gateway
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     */
+    public function deleteCreditCard(string $creditCardId, GatewayContract|string $gateway = null): void
+    {
+        $gateway = ConfigurationHelper::resolveGateway($gateway);
+        $creditCard = new CreditCard();
+        $creditCard->customer = $this;
+        $creditCard->id = $creditCardId;
+
+        $gateway->deleteCreditCard($creditCard);
     }
 }

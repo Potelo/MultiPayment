@@ -3,6 +3,7 @@ namespace Potelo\MultiPayment\Tests;
 
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Config;
+use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
 class TestCase extends \Orchestra\Testbench\TestCase
@@ -102,5 +103,38 @@ class TestCase extends \Orchestra\Testbench\TestCase
                 'year' => $creditCard['year'],
             ],
         ]);
+    }
+
+    public function createCustomer($gateway, $data): \Potelo\MultiPayment\Models\Customer
+    {
+        $customerBuilder = MultiPayment::setGateway($gateway)->newCustomer();
+        if (!empty($data['email'])) {
+            $customerBuilder->setEmail($data['email']);
+        }
+        if (!empty($data['name'])) {
+            $customerBuilder->setName($data['name']);
+        }
+        if (!empty($data['taxDocument'])) {
+            $customerBuilder->setTaxDocument($data['taxDocument']);
+        }
+        if (!empty($data['phoneNumber']) && !empty($data['phoneArea'])) {
+            $customerBuilder->setPhone($data['phoneNumber'], $data['phoneArea']);
+        }
+        if (!empty($data['birthDate'])) {
+            $customerBuilder->setBirthDate($data['birthDate']);
+        }
+        if (!empty($data['address'])) {
+            $customerBuilder->addAddress(
+                $data['address']['zipCode'],
+                $data['address']['street'],
+                $data['address']['number'],
+                $data['address']['complement'],
+                $data['address']['district'],
+                $data['address']['city'],
+                $data['address']['state'],
+                $data['address']['country']
+            );
+        }
+        return $customerBuilder->create();
     }
 }
