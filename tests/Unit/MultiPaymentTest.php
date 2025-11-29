@@ -143,7 +143,6 @@ class MultiPaymentTest extends TestCase
         $this->assertEquals($creditCardOne->id, $customer->defaultCard->id);
 
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
-        $multiPayment->setGateway($gateway);
         $multiPayment->setDefaultCard($customer->id, $creditCardTwo->id);
 
         $customer = $customer->refresh();
