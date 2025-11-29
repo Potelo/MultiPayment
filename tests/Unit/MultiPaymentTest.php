@@ -129,7 +129,6 @@ class MultiPaymentTest extends TestCase
         $this->assertEquals($creditCardOne->id, $customer->defaultCard->id);
 
         $creditCardTwo = MultiPayment::setGateway($gateway)->newCreditCard()
-            ->setDescription($data['description'])
             ->setNumber($data['number'])
             ->setCustomerId($customer->id)
             ->setFirstName($data['firstName'])
