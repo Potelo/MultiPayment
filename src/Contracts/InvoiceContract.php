@@ -24,13 +24,13 @@ interface InvoiceContract
 
     /**
      * Return one invoice based on the invoice ID
-     * 
-     * @param string $id
-     * 
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
      * @return Invoice
-     * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
-    public function getInvoice(string $id): Invoice;
+    public function getInvoice(Invoice $invoice): Invoice;
 
     /**
      * Refund an invoice

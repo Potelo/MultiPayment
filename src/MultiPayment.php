@@ -104,7 +104,9 @@ class MultiPayment
      */
     public function getInvoice(string $id): Invoice
     {
-        return Invoice::get($id, $this->gateway);
+        $invoice = new Invoice();
+        $invoice->id = $id;
+        return $invoice->get($this->gateway);
     }
 
     /**
@@ -140,7 +142,9 @@ class MultiPayment
      */
     public function getCustomer(string $id): Customer
     {
-        return Customer::get($id, $this->gateway);
+        $customer = new Customer();
+        $customer->id = $id;
+        return $customer->get($this->gateway);
     }
 
     /**
@@ -210,4 +214,57 @@ class MultiPayment
 
         return $invoice->chargeInvoiceWithCreditCard();
     }
+
+    /**
+     * Get a credit card
+     *
+     * @param  string  $customerId
+     * @param  string  $creditCardId
+     * @return CreditCard
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function getCard(string $customerId, string $creditCardId): CreditCard
+    {
+        $creditCard = new CreditCard();
+        $creditCard->customer = new Customer();
+        $creditCard->customer->id = $customerId;
+        $creditCard->id = $creditCardId;
+
+        return $creditCard->get($this->gateway);
+    }
+
+    /**
+     * Delete a credit card
+     *
+     * @param  string  $customerId
+     * @param  string  $creditCardId
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function deleteCard(string $customerId, string $creditCardId): void
+    {
+        $creditCard = new CreditCard();
+        $creditCard->customer = new Customer();
+        $creditCard->customer->id = $customerId;
+        $creditCard->id = $creditCardId;
+
+        $creditCard->delete($this->gateway);
+    }
+
+    /**
+     * Set a credit card as default for a customer
+     *
+     * @param  string  $customerId
+     * @param  string  $creditCardId
+     * @return \Potelo\MultiPayment\Models\Customer
+     */
+    public function setDefaultCard(string $customerId, string $creditCardId): Customer
+    {
+        $customer = new Customer();
+        $customer->id = $customerId;
+        return $customer->setDefaultCard($creditCardId);
+    }
+
 }

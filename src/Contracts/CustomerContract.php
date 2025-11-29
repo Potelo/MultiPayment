@@ -24,12 +24,12 @@ interface CustomerContract
     /**
      * Return one customer based on the customer ID
      *
-     * @param string $id
-     *
+     * @param  \Potelo\MultiPayment\Models\Customer  $customer
      * @return Customer
-     * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
-    public function getCustomer(string $id): Customer;
+    public function getCustomer(Customer $customer): Customer;
 
     /**
      * Update an existing customer
@@ -40,4 +40,13 @@ interface CustomerContract
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function updateCustomer(Customer $customer): Customer;
+
+    /**
+     * Set the customer's default card
+     *
+     * @param  \Potelo\MultiPayment\Models\Customer  $customer
+     * @param  string  $cardId
+     * @return \Potelo\MultiPayment\Models\Customer
+     */
+    public function setCustomerDefaultCard(Customer $customer, string $cardId): Customer;
 }

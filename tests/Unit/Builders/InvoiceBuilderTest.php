@@ -171,7 +171,7 @@ class InvoiceBuilderTest extends TestCase
         }
 
         // Verifica se a fatura foi criada no gateway com os dados corretos
-        $invoice = $invoice->get($invoice->id, $gateway);
+        $invoice = $invoice->refresh();
 
         $this->assertNotEmpty($invoice->status);
 

@@ -70,7 +70,7 @@ class CreditCardBuilderTest extends TestCase
         $this->assertEquals($data['default'], $creditCard->default);
 
         if ($data['default']) {
-            $customer = $customer->get($customer->id);
+            $customer = $customer->refresh();
             $this->assertEquals($creditCard->id, $customer->defaultCard->id);
         }
 
@@ -132,38 +132,5 @@ class CreditCardBuilderTest extends TestCase
         $this->assertNotNull($creditCard->id);
         $this->assertEquals($gateway, $creditCard->gateway);
 
-    }
-
-    public function createCustomer($gateway, $data): \Potelo\MultiPayment\Models\Customer
-    {
-        $customerBuilder = MultiPayment::setGateway($gateway)->newCustomer();
-        if (!empty($data['email'])) {
-            $customerBuilder->setEmail($data['email']);
-        }
-        if (!empty($data['name'])) {
-            $customerBuilder->setName($data['name']);
-        }
-        if (!empty($data['taxDocument'])) {
-            $customerBuilder->setTaxDocument($data['taxDocument']);
-        }
-        if (!empty($data['phoneNumber']) && !empty($data['phoneArea'])) {
-            $customerBuilder->setPhone($data['phoneNumber'], $data['phoneArea']);
-        }
-        if (!empty($data['birthDate'])) {
-            $customerBuilder->setBirthDate($data['birthDate']);
-        }
-        if (!empty($data['address'])) {
-            $customerBuilder->addAddress(
-                $data['address']['zipCode'],
-                $data['address']['street'],
-                $data['address']['number'],
-                $data['address']['complement'],
-                $data['address']['district'],
-                $data['address']['city'],
-                $data['address']['state'],
-                $data['address']['country']
-            );
-        }
-        return $customerBuilder->create();
     }
 }

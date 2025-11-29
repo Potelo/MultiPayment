@@ -19,4 +19,18 @@ interface CreditCardContract
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard;
+
+    /**
+     * Get a credit card by its ID
+     *
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function getCreditCard(CreditCard $creditCard): CreditCard;
+
+    /**
+     * Delete a credit card
+     *
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function deleteCreditCard(CreditCard $creditCard): void;
 }
