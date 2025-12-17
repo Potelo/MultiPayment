@@ -2,10 +2,10 @@
 
 namespace Potelo\MultiPayment\Traits;
 
-use Potelo\MultiPayment\Models\CreditCard;
-use Potelo\MultiPayment\MultiPayment;
 use Illuminate\Support\Facades\Config;
+use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -86,8 +86,7 @@ trait MultiPaymentTrait
      */
     public function setDefaultCreditCard(string $gatewayName, string $cardId): void
     {
-        $payment = new MultiPayment($gatewayName);
-        $payment->setDefaultCard($this->getGatewayCustomerId($gatewayName), $cardId);
+        MultiPayment::setGateway($gatewayName)->setDefaultCard($this->getGatewayCustomerId($gatewayName), $cardId);
     }
 
     /**
@@ -95,8 +94,7 @@ trait MultiPaymentTrait
      */
     public function deleteCreditCard(string $gatewayName, string $cardId): void
     {
-        $payment = new MultiPayment($gatewayName);
-        $payment->deleteCard($this->getGatewayCustomerId($gatewayName), $cardId);
+        MultiPayment::setGateway($gatewayName)->deleteCard($this->getGatewayCustomerId($gatewayName), $cardId);
     }
 
     /**
@@ -104,8 +102,7 @@ trait MultiPaymentTrait
      */
     public function getCreditCard(string $gatewayName, string $cardId): CreditCard
     {
-        $payment = new MultiPayment($gatewayName);
-        return $payment->getCard($this->getGatewayCustomerId($gatewayName), $cardId);
+        return MultiPayment::setGateway($gatewayName)->getCard($this->getGatewayCustomerId($gatewayName), $cardId);
     }
 
     /**
@@ -113,8 +110,7 @@ trait MultiPaymentTrait
      */
     public function defaultCreditCard(string $gatewayName): ?CreditCard
     {
-        $payment = new MultiPayment($gatewayName);
-        $customer = $payment->getCustomer($this->getGatewayCustomerId($gatewayName));
+        $customer = MultiPayment::setGateway($gatewayName)->getCustomer($this->getGatewayCustomerId($gatewayName));
         return $customer->defaultCard?->refresh($gatewayName);
     }
 
