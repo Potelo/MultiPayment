@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Gateways;
 use Iugu;
 use Iugu_Customer;
 use Carbon\Carbon;
+use Iugu_APIRequest;
 use Iugu_PaymentToken;
 use Iugu_PaymentMethod;
 use IuguObjectNotFound;
@@ -19,10 +20,11 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Contracts\AutomaticPixContract;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract
+class IuguGateway implements GatewayContract, AutomaticPixContract
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
@@ -375,6 +377,36 @@ class IuguGateway implements GatewayContract
         }
 
         return $this->parseInvoice($iuguInvoice);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Endpoint: PUT /automatic_pix/receiver_recurrences/{id}/cancel
+     */
+    public function cancelAutomaticPixRecurrence(string $recurrenceId): object
+    {
+        $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/' . $recurrenceId . '/cancel';
+
+        try {
+            $response = (new Iugu_APIRequest())->request('PUT', $url);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            } else {
+                throw new GatewayException($e->getMessage());
+            }
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException("Error cancelling automatic pix recurrence: {$e->getMessage()}");
+        }
+
+        if (!empty($response->errors)) {
+            throw new GatewayException('Error cancelling automatic pix recurrence', (array) $response->errors);
+        }
+
+        return $response;
     }
 
     /**

@@ -12,6 +12,7 @@ use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Builders\CreditCardBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Contracts\AutomaticPixContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -265,6 +266,24 @@ class MultiPayment
         $customer = new Customer();
         $customer->id = $customerId;
         return $customer->setDefaultCard($creditCardId);
+    }
+
+    /**
+     * Cancela uma recorrência de Pix Automático no gateway.
+     *
+     * @param  string  $recurrenceId  UUID da recorrência (receiver_recurrence_id).
+     * @return object
+     * @throws MultiPaymentException
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     */
+    public function cancelAutomaticPixRecurrence(string $recurrenceId): object
+    {
+        if (!$this->gateway instanceof AutomaticPixContract) {
+            throw new MultiPaymentException('The selected gateway does not support automatic pix.');
+        }
+
+        return $this->gateway->cancelAutomaticPixRecurrence($recurrenceId);
     }
 
 }

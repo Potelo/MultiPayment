@@ -20,6 +20,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static \Potelo\MultiPayment\MultiPayment setGateway($gateway)
  * @method static Invoice chargeInvoiceWithCreditCard($invoice, ?string $creditCardToken = null, ?string $creditCardId = null)
  * @method static \Potelo\MultiPayment\Models\Customer setDefaultCard(string $customerId, string $creditCardId)
+ * @method static object cancelAutomaticPixRecurrence(string $recurrenceId)
  */
 class MultiPayment extends Facade
 {
