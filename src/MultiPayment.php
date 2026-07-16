@@ -13,6 +13,7 @@ use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Builders\CreditCardBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Contracts\AutomaticPixContract;
+use Potelo\MultiPayment\Contracts\InvoiceCancellationContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -172,6 +173,29 @@ class MultiPayment
     }
 
     /**
+     * Cancel an invoice.
+     *
+     * @param  Invoice|string  $invoice
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function cancelInvoice(Invoice|string $invoice): Invoice
+    {
+        if (!$this->gateway instanceof InvoiceCancellationContract) {
+            throw new MultiPaymentException('The selected gateway does not support invoice cancellation.');
+        }
+
+        if (is_string($invoice)) {
+            $invoiceInstance = new Invoice();
+            $invoiceInstance->id = $invoice;
+            $invoice = $invoiceInstance;
+        }
+
+        return $this->gateway->cancelInvoice($invoice);
+    }
+
+    /**
      * Charge invoice with credit card
      *
      * @param  Invoice|string  $invoice
@@ -284,6 +308,30 @@ class MultiPayment
         }
 
         return $this->gateway->cancelAutomaticPixRecurrence($recurrenceId);
+    }
+
+    /**
+     * Cancela um pagamento agendado de Pix Automático no gateway.
+     *
+     * @param  string  $receiverRecurrencePaymentId  UUID do pagamento agendado.
+     * @param  string  $endToEndId  Identificador E2E do pagamento.
+     * @return object
+     * @throws MultiPaymentException
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     */
+    public function cancelAutomaticPixScheduledPayment(
+        string $receiverRecurrencePaymentId,
+        string $endToEndId
+    ): object {
+        if (!$this->gateway instanceof AutomaticPixContract) {
+            throw new MultiPaymentException('The selected gateway does not support automatic pix.');
+        }
+
+        return $this->gateway->cancelAutomaticPixScheduledPayment(
+            $receiverRecurrencePaymentId,
+            $endToEndId
+        );
     }
 
 }

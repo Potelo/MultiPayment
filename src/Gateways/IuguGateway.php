@@ -21,10 +21,11 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Contracts\AutomaticPixContract;
+use Potelo\MultiPayment\Contracts\InvoiceCancellationContract;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract, AutomaticPixContract
+class IuguGateway implements GatewayContract, AutomaticPixContract, InvoiceCancellationContract
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
@@ -40,12 +41,15 @@ class IuguGateway implements GatewayContract, AutomaticPixContract
     private const STATUS_CHARGEBACK = 'chargeback';
     private const STATUS_AUTHORIZED = 'authorized';
 
+    private Iugu_APIRequest $apiRequest;
+
     /**
      * Set iugu api key.
      */
-    public function __construct()
+    public function __construct(?Iugu_APIRequest $apiRequest = null)
     {
         Iugu::setApiKey(Config::get('multi-payment.gateways.iugu.api_key'));
+        $this->apiRequest = $apiRequest ?? new Iugu_APIRequest();
     }
 
     /**
@@ -354,6 +358,34 @@ class IuguGateway implements GatewayContract, AutomaticPixContract
     /**
      * @inheritDoc
      */
+    public function cancelInvoice(Invoice $invoice): Invoice
+    {
+        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/cancel';
+
+        try {
+            $response = $this->apiRequest->request('PUT', $url);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            }
+
+            throw new GatewayException($e->getMessage());
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException("Error cancelling invoice: {$e->getMessage()}");
+        }
+
+        if (!empty($response->errors)) {
+            throw new GatewayException('Error cancelling invoice', (array) $response->errors);
+        }
+
+        return $this->parseInvoice($response, $invoice);
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
     {
         $iuguInvoice = new \Iugu_Invoice(['id' => $invoice->id]);
@@ -389,7 +421,7 @@ class IuguGateway implements GatewayContract, AutomaticPixContract
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/' . $recurrenceId . '/cancel';
 
         try {
-            $response = (new Iugu_APIRequest())->request('PUT', $url);
+            $response = $this->apiRequest->request('PUT', $url);
         } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
@@ -404,6 +436,45 @@ class IuguGateway implements GatewayContract, AutomaticPixContract
 
         if (!empty($response->errors)) {
             throw new GatewayException('Error cancelling automatic pix recurrence', (array) $response->errors);
+        }
+
+        return $response;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Endpoint: POST /automatic_pix/receiver_recurrence_payments/cancel
+     */
+    public function cancelAutomaticPixScheduledPayment(
+        string $receiverRecurrencePaymentId,
+        string $endToEndId
+    ): object {
+        $query = http_build_query([
+            'receiver_recurrence_payment_id' => $receiverRecurrencePaymentId,
+            'end_to_end_id' => $endToEndId,
+        ], '', '&', PHP_QUERY_RFC3986);
+        $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrence_payments/cancel?' . $query;
+
+        try {
+            $response = $this->apiRequest->request('POST', $url);
+        } catch (\IuguRequestException | IuguObjectNotFound $e) {
+            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
+                throw new GatewayNotAvailableException($e->getMessage());
+            }
+
+            throw new GatewayException($e->getMessage());
+        } catch (\IuguAuthenticationException $e) {
+            throw new GatewayNotAvailableException($e->getMessage());
+        } catch (\Exception $e) {
+            throw new GatewayException("Error cancelling automatic pix scheduled payment: {$e->getMessage()}");
+        }
+
+        if (($response->success ?? false) !== true) {
+            throw new GatewayException(
+                'Error cancelling automatic pix scheduled payment',
+                (array) ($response->errors ?? [])
+            );
         }
 
         return $response;

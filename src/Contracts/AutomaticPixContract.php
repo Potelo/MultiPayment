@@ -14,6 +14,19 @@ use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 interface AutomaticPixContract
 {
     /**
+     * Solicita o cancelamento de um pagamento agendado de Pix Automático.
+     *
+     * @param  string  $receiverRecurrencePaymentId  UUID do pagamento agendado.
+     * @param  string  $endToEndId  Identificador E2E do pagamento.
+     * @return object  Resposta do gateway.
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function cancelAutomaticPixScheduledPayment(
+        string $receiverRecurrencePaymentId,
+        string $endToEndId
+    ): object;
+
+    /**
      * Solicita o cancelamento de uma recorrência de Pix Automático.
      *
      * @param  string  $recurrenceId  UUID da recorrência (receiver_recurrence_id).
