@@ -7,13 +7,13 @@ use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Builders\CreditCardBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
-use Potelo\MultiPayment\Contracts\AutomaticPixContract;
-use Potelo\MultiPayment\Contracts\InvoiceCancellationContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -177,22 +177,18 @@ class MultiPayment
      *
      * @param  Invoice|string  $invoice
      * @return Invoice
-     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
     public function cancelInvoice(Invoice|string $invoice): Invoice
     {
-        if (!$this->gateway instanceof InvoiceCancellationContract) {
-            throw new MultiPaymentException('The selected gateway does not support invoice cancellation.');
-        }
-
         if (is_string($invoice)) {
             $invoiceInstance = new Invoice();
             $invoiceInstance->id = $invoice;
             $invoice = $invoiceInstance;
         }
 
-        return $this->gateway->cancelInvoice($invoice);
+        return $invoice->cancel($this->gateway);
     }
 
     /**
@@ -295,43 +291,86 @@ class MultiPayment
     /**
      * Cancela uma recorrência de Pix Automático no gateway.
      *
-     * @param  string  $recurrenceId  UUID da recorrência (receiver_recurrence_id).
-     * @return object
-     * @throws MultiPaymentException
+     * @param  AutomaticPix|string  $automaticPix
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      */
-    public function cancelAutomaticPixRecurrence(string $recurrenceId): object
+    public function cancelAutomaticPixRecurrence(
+        AutomaticPix|string $automaticPix
+    ): AutomaticPixCancellation
     {
-        if (!$this->gateway instanceof AutomaticPixContract) {
-            throw new MultiPaymentException('The selected gateway does not support automatic pix.');
+        if (is_string($automaticPix)) {
+            $automaticPixModel = new AutomaticPix();
+            $automaticPixModel->id = $automaticPix;
+            $automaticPix = $automaticPixModel;
         }
 
-        return $this->gateway->cancelAutomaticPixRecurrence($recurrenceId);
+        return $this->gateway->cancelAutomaticPixRecurrence($automaticPix);
     }
 
     /**
      * Cancela um pagamento agendado de Pix Automático no gateway.
      *
-     * @param  string  $receiverRecurrencePaymentId  UUID do pagamento agendado.
-     * @param  string  $endToEndId  Identificador E2E do pagamento.
-     * @return object
-     * @throws MultiPaymentException
+     * @param  string  $paymentId
+     * @param  string  $endToEndId
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      */
     public function cancelAutomaticPixScheduledPayment(
-        string $receiverRecurrencePaymentId,
+        string $paymentId,
         string $endToEndId
-    ): object {
-        if (!$this->gateway instanceof AutomaticPixContract) {
-            throw new MultiPaymentException('The selected gateway does not support automatic pix.');
+    ): AutomaticPixCancellation {
+        return $this->gateway->cancelAutomaticPixScheduledPayment($paymentId, $endToEndId);
+    }
+
+    /**
+     * Request a new Automatic Pix debit schedule for an expired invoice.
+     */
+    public function rescheduleAutomaticPixPayment(Invoice|string $invoice): Invoice
+    {
+        if (is_string($invoice)) {
+            $invoiceModel = new Invoice();
+            $invoiceModel->id = $invoice;
+            $invoice = $invoiceModel;
         }
 
-        return $this->gateway->cancelAutomaticPixScheduledPayment(
-            $receiverRecurrencePaymentId,
-            $endToEndId
-        );
+        return $invoice->rescheduleAutomaticPixPayment($this->gateway);
+    }
+
+    /**
+     * Get one cancellation from an Automatic Pix recurrence.
+     */
+    public function getAutomaticPixCancellation(
+        AutomaticPixCancellation|string $cancellation,
+        ?string $cancellationId = null
+    ): AutomaticPixCancellation {
+        if (is_string($cancellation)) {
+            $recurrenceId = $cancellation;
+            $cancellation = new AutomaticPixCancellation();
+            $cancellation->recurrenceId = $recurrenceId;
+            $cancellation->id = $cancellationId;
+        }
+
+        return $this->gateway->getAutomaticPixCancellation($cancellation);
+    }
+
+    /**
+     * List cancellations from an Automatic Pix recurrence.
+     *
+     * @return AutomaticPixCancellation[]
+     */
+    public function listAutomaticPixCancellations(
+        AutomaticPix|string $automaticPix,
+        int $page = 1,
+        int $limit = 100
+    ): array {
+        if (is_string($automaticPix)) {
+            $automaticPixModel = new AutomaticPix();
+            $automaticPixModel->id = $automaticPix;
+            $automaticPix = $automaticPixModel;
+        }
+
+        return $this->gateway->listAutomaticPixCancellations($automaticPix, $page, $limit);
     }
 
 }

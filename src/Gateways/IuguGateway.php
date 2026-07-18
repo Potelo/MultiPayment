@@ -17,15 +17,15 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
-use Potelo\MultiPayment\Contracts\AutomaticPixContract;
-use Potelo\MultiPayment\Contracts\InvoiceCancellationContract;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract, AutomaticPixContract, InvoiceCancellationContract
+class IuguGateway implements GatewayContract
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
@@ -87,6 +87,10 @@ class IuguGateway implements GatewayContract, AutomaticPixContract, InvoiceCance
 
         if (!empty($invoice->availablePaymentMethods)) {
             $iuguInvoiceData['payable_with'] = $invoice->availablePaymentMethods;
+        }
+
+        if (!empty($invoice->automaticPix)) {
+            $iuguInvoiceData['automatic_pix'] = $this->automaticPixToIuguData($invoice->automaticPix);
         }
 
         if (!empty($invoice->gatewayAdicionalOptions)) {
@@ -411,53 +415,213 @@ class IuguGateway implements GatewayContract, AutomaticPixContract, InvoiceCance
         return $this->parseInvoice($iuguInvoice);
     }
 
-    /**
-     * @inheritDoc
-     *
-     * Endpoint: PUT /automatic_pix/receiver_recurrences/{id}/cancel
-     */
-    public function cancelAutomaticPixRecurrence(string $recurrenceId): object
+    /** @inheritDoc */
+    public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice
     {
-        $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/' . $recurrenceId . '/cancel';
-
-        try {
-            $response = $this->apiRequest->request('PUT', $url);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
-        } catch (\Exception $e) {
-            throw new GatewayException("Error cancelling automatic pix recurrence: {$e->getMessage()}");
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
         }
 
-        if (!empty($response->errors)) {
-            throw new GatewayException('Error cancelling automatic pix recurrence', (array) $response->errors);
+        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id)
+            . '/reschedule_automatic_pix_payment';
+        $response = $this->automaticPixRequest('POST', $url, [], 'rescheduling automatic pix payment');
+
+        if (!empty($response->id) && !empty($response->status) && isset($response->total_cents)) {
+            return $this->parseInvoice($response, $invoice);
         }
 
-        return $response;
+        $invoice->gateway = 'iugu';
+        $invoice->original = $response;
+
+        return $invoice;
     }
 
-    /**
-     * @inheritDoc
-     *
-     * Endpoint: POST /automatic_pix/receiver_recurrence_payments/cancel
-     */
+    /** @inheritDoc */
+    public function cancelAutomaticPixRecurrence(
+        AutomaticPix $automaticPix
+    ): AutomaticPixCancellation {
+        if (empty($automaticPix->id)) {
+            throw ModelAttributeValidationException::required('AutomaticPix', 'id');
+        }
+
+        $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
+            . rawurlencode($automaticPix->id) . '/cancel';
+        $response = $this->automaticPixRequest('PUT', $url, [], 'cancelling automatic pix recurrence');
+
+        $cancellation = $this->parseAutomaticPixCancellation($response);
+        $cancellation->recurrenceId = $automaticPix->id;
+        $cancellation->status ??= AutomaticPixCancellation::STATUS_REQUESTED;
+
+        return $cancellation;
+    }
+
+    /** @inheritDoc */
     public function cancelAutomaticPixScheduledPayment(
-        string $receiverRecurrencePaymentId,
+        string $paymentId,
         string $endToEndId
-    ): object {
+    ): AutomaticPixCancellation {
+        if (empty($paymentId)) {
+            throw ModelAttributeValidationException::required('AutomaticPixScheduledPayment', 'paymentId');
+        }
+        if (empty($endToEndId)) {
+            throw ModelAttributeValidationException::required('AutomaticPixScheduledPayment', 'endToEndId');
+        }
+
         $query = http_build_query([
-            'receiver_recurrence_payment_id' => $receiverRecurrencePaymentId,
+            'receiver_recurrence_payment_id' => $paymentId,
             'end_to_end_id' => $endToEndId,
         ], '', '&', PHP_QUERY_RFC3986);
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrence_payments/cancel?' . $query;
+        $response = $this->automaticPixRequest(
+            'POST',
+            $url,
+            [],
+            'cancelling automatic pix scheduled payment'
+        );
 
+        $cancellation = $this->parseAutomaticPixCancellation($response);
+        $cancellation->paymentId ??= $paymentId;
+        $cancellation->endToEndId ??= $endToEndId;
+        $cancellation->status ??= AutomaticPixCancellation::STATUS_REQUESTED;
+
+        return $cancellation;
+    }
+
+    /** @inheritDoc */
+    public function getAutomaticPixCancellation(
+        AutomaticPixCancellation $cancellation
+    ): AutomaticPixCancellation {
+        if (empty($cancellation->recurrenceId)) {
+            throw ModelAttributeValidationException::required('AutomaticPixCancellation', 'recurrenceId');
+        }
+        if (empty($cancellation->id)) {
+            throw ModelAttributeValidationException::required('AutomaticPixCancellation', 'id');
+        }
+
+        $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
+            . rawurlencode($cancellation->recurrenceId) . '/cancellations/'
+            . rawurlencode($cancellation->id);
+        $response = $this->automaticPixRequest('GET', $url, [], 'getting automatic pix cancellation');
+
+        return $this->parseAutomaticPixCancellation($response, $cancellation);
+    }
+
+    /** @inheritDoc */
+    public function listAutomaticPixCancellations(
+        AutomaticPix $automaticPix,
+        int $page = 1,
+        int $limit = 100
+    ): array {
+        if (empty($automaticPix->id)) {
+            throw ModelAttributeValidationException::required('AutomaticPix', 'id');
+        }
+        if ($page < 1) {
+            throw new GatewayException('Automatic Pix cancellation page must be at least 1');
+        }
+        if ($limit < 1 || $limit > 100) {
+            throw new GatewayException('Automatic Pix cancellation limit must be between 1 and 100');
+        }
+
+        $query = http_build_query(['limit' => $limit, 'page' => $page], '', '&', PHP_QUERY_RFC3986);
+        $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
+            . rawurlencode($automaticPix->id) . '/cancellations?' . $query;
+        $response = $this->automaticPixRequest('GET', $url, [], 'listing automatic pix cancellations');
+
+        $items = $this->automaticPixCancellationItems($response);
+
+        return array_map(function ($item) use ($automaticPix) {
+            $cancellation = $this->parseAutomaticPixCancellation($item);
+            $cancellation->recurrenceId ??= $automaticPix->id;
+
+            return $cancellation;
+        }, $items);
+    }
+
+    /**
+     * Convert the gateway-neutral recurrence model into Iugu invoice fields.
+     */
+    private function automaticPixToIuguData(AutomaticPix $automaticPix): array
+    {
+        $automaticPix->validateForInvoice();
+
+        $journeys = [
+            AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT => 3,
+            AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_RECURRENCE_OFFER => 4,
+        ];
+        if (!isset($journeys[$automaticPix->authorizationType])) {
+            throw ModelAttributeValidationException::invalid(
+                'AutomaticPix',
+                'authorizationType',
+                'authorizationType is not supported by the Iugu gateway'
+            );
+        }
+
+        $retryPolicies = [
+            AutomaticPix::RETRY_POLICY_ALLOWED => 'retry_allowed',
+            AutomaticPix::RETRY_POLICY_NOT_ALLOWED => 'retry_not_allowed',
+        ];
+
+        $data = [
+            'journey' => $journeys[$automaticPix->authorizationType],
+            'frequency' => $automaticPix->frequency,
+            'recurrence_beginning' => $automaticPix->startsAt?->format('Y-m-d'),
+            'contract_number' => $automaticPix->contractReference,
+            'end_date' => $automaticPix->endsAt?->format('Y-m-d'),
+            'receiver_recurrence_id' => $automaticPix->id,
+            'retry_policy' => $retryPolicies[$automaticPix->retryPolicy] ?? $automaticPix->retryPolicy,
+        ];
+
+        return array_filter($data, static fn ($value) => !is_null($value));
+    }
+
+    /**
+     * Convert Iugu recurrence fields back into the gateway-neutral model.
+     */
+    private function parseAutomaticPix($data, ?AutomaticPix $automaticPix = null): AutomaticPix
+    {
+        $data = (object) $data;
+        $automaticPix ??= new AutomaticPix();
+        $authorizationTypes = [
+            3 => AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT,
+            4 => AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_RECURRENCE_OFFER,
+        ];
+        $retryPolicies = [
+            'retry_allowed' => AutomaticPix::RETRY_POLICY_ALLOWED,
+            'retry_not_allowed' => AutomaticPix::RETRY_POLICY_NOT_ALLOWED,
+        ];
+
+        $automaticPix->id = $data->receiver_recurrence_id ?? $data->id ?? $automaticPix->id;
+        if (isset($data->journey, $authorizationTypes[(int) $data->journey])) {
+            $automaticPix->authorizationType = $authorizationTypes[(int) $data->journey];
+        }
+        $automaticPix->frequency = $data->frequency ?? $automaticPix->frequency;
+        $automaticPix->startsAt = !empty($data->recurrence_beginning)
+            ? new Carbon($data->recurrence_beginning)
+            : $automaticPix->startsAt;
+        $automaticPix->contractReference = $data->contract_number ?? $automaticPix->contractReference;
+        $automaticPix->endsAt = !empty($data->end_date)
+            ? new Carbon($data->end_date)
+            : $automaticPix->endsAt;
+        $automaticPix->retryPolicy = $retryPolicies[$data->retry_policy ?? '']
+            ?? $automaticPix->retryPolicy;
+        $automaticPix->status = $data->status ?? $automaticPix->status;
+        $automaticPix->gateway = 'iugu';
+        $automaticPix->original = $data;
+
+        return $automaticPix;
+    }
+
+    /**
+     * Perform a raw Iugu request while preserving the package exception contract.
+     */
+    private function automaticPixRequest(
+        string $method,
+        string $url,
+        array $data,
+        string $operation
+    ): object|array {
         try {
-            $response = $this->apiRequest->request('POST', $url);
+            $response = $this->apiRequest->request($method, $url, $data);
         } catch (\IuguRequestException | IuguObjectNotFound $e) {
             if (str_contains($e->getMessage(), '502 Bad Gateway')) {
                 throw new GatewayNotAvailableException($e->getMessage());
@@ -467,17 +631,61 @@ class IuguGateway implements GatewayContract, AutomaticPixContract, InvoiceCance
         } catch (\IuguAuthenticationException $e) {
             throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
-            throw new GatewayException("Error cancelling automatic pix scheduled payment: {$e->getMessage()}");
+            throw new GatewayException("Error {$operation}: {$e->getMessage()}");
         }
 
-        if (($response->success ?? false) !== true) {
-            throw new GatewayException(
-                'Error cancelling automatic pix scheduled payment',
-                (array) ($response->errors ?? [])
-            );
+        $responseObject = is_array($response) ? (object) $response : $response;
+        if (
+            !empty($responseObject->errors)
+            || (isset($responseObject->success) && $responseObject->success !== true)
+        ) {
+            throw new GatewayException("Error {$operation}", (array) ($responseObject->errors ?? []));
         }
 
         return $response;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function automaticPixCancellationItems(object|array $response): array
+    {
+        if (is_array($response)) {
+            return array_values($response);
+        }
+
+        foreach (['cancellations', 'items', 'data', 'results'] as $property) {
+            if (isset($response->{$property}) && is_array($response->{$property})) {
+                return array_values($response->{$property});
+            }
+        }
+
+        return [];
+    }
+
+    private function parseAutomaticPixCancellation(
+        $data,
+        ?AutomaticPixCancellation $cancellation = null
+    ): AutomaticPixCancellation {
+        $data = (object) $data;
+        $cancellation ??= new AutomaticPixCancellation();
+
+        $cancellation->id = $data->cancellation_id ?? $data->id ?? $cancellation->id;
+        $cancellation->recurrenceId = $data->receiver_recurrence_id
+            ?? $cancellation->recurrenceId;
+        $cancellation->paymentId = $data->receiver_recurrence_payment_id
+            ?? $cancellation->paymentId;
+        $cancellation->endToEndId = $data->end_to_end_id ?? $cancellation->endToEndId;
+        $cancellation->status = $data->status ?? $cancellation->status;
+        $cancellation->amount = $data->amount ?? $cancellation->amount;
+        $cancellation->payerAccount = $data->payer_account ?? $cancellation->payerAccount;
+        $cancellation->createdAt = !empty($data->created_at)
+            ? new Carbon($data->created_at)
+            : $cancellation->createdAt;
+        $cancellation->gateway = 'iugu';
+        $cancellation->original = $data;
+
+        return $cancellation;
     }
 
     /**
@@ -588,6 +796,13 @@ class IuguGateway implements GatewayContract, AutomaticPixContract, InvoiceCance
             }
             $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
             $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
+        }
+
+        if (!empty($iuguInvoice->automatic_pix)) {
+            $invoice->automaticPix = $this->parseAutomaticPix(
+                $iuguInvoice->automatic_pix,
+                $invoice->automaticPix
+            );
         }
 
         if (!empty($iuguInvoice->credit_card_transaction)) {

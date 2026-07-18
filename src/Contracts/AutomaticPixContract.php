@@ -2,36 +2,48 @@
 
 namespace  Potelo\MultiPayment\Contracts;
 
+use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
-/**
- * Operações de Pix Automático (recorrência do Bacen).
- *
- * Por ser específico de gateways que suportam o Pix Automático, fica fora do
- * GatewayContract para não obrigar implementações que não suportam recorrência.
- */
 interface AutomaticPixContract
 {
     /**
-     * Solicita o cancelamento de um pagamento agendado de Pix Automático.
-     *
-     * @param  string  $receiverRecurrencePaymentId  UUID do pagamento agendado.
-     * @param  string  $endToEndId  Identificador E2E do pagamento.
-     * @return object  Resposta do gateway.
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice;
+
+    /**
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function cancelAutomaticPixScheduledPayment(
-        string $receiverRecurrencePaymentId,
+        string $paymentId,
         string $endToEndId
-    ): object;
+    ): AutomaticPixCancellation;
 
     /**
-     * Solicita o cancelamento de uma recorrência de Pix Automático.
-     *
-     * @param  string  $recurrenceId  UUID da recorrência (receiver_recurrence_id).
-     * @return object  Resposta do gateway.
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function cancelAutomaticPixRecurrence(string $recurrenceId): object;
+    public function cancelAutomaticPixRecurrence(
+        AutomaticPix $automaticPix
+    ): AutomaticPixCancellation;
+
+    /**
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function getAutomaticPixCancellation(
+        AutomaticPixCancellation $cancellation
+    ): AutomaticPixCancellation;
+
+    /**
+     * @return AutomaticPixCancellation[]
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function listAutomaticPixCancellations(
+        AutomaticPix $automaticPix,
+        int $page = 1,
+        int $limit = 100
+    ): array;
 }

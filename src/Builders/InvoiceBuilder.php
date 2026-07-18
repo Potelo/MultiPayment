@@ -8,6 +8,7 @@ use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 
 /**
@@ -84,6 +85,44 @@ class InvoiceBuilder extends Builder
             $expiresAt = Carbon::parse($expiresAt);
         }
         $this->model->expiresAt = $expiresAt;
+        return $this;
+    }
+
+    /**
+     * Set an Automatic Pix recurrence on the invoice.
+     */
+    public function setAutomaticPix(AutomaticPix $automaticPix): InvoiceBuilder
+    {
+        $this->model->automaticPix = $automaticPix;
+
+        return $this;
+    }
+
+    /**
+     * Add Automatic Pix recurrence data to the invoice.
+     *
+     * @param  Carbon|string  $startsAt
+     * @param  Carbon|string|null  $endsAt
+     */
+    public function addAutomaticPix(
+        string $authorizationType,
+        string $frequency,
+        Carbon|string $startsAt,
+        string $contractReference,
+        Carbon|string|null $endsAt = null,
+        string $retryPolicy = AutomaticPix::RETRY_POLICY_NOT_ALLOWED,
+        ?string $id = null
+    ): InvoiceBuilder {
+        $automaticPix = new AutomaticPix();
+        $automaticPix->authorizationType = $authorizationType;
+        $automaticPix->frequency = $frequency;
+        $automaticPix->startsAt = $startsAt instanceof Carbon ? $startsAt : Carbon::parse($startsAt);
+        $automaticPix->contractReference = $contractReference;
+        $automaticPix->endsAt = is_string($endsAt) ? Carbon::parse($endsAt) : $endsAt;
+        $automaticPix->retryPolicy = $retryPolicy;
+        $automaticPix->id = $id;
+        $this->model->automaticPix = $automaticPix;
+
         return $this;
     }
 
