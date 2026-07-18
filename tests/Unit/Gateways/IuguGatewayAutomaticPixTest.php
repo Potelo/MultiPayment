@@ -38,7 +38,6 @@ class IuguGatewayAutomaticPixTest extends TestCase
     public function testMapsGenericAutomaticPixFieldsToIuguInvoiceFields(): void
     {
         $automaticPix = new AutomaticPix();
-        $automaticPix->id = 'recurrence-id';
         $automaticPix->authorizationType = AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT;
         $automaticPix->frequency = AutomaticPix::FREQUENCY_MONTHLY;
         $automaticPix->startsAt = now()->startOfDay();
@@ -56,9 +55,20 @@ class IuguGatewayAutomaticPixTest extends TestCase
             'recurrence_beginning' => $automaticPix->startsAt->format('Y-m-d'),
             'contract_number' => 'contract-123',
             'end_date' => $automaticPix->endsAt->format('Y-m-d'),
-            'receiver_recurrence_id' => 'recurrence-id',
             'retry_policy' => 'retry_allowed',
         ], $data);
+    }
+
+    public function testMapsExistingAutomaticPixRecurrenceWithoutCreationFields(): void
+    {
+        $automaticPix = new AutomaticPix();
+        $automaticPix->id = 'recurrence-id';
+
+        $method = new \ReflectionMethod(IuguGateway::class, 'automaticPixToIuguData');
+        $method->setAccessible(true);
+        $data = $method->invoke(new IuguGateway(new RecordingIuguApiRequest((object) [])), $automaticPix);
+
+        $this->assertSame(['receiver_recurrence_id' => 'recurrence-id'], $data);
     }
 
     public function testRejectsAuthorizationTypeUnsupportedByIugu(): void

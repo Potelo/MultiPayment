@@ -47,6 +47,22 @@ class AutomaticPixTest extends TestCase
         $this->assertSame(AutomaticPix::RETRY_POLICY_ALLOWED, $invoice->automaticPix->retryPolicy);
     }
 
+    public function testBuildsInvoiceUsingAnExistingAutomaticPixRecurrence(): void
+    {
+        $gateway = Mockery::mock(GatewayContract::class);
+        $automaticPix = new AutomaticPix();
+        $automaticPix->id = 'recurrence-id';
+
+        $invoice = (new MultiPayment($gateway))->newInvoice()
+            ->setAutomaticPix($automaticPix)
+            ->get();
+
+        $invoice->automaticPix->validateForInvoice();
+
+        $this->assertSame($automaticPix, $invoice->automaticPix);
+        $this->assertSame('recurrence-id', $invoice->automaticPix->id);
+    }
+
     public function testFillsAutomaticPixModelFromInvoiceAttributes(): void
     {
         $invoice = new Invoice();

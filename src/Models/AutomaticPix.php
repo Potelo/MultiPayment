@@ -53,6 +53,10 @@ class AutomaticPix extends Model
      */
     public function validateForInvoice(): void
     {
+        if (!empty($this->id)) {
+            return;
+        }
+
         foreach (['authorizationType', 'frequency', 'startsAt', 'contractReference'] as $attribute) {
             if (empty($this->{$attribute})) {
                 throw ModelAttributeValidationException::required($this->getClassName(), $attribute);

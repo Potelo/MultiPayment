@@ -544,6 +544,10 @@ class IuguGateway implements GatewayContract
     {
         $automaticPix->validateForInvoice();
 
+        if (!empty($automaticPix->id)) {
+            return ['receiver_recurrence_id' => $automaticPix->id];
+        }
+
         $journeys = [
             AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT => 3,
             AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_RECURRENCE_OFFER => 4,
