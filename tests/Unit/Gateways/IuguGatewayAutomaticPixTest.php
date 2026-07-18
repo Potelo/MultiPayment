@@ -8,8 +8,11 @@ use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class IuguGatewayAutomaticPixTest extends TestCase
 {
@@ -32,17 +35,61 @@ class IuguGatewayAutomaticPixTest extends TestCase
         parent::tearDown();
     }
 
-    public function testCancelsScheduledPaymentWithRequiredQueryParameters(): void
+    public function testMapsGenericAutomaticPixFieldsToIuguInvoiceFields(): void
+    {
+        $automaticPix = new AutomaticPix();
+        $automaticPix->id = 'recurrence-id';
+        $automaticPix->authorizationType = AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT;
+        $automaticPix->frequency = AutomaticPix::FREQUENCY_MONTHLY;
+        $automaticPix->startsAt = now()->startOfDay();
+        $automaticPix->contractReference = 'contract-123';
+        $automaticPix->endsAt = now()->addYear()->startOfDay();
+        $automaticPix->retryPolicy = AutomaticPix::RETRY_POLICY_ALLOWED;
+
+        $method = new \ReflectionMethod(IuguGateway::class, 'automaticPixToIuguData');
+        $method->setAccessible(true);
+        $data = $method->invoke(new IuguGateway(new RecordingIuguApiRequest((object) [])), $automaticPix);
+
+        $this->assertSame([
+            'journey' => 3,
+            'frequency' => 'monthly',
+            'recurrence_beginning' => $automaticPix->startsAt->format('Y-m-d'),
+            'contract_number' => 'contract-123',
+            'end_date' => $automaticPix->endsAt->format('Y-m-d'),
+            'receiver_recurrence_id' => 'recurrence-id',
+            'retry_policy' => 'retry_allowed',
+        ], $data);
+    }
+
+    public function testRejectsAuthorizationTypeUnsupportedByIugu(): void
+    {
+        $automaticPix = new AutomaticPix();
+        $automaticPix->authorizationType = 'push';
+        $automaticPix->frequency = AutomaticPix::FREQUENCY_MONTHLY;
+        $automaticPix->startsAt = now()->startOfDay();
+        $automaticPix->contractReference = 'contract-123';
+
+        $method = new \ReflectionMethod(IuguGateway::class, 'automaticPixToIuguData');
+        $method->setAccessible(true);
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('authorizationType is not supported by the Iugu gateway');
+
+        $method->invoke(new IuguGateway(new RecordingIuguApiRequest((object) [])), $automaticPix);
+    }
+
+    public function testCancelsScheduledPaymentAndReturnsCancellationModel(): void
     {
         $apiRequest = new RecordingIuguApiRequest((object) [
             'success' => true,
-            'cancellation_id' => 'd87f02d3-c7bd-4096-b397-867fdae99d10',
+            'cancellation_id' => 'cancellation-id',
         ]);
-
         $result = (new IuguGateway($apiRequest))
             ->cancelAutomaticPixScheduledPayment('payment-id', 'end-to-end-id');
 
-        $this->assertTrue($result->success);
+        $this->assertInstanceOf(AutomaticPixCancellation::class, $result);
+        $this->assertSame('cancellation-id', $result->id);
+        $this->assertSame('payment-id', $result->paymentId);
         $this->assertSame('POST', $apiRequest->method);
         $this->assertSame('/v1/automatic_pix/receiver_recurrence_payments/cancel', parse_url($apiRequest->url, PHP_URL_PATH));
         parse_str((string) parse_url($apiRequest->url, PHP_URL_QUERY), $query);
@@ -59,17 +106,99 @@ class IuguGatewayAutomaticPixTest extends TestCase
             'success' => false,
             'errors' => [(object) ['message' => 'Pagamento não pode ser cancelado']],
         ]);
-
         $this->expectException(GatewayException::class);
 
         (new IuguGateway($apiRequest))
             ->cancelAutomaticPixScheduledPayment('payment-id', 'end-to-end-id');
     }
 
+    public function testCancelsRecurrenceAndReturnsRequestedCancellation(): void
+    {
+        $apiRequest = new RecordingIuguApiRequest((object) [
+            'success' => true,
+            'message' => 'Recurrence cancellation requested',
+        ]);
+        $automaticPix = new AutomaticPix();
+        $automaticPix->id = 'recurrence-id';
+
+        $result = (new IuguGateway($apiRequest))->cancelAutomaticPixRecurrence($automaticPix);
+
+        $this->assertSame('PUT', $apiRequest->method);
+        $this->assertSame(
+            '/v1/automatic_pix/receiver_recurrences/recurrence-id/cancel',
+            parse_url($apiRequest->url, PHP_URL_PATH)
+        );
+        $this->assertSame('recurrence-id', $result->recurrenceId);
+        $this->assertSame(AutomaticPixCancellation::STATUS_REQUESTED, $result->status);
+    }
+
+    public function testReschedulesPaymentFromInvoice(): void
+    {
+        $apiRequest = new RecordingIuguApiRequest((object) ['success' => true]);
+        $invoice = new Invoice();
+        $invoice->id = 'invoice-id';
+
+        $result = (new IuguGateway($apiRequest))->rescheduleAutomaticPixPayment($invoice);
+
+        $this->assertSame($invoice, $result);
+        $this->assertSame('POST', $apiRequest->method);
+        $this->assertSame(
+            '/v1/invoices/invoice-id/reschedule_automatic_pix_payment',
+            parse_url($apiRequest->url, PHP_URL_PATH)
+        );
+    }
+
+    public function testGetsCancellationMappedToGenericFields(): void
+    {
+        $apiRequest = new RecordingIuguApiRequest((object) [
+            'id' => 'cancellation-id',
+            'receiver_recurrence_id' => 'recurrence-id',
+            'receiver_recurrence_payment_id' => 'payment-id',
+            'end_to_end_id' => 'end-to-end-id',
+            'status' => 'cancelled',
+            'amount' => 1250,
+            'payer_account' => '12345-6',
+        ]);
+        $cancellation = new AutomaticPixCancellation();
+        $cancellation->id = 'cancellation-id';
+        $cancellation->recurrenceId = 'recurrence-id';
+
+        $result = (new IuguGateway($apiRequest))->getAutomaticPixCancellation($cancellation);
+
+        $this->assertSame(
+            '/v1/automatic_pix/receiver_recurrences/recurrence-id/cancellations/cancellation-id',
+            parse_url($apiRequest->url, PHP_URL_PATH)
+        );
+        $this->assertSame('payment-id', $result->paymentId);
+        $this->assertSame('end-to-end-id', $result->endToEndId);
+        $this->assertSame(1250, $result->amount);
+        $this->assertSame('12345-6', $result->payerAccount);
+    }
+
+    public function testListsMappedCancellationsWithPagination(): void
+    {
+        $apiRequest = new RecordingIuguApiRequest((object) [
+            'cancellations' => [
+                (object) ['id' => 'one', 'amount' => 100],
+                (object) ['id' => 'two', 'amount' => 200],
+            ],
+        ]);
+        $automaticPix = new AutomaticPix();
+        $automaticPix->id = 'recurrence-id';
+
+        $result = (new IuguGateway($apiRequest))->listAutomaticPixCancellations($automaticPix, 2, 25);
+
+        parse_str((string) parse_url($apiRequest->url, PHP_URL_QUERY), $query);
+        $this->assertSame(['limit' => '25', 'page' => '2'], $query);
+        $this->assertCount(2, $result);
+        $this->assertContainsOnlyInstancesOf(AutomaticPixCancellation::class, $result);
+        $this->assertSame('one', $result[0]->id);
+        $this->assertSame('recurrence-id', $result[0]->recurrenceId);
+    }
+
     public function testCancelsInvoiceAndReturnsParsedInvoice(): void
     {
         $apiRequest = new RecordingIuguApiRequest($this->cancelledInvoiceResponse());
-
         $invoice = new Invoice();
         $invoice->id = 'invoice-id';
 
@@ -105,6 +234,7 @@ class IuguGatewayAutomaticPixTest extends TestCase
             'payer_address_zip_code' => null,
             'bank_slip' => null,
             'pix' => null,
+            'automatic_pix' => null,
             'credit_card_transaction' => null,
         ];
     }
@@ -116,7 +246,7 @@ class RecordingIuguApiRequest extends Iugu_APIRequest
     public ?string $url = null;
     public array $data = [];
 
-    public function __construct(private object $response)
+    public function __construct(private object|array $response)
     {
     }
 
