@@ -9,6 +9,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
+    - [Pix Automático](#pix-automático)
     - [CustomerBuilder](#customerbuilder)
     - [getInvoice](#getinvoice)
     - [charge](#charge)
@@ -90,6 +91,60 @@ $invoice = $invoiceBuilder->setPaymentMethod('payment_method')
     ->create();
 ```
 Confira `src/MultiPayment/Builders/InvoiceBuilder.php` para saber quais métodos estão disponíveis.
+
+#### Pix Automático
+
+O Pix Automático está disponível no gateway Iugu e é configurado como parte da fatura:
+
+```php
+use Potelo\MultiPayment\Models\AutomaticPix;
+
+$invoice = (new \Potelo\MultiPayment\MultiPayment('iugu'))
+    ->newInvoice()
+    ->addAvailablePaymentMethod('pix')
+    ->addCustomer('Nome', 'email@example.com', '01234567891')
+    ->addItem('Mensalidade', 10000, 1)
+    ->addAutomaticPix(
+        AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT,
+        AutomaticPix::FREQUENCY_MONTHLY,
+        '2026-08-01',
+        'contrato-123',
+        '2027-08-01',
+        AutomaticPix::RETRY_POLICY_ALLOWED,
+    )
+    ->create();
+```
+
+As demais operações também utilizam os modelos do MultiPayment, enquanto os nomes específicos da Iugu são tratados internamente pelo gateway:
+
+```php
+$multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
+
+$multiPayment->rescheduleAutomaticPixPayment($invoiceId);
+$multiPayment->cancelAutomaticPixRecurrence($recurrenceId);
+$multiPayment->cancelAutomaticPixScheduledPayment($paymentId, $endToEndId);
+$multiPayment->getAutomaticPixCancellation($recurrenceId, $cancellationId);
+$multiPayment->listAutomaticPixCancellations($recurrenceId, page: 1, limit: 100);
+```
+
+##### Testes com a sandbox da Iugu
+
+A suíte `Integration` reúne todos os testes que acessam a sandbox da Iugu. Cada
+teste cria durante a execução os clientes, faturas e cartões de que precisa; não
+há dependência de IDs ou outros dados previamente existentes no gateway.
+
+```bash
+IUGU_ID=seu_account_id \
+IUGU_APIKEY=seu_api_token \
+./vendor/bin/phpunit -c phpunit.xml.dist --testsuite Integration
+```
+
+Atualmente, a sandbox responde que Pix Automático não está disponível no modo de
+teste. Os cenários que dependem desse recurso estão identificados com o grupo
+`iugu-sandbox-limitation` e usam um `skip` explícito com a razão da limitação. Os
+testes permanecem junto das classes responsáveis pelo builder e pela facade para
+que possam ser reativados quando o ambiente passar a suportar o fluxo.
+
 #### CustomerBuilder
 ```php
 $multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
