@@ -44,6 +44,7 @@ class MultiPaymentTest extends TestCase
                 now()->addYear(),
                 AutomaticPix::RETRY_POLICY_ALLOWED
             )
+            ->addAutomaticPixCharge('Automatic Pix sandbox test')
             ->create();
 
         $invoiceFetched = MultiPayment::setGateway('iugu')->getInvoice($invoice->id);

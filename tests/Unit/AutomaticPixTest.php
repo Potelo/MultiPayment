@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 
@@ -33,6 +34,7 @@ class AutomaticPixTest extends TestCase
                 '2027-08-01',
                 AutomaticPix::RETRY_POLICY_ALLOWED
             )
+            ->addAutomaticPixCharge('Monthly subscription')
             ->get();
 
         $this->assertInstanceOf(AutomaticPix::class, $invoice->automaticPix);
@@ -45,6 +47,8 @@ class AutomaticPixTest extends TestCase
         $this->assertSame('contract-123', $invoice->automaticPix->contractReference);
         $this->assertSame('2027-08-01', $invoice->automaticPix->endsAt->format('Y-m-d'));
         $this->assertSame(AutomaticPix::RETRY_POLICY_ALLOWED, $invoice->automaticPix->retryPolicy);
+        $this->assertInstanceOf(AutomaticPixCharge::class, $invoice->automaticPixCharge);
+        $this->assertSame('Monthly subscription', $invoice->automaticPixCharge->description);
     }
 
     public function testBuildsInvoiceUsingAnExistingAutomaticPixRecurrence(): void
@@ -85,6 +89,27 @@ class AutomaticPixTest extends TestCase
         $this->assertInstanceOf(Carbon::class, $invoice->automaticPix->startsAt);
     }
 
+    public function testFillsAutomaticPixChargeFromInvoiceAttributes(): void
+    {
+        $invoice = new Invoice();
+        $invoice->fill([
+            'automatic_pix_charge' => [
+                'id' => 'charge-id',
+                'recurrence_id' => 'recurrence-id',
+                'end_to_end_id' => 'end-to-end-id',
+                'description' => 'Monthly subscription',
+                'scheduled_at' => '2026-08-01T10:00:00-03:00',
+            ],
+        ]);
+
+        $this->assertInstanceOf(AutomaticPixCharge::class, $invoice->automaticPixCharge);
+        $this->assertSame('charge-id', $invoice->automaticPixCharge->id);
+        $this->assertSame('recurrence-id', $invoice->automaticPixCharge->recurrenceId);
+        $this->assertSame('end-to-end-id', $invoice->automaticPixCharge->endToEndId);
+        $this->assertSame('Monthly subscription', $invoice->automaticPixCharge->description);
+        $this->assertInstanceOf(Carbon::class, $invoice->automaticPixCharge->scheduledAt);
+    }
+
     public function testCancelsScheduledAutomaticPixPaymentThroughScalarContract(): void
     {
         $cancellation = new AutomaticPixCancellation();
@@ -93,7 +118,9 @@ class AutomaticPixTest extends TestCase
         $gateway = Mockery::mock(GatewayContract::class);
         $gateway->shouldReceive('cancelAutomaticPixScheduledPayment')
             ->once()
-            ->with('payment-id', 'end-to-end-id')
+            ->with(Mockery::on(fn (AutomaticPixCharge $charge) =>
+                $charge->id === 'payment-id' && $charge->endToEndId === 'end-to-end-id'
+            ))
             ->andReturn($cancellation);
 
         $result = (new MultiPayment($gateway))

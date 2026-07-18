@@ -93,6 +93,11 @@ class Invoice extends Model
     public ?AutomaticPix $automaticPix = null;
 
     /**
+     * @var AutomaticPixCharge|null
+     */
+    public ?AutomaticPixCharge $automaticPixCharge = null;
+
+    /**
      * @var Carbon|null
      */
     public ?Carbon $expiresAt = null;
@@ -173,6 +178,12 @@ class Invoice extends Model
             $this->automaticPix = new AutomaticPix();
             $this->automaticPix->fill($data['automatic_pix']);
             unset($data['automatic_pix']);
+        }
+
+        if (!empty($data['automatic_pix_charge']) && is_array($data['automatic_pix_charge'])) {
+            $this->automaticPixCharge = new AutomaticPixCharge();
+            $this->automaticPixCharge->fill($data['automatic_pix_charge']);
+            unset($data['automatic_pix_charge']);
         }
 
         parent::fill($data);

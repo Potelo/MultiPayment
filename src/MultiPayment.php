@@ -8,6 +8,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
@@ -311,16 +312,23 @@ class MultiPayment
     /**
      * Cancela um pagamento agendado de Pix Automático no gateway.
      *
-     * @param  string  $paymentId
-     * @param  string  $endToEndId
+     * @param  AutomaticPixCharge|string  $charge
+     * @param  string|null  $endToEndId
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      */
     public function cancelAutomaticPixScheduledPayment(
-        string $paymentId,
-        string $endToEndId
+        AutomaticPixCharge|string $charge,
+        ?string $endToEndId = null
     ): AutomaticPixCancellation {
-        return $this->gateway->cancelAutomaticPixScheduledPayment($paymentId, $endToEndId);
+        if (is_string($charge)) {
+            $chargeModel = new AutomaticPixCharge();
+            $chargeModel->id = $charge;
+            $chargeModel->endToEndId = $endToEndId;
+            $charge = $chargeModel;
+        }
+
+        return $this->gateway->cancelAutomaticPixScheduledPayment($charge);
     }
 
     /**

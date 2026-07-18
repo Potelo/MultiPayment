@@ -112,6 +112,7 @@ $invoice = (new \Potelo\MultiPayment\MultiPayment('iugu'))
         '2027-08-01',
         AutomaticPix::RETRY_POLICY_ALLOWED,
     )
+    ->addAutomaticPixCharge('Mensalidade do plano')
     ->create();
 ```
 
@@ -122,7 +123,7 @@ $multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
 
 $multiPayment->rescheduleAutomaticPixPayment($invoiceId);
 $multiPayment->cancelAutomaticPixRecurrence($recurrenceId);
-$multiPayment->cancelAutomaticPixScheduledPayment($paymentId, $endToEndId);
+$multiPayment->cancelAutomaticPixScheduledPayment($invoice->automaticPixCharge);
 $multiPayment->getAutomaticPixCancellation($recurrenceId, $cancellationId);
 $multiPayment->listAutomaticPixCancellations($recurrenceId, page: 1, limit: 100);
 ```

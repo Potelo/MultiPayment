@@ -4,6 +4,7 @@ namespace  Potelo\MultiPayment\Contracts;
 
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
@@ -19,8 +20,7 @@ interface AutomaticPixContract
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function cancelAutomaticPixScheduledPayment(
-        string $paymentId,
-        string $endToEndId
+        AutomaticPixCharge $charge
     ): AutomaticPixCancellation;
 
     /**

@@ -9,6 +9,7 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 
 /**
@@ -94,6 +95,33 @@ class InvoiceBuilder extends Builder
     public function setAutomaticPix(AutomaticPix $automaticPix): InvoiceBuilder
     {
         $this->model->automaticPix = $automaticPix;
+
+        return $this;
+    }
+
+    /**
+     * Set the charge associated with this Automatic Pix invoice.
+     */
+    public function setAutomaticPixCharge(AutomaticPixCharge $charge): InvoiceBuilder
+    {
+        $this->model->automaticPixCharge = $charge;
+
+        return $this;
+    }
+
+    /**
+     * Add data for the charge associated with this Automatic Pix invoice.
+     */
+    public function addAutomaticPixCharge(
+        ?string $description = null,
+        ?string $id = null,
+        ?string $endToEndId = null
+    ): InvoiceBuilder {
+        $charge = new AutomaticPixCharge();
+        $charge->description = $description;
+        $charge->id = $id;
+        $charge->endToEndId = $endToEndId;
+        $this->model->automaticPixCharge = $charge;
 
         return $this;
     }

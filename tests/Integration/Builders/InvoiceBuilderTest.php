@@ -45,6 +45,7 @@ class InvoiceBuilderTest extends TestCase
                 Carbon::now()->addYear(),
                 AutomaticPix::RETRY_POLICY_ALLOWED
             )
+            ->addAutomaticPixCharge('Automatic Pix sandbox test')
             ->create();
 
         $this->assertNotEmpty($invoice->id);

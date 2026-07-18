@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Tests\Unit\Gateways;
 
+use Carbon\Carbon;
 use Iugu_APIRequest;
 use PHPUnit\Framework\TestCase;
 use Illuminate\Config\Repository;
@@ -9,6 +10,7 @@ use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -71,6 +73,18 @@ class IuguGatewayAutomaticPixTest extends TestCase
         $this->assertSame(['receiver_recurrence_id' => 'recurrence-id'], $data);
     }
 
+    public function testMapsGenericChargeDescriptionToIuguRemittanceInformation(): void
+    {
+        $charge = new AutomaticPixCharge();
+        $charge->description = 'Monthly subscription';
+
+        $method = new \ReflectionMethod(IuguGateway::class, 'automaticPixChargeToIuguData');
+        $method->setAccessible(true);
+        $data = $method->invoke(new IuguGateway(new RecordingIuguApiRequest((object) [])), $charge);
+
+        $this->assertSame(['pix_remittance_info' => 'Monthly subscription'], $data);
+    }
+
     public function testRejectsAuthorizationTypeUnsupportedByIugu(): void
     {
         $automaticPix = new AutomaticPix();
@@ -94,8 +108,11 @@ class IuguGatewayAutomaticPixTest extends TestCase
             'success' => true,
             'cancellation_id' => 'cancellation-id',
         ]);
+        $charge = new AutomaticPixCharge();
+        $charge->id = 'payment-id';
+        $charge->endToEndId = 'end-to-end-id';
         $result = (new IuguGateway($apiRequest))
-            ->cancelAutomaticPixScheduledPayment('payment-id', 'end-to-end-id');
+            ->cancelAutomaticPixScheduledPayment($charge);
 
         $this->assertInstanceOf(AutomaticPixCancellation::class, $result);
         $this->assertSame('cancellation-id', $result->id);
@@ -116,10 +133,13 @@ class IuguGatewayAutomaticPixTest extends TestCase
             'success' => false,
             'errors' => [(object) ['message' => 'Pagamento não pode ser cancelado']],
         ]);
+        $charge = new AutomaticPixCharge();
+        $charge->id = 'payment-id';
+        $charge->endToEndId = 'end-to-end-id';
         $this->expectException(GatewayException::class);
 
         (new IuguGateway($apiRequest))
-            ->cancelAutomaticPixScheduledPayment('payment-id', 'end-to-end-id');
+            ->cancelAutomaticPixScheduledPayment($charge);
     }
 
     public function testCancelsRecurrenceAndReturnsRequestedCancellation(): void
@@ -218,6 +238,34 @@ class IuguGatewayAutomaticPixTest extends TestCase
         $this->assertSame('/v1/invoices/invoice-id/cancel', parse_url($apiRequest->url, PHP_URL_PATH));
         $this->assertSame(Invoice::STATUS_CANCELED, $result->status);
         $this->assertSame('invoice-id', $result->id);
+    }
+
+    public function testMapsIuguScheduledPaymentToGenericCharge(): void
+    {
+        $response = $this->cancelledInvoiceResponse();
+        $response->automatic_pix = (object) [
+            'receiver_recurrence_id' => 'recurrence-id',
+            'recurrence_receiver_payment' => (object) [
+                'receiver_recurrence_payment_id' => 'charge-id',
+                'receiver_recurrence_payment_end_to_end_id' => 'end-to-end-id',
+                'scheduled_payment_at' => '2026-08-01T10:00:00-03:00',
+                'status' => 'scheduled',
+            ],
+        ];
+        $response->pix_remittance_info = 'Monthly subscription';
+
+        $invoice = new Invoice();
+        $invoice->id = 'invoice-id';
+        $result = (new IuguGateway(new RecordingIuguApiRequest($response)))->cancelInvoice($invoice);
+
+        $this->assertInstanceOf(AutomaticPixCharge::class, $result->automaticPixCharge);
+        $this->assertSame('charge-id', $result->automaticPixCharge->id);
+        $this->assertSame('recurrence-id', $result->automaticPixCharge->recurrenceId);
+        $this->assertSame('end-to-end-id', $result->automaticPixCharge->endToEndId);
+        $this->assertSame('Monthly subscription', $result->automaticPixCharge->description);
+        $this->assertSame('scheduled', $result->automaticPixCharge->status);
+        $this->assertInstanceOf(Carbon::class, $result->automaticPixCharge->scheduledAt);
+        $this->assertSame('iugu', $result->automaticPixCharge->gateway);
     }
 
     private function cancelledInvoiceResponse(): object
