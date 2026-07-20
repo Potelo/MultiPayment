@@ -69,4 +69,13 @@ interface InvoiceContract
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice;
+
+    /**
+     * Cancel an invoice.
+     *
+     * @param  Invoice  $invoice
+     * @return Invoice
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function cancelInvoice(Invoice $invoice): Invoice;
 }

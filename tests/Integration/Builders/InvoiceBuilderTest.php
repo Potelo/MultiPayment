@@ -1,14 +1,60 @@
 <?php
 
-namespace Potelo\MultiPayment\Tests\Unit\Builders;
+namespace Potelo\MultiPayment\Tests\Integration\Builders;
 
 use Carbon\Carbon;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 
 class InvoiceBuilderTest extends TestCase
 {
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * A sandbox da Iugu rejeita a criação de faturas com Pix Automático. O
+     * cenário permanece completo para ser reativado quando o recurso estiver
+     * disponível no ambiente de testes.
+     */
+    public function testShouldCreateAutomaticPixInvoice(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu retorna que Pix Automático não está disponível no modo de teste.'
+        );
+
+        $reference = 'multipayment-' . Carbon::now()->format('YmdHis');
+        $invoice = (new \Potelo\MultiPayment\MultiPayment('iugu'))->newInvoice()
+            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_PIX)
+            ->addCustomer(
+                'Automatic Pix Sandbox',
+                "{$reference}@example.com",
+                '20176996915',
+                null,
+                '71',
+                '982345678'
+            )
+            ->addItem('Automatic Pix sandbox test', 100, 1)
+            ->setExpiresAt(Carbon::now()->addDays(2))
+            ->addAutomaticPix(
+                AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT,
+                AutomaticPix::FREQUENCY_MONTHLY,
+                Carbon::now()->addDays(3),
+                $reference,
+                Carbon::now()->addYear(),
+                AutomaticPix::RETRY_POLICY_ALLOWED
+            )
+            ->addAutomaticPixCharge('Automatic Pix sandbox test')
+            ->create();
+
+        $this->assertNotEmpty($invoice->id);
+        $this->assertInstanceOf(AutomaticPix::class, $invoice->automaticPix);
+        $this->assertNotEmpty($invoice->automaticPix->id);
+        $this->assertSame($reference, $invoice->automaticPix->contractReference);
+        $this->assertSame('iugu', $invoice->automaticPix->gateway);
+        $this->assertNotNull($invoice->automaticPix->original);
+    }
 
     /**
      * Create a invoice with mocked data

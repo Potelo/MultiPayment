@@ -88,6 +88,16 @@ class Invoice extends Model
     public ?Pix $pix = null;
 
     /**
+     * @var AutomaticPix|null
+     */
+    public ?AutomaticPix $automaticPix = null;
+
+    /**
+     * @var AutomaticPixCharge|null
+     */
+    public ?AutomaticPixCharge $automaticPixCharge = null;
+
+    /**
      * @var Carbon|null
      */
     public ?Carbon $expiresAt = null;
@@ -163,6 +173,19 @@ class Invoice extends Model
             $this->creditCard->fill($data['credit_card']);
             unset($data['credit_card']);
         }
+
+        if (!empty($data['automatic_pix']) && is_array($data['automatic_pix'])) {
+            $this->automaticPix = new AutomaticPix();
+            $this->automaticPix->fill($data['automatic_pix']);
+            unset($data['automatic_pix']);
+        }
+
+        if (!empty($data['automatic_pix_charge']) && is_array($data['automatic_pix_charge'])) {
+            $this->automaticPixCharge = new AutomaticPixCharge();
+            $this->automaticPixCharge->fill($data['automatic_pix_charge']);
+            unset($data['automatic_pix_charge']);
+        }
+
         parent::fill($data);
     }
 
@@ -238,6 +261,14 @@ class Invoice extends Model
     }
 
     /**
+     * @throws ModelAttributeValidationException
+     */
+    public function validateAutomaticPixAttribute(): void
+    {
+        $this->automaticPix->validateForInvoice();
+    }
+
+    /**
      * @inheritDoc
      */
     public function save(GatewayContract|string $gateway = null, bool $validate = true): void
@@ -298,5 +329,25 @@ class Invoice extends Model
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
         return $gateway->duplicateInvoice($this, $expiresAt, $gatewayOptions);
+    }
+
+    /**
+     * Cancel the invoice.
+     */
+    public function cancel(GatewayContract|string|null $gateway = null): Invoice
+    {
+        $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
+
+        return $gateway->cancelInvoice($this);
+    }
+
+    /**
+     * Request a new debit schedule after a failed Automatic Pix payment.
+     */
+    public function rescheduleAutomaticPixPayment(GatewayContract|string|null $gateway = null): Invoice
+    {
+        $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
+
+        return $gateway->rescheduleAutomaticPixPayment($this);
     }
 }

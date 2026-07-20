@@ -86,6 +86,13 @@ class GatewayException extends MultiPaymentException
             // Constrói a chave completa para o item atual
             $newKey = $prefix ? "{$prefix}.{$key}" : $key;
 
+            // Normaliza objetos (ex.: stdClass aninhado vindo da Iugu) para array
+            // antes de prosseguir, evitando "Object of class stdClass could not be
+            // converted to string" ao tentar interpolar o valor.
+            if (is_object($value)) {
+                $value = (array) $value;
+            }
+
             if (is_array($value) && !empty($value)) {
                 // Se o valor for um array não vazio, continua a recursão
                 $this->flattenErrors($value, $messages, $newKey);

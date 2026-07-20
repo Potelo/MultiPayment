@@ -17,6 +17,11 @@ class TestCase extends \Orchestra\Testbench\TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        if (in_array('iugu-sandbox-limitation', $this->getGroups(), true)) {
+            return;
+        }
+
         // pausa para evitar problemas com o Iugu
         sleep(12);
     }

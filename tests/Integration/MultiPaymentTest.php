@@ -1,14 +1,126 @@
 <?php
 
-namespace Potelo\MultiPayment\Tests\Unit;
+namespace Potelo\MultiPayment\Tests\Integration;
 
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Facades\MultiPayment;
 
 class MultiPaymentTest extends TestCase
 {
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * A consulta depende de uma fatura com Pix Automático criada no próprio
+     * teste, mas a sandbox da Iugu ainda rejeita essa criação.
+     */
+    public function testShouldGetAutomaticPixInvoice(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu não permite criar a fatura de Pix Automático necessária para a consulta.'
+        );
+
+        $reference = 'multipayment-' . now()->format('YmdHis');
+        $invoice = MultiPayment::setGateway('iugu')->newInvoice()
+            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_PIX)
+            ->addCustomer(
+                'Automatic Pix Sandbox',
+                "{$reference}@example.com",
+                '20176996915',
+                null,
+                '71',
+                '982345678'
+            )
+            ->addItem('Automatic Pix sandbox test', 100, 1)
+            ->setExpiresAt(now()->addDays(2))
+            ->addAutomaticPix(
+                AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT,
+                AutomaticPix::FREQUENCY_MONTHLY,
+                now()->addDays(3),
+                $reference,
+                now()->addYear(),
+                AutomaticPix::RETRY_POLICY_ALLOWED
+            )
+            ->addAutomaticPixCharge('Automatic Pix sandbox test')
+            ->create();
+
+        $invoiceFetched = MultiPayment::setGateway('iugu')->getInvoice($invoice->id);
+
+        $this->assertSame($invoice->id, $invoiceFetched->id);
+        $this->assertInstanceOf(AutomaticPix::class, $invoiceFetched->automaticPix);
+        $this->assertSame($invoice->automaticPix->id, $invoiceFetched->automaticPix->id);
+        $this->assertSame($reference, $invoiceFetched->automaticPix->contractReference);
+        $this->assertSame('iugu', $invoiceFetched->automaticPix->gateway);
+        $this->assertNotNull($invoiceFetched->automaticPix->original);
+    }
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * A retentativa exige uma fatura expirada após falha de débito de uma
+     * recorrência autorizada, estado que não pode ser criado na sandbox.
+     */
+    public function testShouldRescheduleAutomaticPixPayment(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu não permite criar a recorrência e a fatura expirada necessárias para a retentativa.'
+        );
+    }
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * O cancelamento exige uma recorrência autorizada criada durante o teste,
+     * mas a sandbox não oferece suporte à criação de Pix Automático.
+     */
+    public function testShouldCancelAutomaticPixRecurrence(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu não permite criar a recorrência ativa necessária para testar o cancelamento.'
+        );
+    }
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * O cancelamento de agendamento exige um débito agendado e seu end-to-end
+     * ID, que não podem ser produzidos pela sandbox no fluxo do teste.
+     */
+    public function testShouldCancelAutomaticPixScheduledPayment(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu não permite criar o pagamento agendado necessário para testar o cancelamento.'
+        );
+    }
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * A consulta exige que uma recorrência seja criada e cancelada no próprio
+     * teste; a sandbox bloqueia a etapa inicial desse fluxo.
+     */
+    public function testShouldGetAutomaticPixCancellation(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu não permite criar o cancelamento de Pix Automático necessário para a consulta.'
+        );
+    }
+
+    /**
+     * @group iugu-sandbox-limitation
+     *
+     * A listagem exige uma recorrência com cancelamentos criados durante o
+     * teste; a sandbox bloqueia a criação dessa recorrência.
+     */
+    public function testShouldListAutomaticPixCancellations(): void
+    {
+        $this->markTestSkipped(
+            'A sandbox da Iugu não permite criar o histórico de cancelamentos necessário para a listagem.'
+        );
+    }
 
     /**
      * Test if can get the invoice by id

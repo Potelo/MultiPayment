@@ -7,6 +7,9 @@ use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\AutomaticPixCharge;
+use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
@@ -171,6 +174,25 @@ class MultiPayment
     }
 
     /**
+     * Cancel an invoice.
+     *
+     * @param  Invoice|string  $invoice
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     */
+    public function cancelInvoice(Invoice|string $invoice): Invoice
+    {
+        if (is_string($invoice)) {
+            $invoiceInstance = new Invoice();
+            $invoiceInstance->id = $invoice;
+            $invoice = $invoiceInstance;
+        }
+
+        return $invoice->cancel($this->gateway);
+    }
+
+    /**
      * Charge invoice with credit card
      *
      * @param  Invoice|string  $invoice
@@ -265,6 +287,98 @@ class MultiPayment
         $customer = new Customer();
         $customer->id = $customerId;
         return $customer->setDefaultCard($creditCardId);
+    }
+
+    /**
+     * Cancela uma recorrência de Pix Automático no gateway.
+     *
+     * @param  AutomaticPix|string  $automaticPix
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     */
+    public function cancelAutomaticPixRecurrence(
+        AutomaticPix|string $automaticPix
+    ): AutomaticPixCancellation
+    {
+        if (is_string($automaticPix)) {
+            $automaticPixModel = new AutomaticPix();
+            $automaticPixModel->id = $automaticPix;
+            $automaticPix = $automaticPixModel;
+        }
+
+        return $this->gateway->cancelAutomaticPixRecurrence($automaticPix);
+    }
+
+    /**
+     * Cancela um pagamento agendado de Pix Automático no gateway.
+     *
+     * @param  AutomaticPixCharge|string  $charge
+     * @param  string|null  $endToEndId
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
+     */
+    public function cancelAutomaticPixScheduledPayment(
+        AutomaticPixCharge|string $charge,
+        ?string $endToEndId = null
+    ): AutomaticPixCancellation {
+        if (is_string($charge)) {
+            $chargeModel = new AutomaticPixCharge();
+            $chargeModel->id = $charge;
+            $chargeModel->endToEndId = $endToEndId;
+            $charge = $chargeModel;
+        }
+
+        return $this->gateway->cancelAutomaticPixScheduledPayment($charge);
+    }
+
+    /**
+     * Request a new Automatic Pix debit schedule for an expired invoice.
+     */
+    public function rescheduleAutomaticPixPayment(Invoice|string $invoice): Invoice
+    {
+        if (is_string($invoice)) {
+            $invoiceModel = new Invoice();
+            $invoiceModel->id = $invoice;
+            $invoice = $invoiceModel;
+        }
+
+        return $invoice->rescheduleAutomaticPixPayment($this->gateway);
+    }
+
+    /**
+     * Get one cancellation from an Automatic Pix recurrence.
+     */
+    public function getAutomaticPixCancellation(
+        AutomaticPixCancellation|string $cancellation,
+        ?string $cancellationId = null
+    ): AutomaticPixCancellation {
+        if (is_string($cancellation)) {
+            $recurrenceId = $cancellation;
+            $cancellation = new AutomaticPixCancellation();
+            $cancellation->recurrenceId = $recurrenceId;
+            $cancellation->id = $cancellationId;
+        }
+
+        return $this->gateway->getAutomaticPixCancellation($cancellation);
+    }
+
+    /**
+     * List cancellations from an Automatic Pix recurrence.
+     *
+     * @return AutomaticPixCancellation[]
+     */
+    public function listAutomaticPixCancellations(
+        AutomaticPix|string $automaticPix,
+        int $page = 1,
+        int $limit = 100
+    ): array {
+        if (is_string($automaticPix)) {
+            $automaticPixModel = new AutomaticPix();
+            $automaticPixModel->id = $automaticPix;
+            $automaticPix = $automaticPixModel;
+        }
+
+        return $this->gateway->listAutomaticPixCancellations($automaticPix, $page, $limit);
     }
 
 }

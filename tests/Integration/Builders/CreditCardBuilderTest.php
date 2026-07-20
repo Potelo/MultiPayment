@@ -1,6 +1,6 @@
 <?php
 
-namespace Potelo\MultiPayment\Tests\Unit\Builders;
+namespace Potelo\MultiPayment\Tests\Integration\Builders;
 
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Facades\MultiPayment;
@@ -98,7 +98,7 @@ class CreditCardBuilderTest extends TestCase
             'iugu - with hash' => [
                 'iugu',
                 [
-                    'token' => self::iuguCreditCardToken(),
+                    'createToken' => true,
                     'description' => 'Test credit card',
                     'customer' => self::customerWithoutAddress(),
                 ],
@@ -122,8 +122,8 @@ class CreditCardBuilderTest extends TestCase
         $creditCardBuilder = MultiPayment::setGateway($gateway)->newCreditCard();
         $customer = $this->createCustomer($gateway, $data['customer']);
         $creditCardBuilder->setCustomerId($customer->id);
-        if (!empty($data['token'])) {
-            $creditCardBuilder->setToken($data['token']);
+        if (!empty($data['createToken'])) {
+            $creditCardBuilder->setToken(self::iuguCreditCardToken());
         }
         if (!empty($data['description'])) {
             $creditCardBuilder->setDescription($data['description']);
