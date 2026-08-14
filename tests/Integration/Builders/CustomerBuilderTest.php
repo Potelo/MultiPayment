@@ -18,6 +18,7 @@ class CustomerBuilderTest extends TestCase
     {
         return [
             ['iugu'],
+            ['stripe'],
         ];
     }
 

@@ -29,6 +29,7 @@
         }
     },
     "minimum-stability": "dev",
+    "prefer-stable": true,
     "scripts": {
         "test": [
             "Composer\\Config::disableProcessTimeout",
@@ -45,7 +46,8 @@
         "php": "^8.0|^8.1|^8.2|^8.3",
         "illuminate/config": "^8.0|^9.0|^10.0|^11.0|^12.0",
         "illuminate/support": "^8.0|^9.0|^10.0|^11.0|^12.0",
-        "iugu/iugu": "dev-master"
+        "iugu/iugu": "dev-master",
+        "stripe/stripe-php": "^21.2"
     },
     "require-dev": {
         "phpunit/phpunit": "^9.5",

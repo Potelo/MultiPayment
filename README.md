@@ -128,15 +128,17 @@ $multiPayment->getAutomaticPixCancellation($recurrenceId, $cancellationId);
 $multiPayment->listAutomaticPixCancellations($recurrenceId, page: 1, limit: 100);
 ```
 
-##### Testes com a sandbox da Iugu
+##### Testes com as sandboxes dos gateways
 
-A suíte `Integration` reúne todos os testes que acessam a sandbox da Iugu. Cada
-teste cria durante a execução os clientes, faturas e cartões de que precisa; não
-há dependência de IDs ou outros dados previamente existentes no gateway.
+A suíte `Integration` reúne todos os testes que acessam as sandboxes reais (Iugu
+e Stripe). Cada teste cria durante a execução os clientes, faturas e cartões de
+que precisa; não há dependência de IDs ou outros dados previamente existentes no
+gateway.
 
 ```bash
 IUGU_ID=seu_account_id \
 IUGU_APIKEY=seu_api_token \
+STRIPE_APIKEY=sua_chave_sk_test \
 ./vendor/bin/phpunit -c phpunit.xml.dist --testsuite Integration
 ```
 

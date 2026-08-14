@@ -38,5 +38,10 @@ return [
             'customer_column' => 'iugu_id',
             'class' => \Potelo\MultiPayment\Gateways\IuguGateway::class,
         ],
+        'stripe' => [
+            'api_key' => env('STRIPE_APIKEY'),
+            'customer_column' => 'stripe_id',
+            'class' => \Potelo\MultiPayment\Gateways\StripeGateway::class,
+        ],
     ],
 ];

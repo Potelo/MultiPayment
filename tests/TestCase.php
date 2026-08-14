@@ -22,8 +22,12 @@ class TestCase extends \Orchestra\Testbench\TestCase
             return;
         }
 
-        // pausa para evitar problemas com o Iugu
-        sleep(12);
+        // pausa para respeitar o rate limit da sandbox da Iugu — a da Stripe não tem esse limite;
+        // o gateway do teste vem do dataProvider (primeiro argumento, posicional ou chave 'gateway')
+        $providedData = $this->getProvidedData();
+        if (($providedData[0] ?? $providedData['gateway'] ?? null) !== 'stripe') {
+            sleep(12);
+        }
     }
 
     protected function getPackageProviders($app): array

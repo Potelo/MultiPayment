@@ -32,5 +32,6 @@
         <env name="MULTIPAYMENT_DEFAULT" value="iugu" />
         <env name="IUGU_ID" value="" />
         <env name="IUGU_APIKEY" value="" />
+        <env name="STRIPE_APIKEY" value="" />
     </php>
 </phpunit>
