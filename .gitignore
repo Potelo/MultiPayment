@@ -1,6 +1,7 @@
 vendor/
 .idea/
 .vscode/
+/docs/implementacoes/
 /.phpunit.result.cache
 /.phpunit.cache/
 phpunit.xml
