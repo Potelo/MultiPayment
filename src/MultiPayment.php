@@ -286,6 +286,8 @@ class MultiPayment
     {
         $customer = new Customer();
         $customer->id = $customerId;
+        // sem isso o model resolveria o gateway default, ignorando o setGateway() desta instância
+        $customer->gateway = $this->gateway;
         return $customer->setDefaultCard($creditCardId);
     }
 

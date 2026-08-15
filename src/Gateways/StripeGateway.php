@@ -5,19 +5,25 @@ namespace Potelo\MultiPayment\Gateways;
 use Carbon\Carbon;
 use Stripe\StripeClient;
 use Stripe\Customer as StripeCustomer;
+use Stripe\PaymentIntent as StripePaymentIntent;
+use Stripe\PaymentMethod as StripePaymentMethod;
+use Stripe\Exception\CardException;
 use Stripe\Exception\ApiErrorException;
 use Stripe\Exception\ApiConnectionException;
 use Stripe\Exception\AuthenticationException;
 use Illuminate\Support\Facades\Config;
+use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -35,6 +41,19 @@ class StripeGateway implements GatewayContract
      * o Stripe armazena o telefone num campo único no formato +{país}{DDD}{número}.
      */
     private const DEFAULT_PHONE_COUNTRY_CODE = '55';
+
+    /**
+     * Expand padrão em toda leitura/criação de PaymentIntent: sem latest_charge expandido,
+     * paidAmount/refundedAmount/fee ficam vazios no parse.
+     */
+    private const PAYMENT_INTENT_EXPAND = ['latest_charge.balance_transaction'];
+
+    /** Mapa de tipos de PaymentMethod da Stripe para os métodos genéricos do pacote. */
+    private const PAYMENT_METHOD_TYPES = [
+        'card' => Invoice::PAYMENT_METHOD_CREDIT_CARD,
+        'pix' => Invoice::PAYMENT_METHOD_PIX,
+        'boleto' => Invoice::PAYMENT_METHOD_BANK_SLIP,
+    ];
 
     private StripeClient $client;
 
@@ -128,21 +147,33 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Garante o expand de tax_ids no payload sem descartar um expand vindo de
-     * gatewayAdicionalOptions — sem esse expand a Stripe não devolve os tax ids
-     * e o parse/sync de taxDocument corromperia silenciosamente.
+     * Garante os expands exigidos pelo parse no payload sem descartar um expand vindo de
+     * gatewayAdicionalOptions — sem eles a Stripe omite dados (tax ids, charge) e o
+     * parse/sync corromperia silenciosamente.
+     *
+     * @param  array  $stripeData
+     * @param  array  $expand
+     * @return array
+     */
+    private function withExpand(array $stripeData, array $expand): array
+    {
+        $stripeData['expand'] = array_values(array_unique(array_merge(
+            $stripeData['expand'] ?? [],
+            $expand
+        )));
+
+        return $stripeData;
+    }
+
+    /**
+     * Garante o expand de tax_ids no payload de customer.
      *
      * @param  array  $stripeCustomerData
      * @return array
      */
     private function withTaxIdsExpanded(array $stripeCustomerData): array
     {
-        $stripeCustomerData['expand'] = array_values(array_unique(array_merge(
-            $stripeCustomerData['expand'] ?? [],
-            ['tax_ids']
-        )));
-
-        return $stripeCustomerData;
+        return $this->withExpand($stripeCustomerData, ['tax_ids']);
     }
 
     /**
@@ -368,6 +399,7 @@ class StripeGateway implements GatewayContract
             throw new GatewayException($e->getMessage(), array_filter([
                 'type' => $error?->type,
                 'code' => $error?->code,
+                'decline_code' => $error?->decline_code ?? null,
                 'param' => $error?->param,
             ]));
         } catch (MultiPaymentException $e) {
@@ -391,10 +423,155 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     * @throws ChargingException|ModelAttributeValidationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('createInvoice');
+        $paymentMethod = $this->invoicePaymentMethod($invoice);
+        switch ($paymentMethod) {
+            case Invoice::PAYMENT_METHOD_CREDIT_CARD:
+                return $this->createCreditCardInvoice($invoice);
+            case Invoice::PAYMENT_METHOD_BANK_SLIP:
+                throw new GatewayException('The stripe gateway does not support bank slip invoices; use the iugu gateway instead');
+            default:
+                throw $this->operationNotImplemented("createInvoice with the [{$paymentMethod}] payment method");
+        }
+    }
+
+    /**
+     * Resolve o único método de pagamento da fatura — no Stripe um PaymentIntent confirmado
+     * server-side materializa a cobrança de um método só, então a fatura multi-método da
+     * Iugu não tem equivalente aqui e este gateway é restrito a um método por fatura.
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return string
+     * @throws ModelAttributeValidationException
+     */
+    private function invoicePaymentMethod(Invoice $invoice): string
+    {
+        if (!empty($invoice->availablePaymentMethods)) {
+            if (count($invoice->availablePaymentMethods) > 1) {
+                throw ModelAttributeValidationException::invalid(
+                    'Invoice',
+                    'availablePaymentMethods',
+                    'the stripe gateway supports exactly one payment method per invoice'
+                );
+            }
+
+            return reset($invoice->availablePaymentMethods);
+        }
+
+        if (!empty($invoice->creditCard)) {
+            return Invoice::PAYMENT_METHOD_CREDIT_CARD;
+        }
+
+        throw ModelAttributeValidationException::required('Invoice', 'availablePaymentMethods');
+    }
+
+    /**
+     * Cria e confirma um PaymentIntent de cartão (síncrono: succeeded ou recusa na hora).
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws ChargingException|GatewayException|ModelAttributeValidationException
+     */
+    private function createCreditCardInvoice(Invoice $invoice): Invoice
+    {
+        if (empty($invoice->creditCard)) {
+            throw ModelAttributeValidationException::required('Invoice', 'creditCard');
+        }
+
+        if (empty($invoice->creditCard->id)) {
+            if (empty($invoice->creditCard->customer)) {
+                $invoice->creditCard->customer = $invoice->customer;
+            }
+            try {
+                $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
+            } catch (GatewayException $e) {
+                // a Stripe valida o cartão já no attach: recusa nesse ponto é falha de
+                // cobrança para o consumidor, não erro genérico de gateway
+                $errors = $e->getErrors();
+                if (($errors['type'] ?? null) !== 'card_error') {
+                    throw $e;
+                }
+                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage());
+                $exception->chargeResponse = $errors;
+                $exception->reason = self::chargeFailureReason(
+                    $errors['code'] ?? null,
+                    $errors['decline_code'] ?? null
+                );
+                throw $exception;
+            }
+        }
+
+        $stripePaymentIntentData = $this->invoiceToStripeData($invoice);
+        $stripePaymentIntentData['payment_method_types'] = ['card'];
+        $stripePaymentIntentData['payment_method'] = $invoice->creditCard->id;
+        $stripePaymentIntentData['confirm'] = true;
+        $stripePaymentIntentData['off_session'] = true;
+        $stripePaymentIntentData = $this->mergeGatewayAdicionalOptions($stripePaymentIntentData, $invoice);
+
+        $stripePaymentIntent = $this->stripeChargeRequest(function () use ($stripePaymentIntentData) {
+            return $this->client->paymentIntents->create(
+                $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND)
+            );
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Converte os campos comuns da fatura para o payload de PaymentIntent da Stripe.
+     *
+     * O PaymentIntent não tem line items: os items são serializados em metadata
+     * (item_N_description/price/quantity) e reconstruídos no parseInvoice.
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return array
+     */
+    private function invoiceToStripeData(Invoice $invoice): array
+    {
+        $amount = $invoice->amount;
+        if (empty($amount)) {
+            $amount = array_sum(array_map(
+                static fn (InvoiceItem $item) => $item->price * ($item->quantity ?? 1),
+                $invoice->items ?? []
+            ));
+        }
+
+        $stripePaymentIntentData = [
+            'amount' => $amount,
+            'currency' => 'brl', // o pacote inteiro é BRL implícito (valores em centavos)
+        ];
+
+        if (!empty($invoice->customer) && !empty($invoice->customer->id)) {
+            $stripePaymentIntentData['customer'] = $invoice->customer->id;
+        }
+
+        foreach ($invoice->items ?? [] as $index => $item) {
+            $stripePaymentIntentData['metadata']["item_{$index}_description"] = $item->description;
+            $stripePaymentIntentData['metadata']["item_{$index}_price"] = $item->price;
+            $stripePaymentIntentData['metadata']["item_{$index}_quantity"] = $item->quantity;
+        }
+
+        return $stripePaymentIntentData;
+    }
+
+    /**
+     * Mescla as opções extras/override do consumidor por último, para que possam
+     * sobrescrever qualquer chave montada pelo gateway (válvula de escape do pacote).
+     *
+     * @param  array  $stripeData
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return array
+     */
+    private function mergeGatewayAdicionalOptions(array $stripeData, Invoice $invoice): array
+    {
+        foreach ($invoice->gatewayAdicionalOptions ?? [] as $option => $value) {
+            $stripeData[$option] = $value;
+        }
+
+        return $stripeData;
     }
 
     /**
@@ -402,7 +579,14 @@ class StripeGateway implements GatewayContract
      */
     public function getInvoice(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('getInvoice');
+        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice) {
+            return $this->client->paymentIntents->retrieve(
+                $invoice->id,
+                ['expand' => self::PAYMENT_INTENT_EXPAND]
+            );
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
     }
 
     /**
@@ -415,10 +599,237 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     * @throws ChargingException|ModelAttributeValidationException
      */
     public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('chargeInvoiceWithCreditCard');
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+        if (empty($invoice->creditCard)) {
+            throw ModelAttributeValidationException::required('Invoice', 'creditCard');
+        }
+        if (empty($invoice->creditCard->token) && empty($invoice->creditCard->id)) {
+            throw new ModelAttributeValidationException('Credit card token or id is required');
+        }
+
+        // id = PaymentMethod salvo no customer; token = PaymentMethod criado client-side
+        $paymentMethodId = !empty($invoice->creditCard->id)
+            ? $invoice->creditCard->id
+            : $invoice->creditCard->token;
+
+        $stripePaymentIntent = $this->stripeChargeRequest(function () use ($invoice, $paymentMethodId) {
+            $paymentMethodId = $this->resolvePaymentMethodId($paymentMethodId);
+            $stripePaymentMethod = $this->client->paymentMethods->retrieve($paymentMethodId);
+
+            // o PaymentIntent pode ter sido criado para outro método (ex.: pix expirado):
+            // é preciso aceitar cartão nos types — e, quando o PaymentMethod é salvo,
+            // vincular o customer dele ao PaymentIntent antes do confirm; um PaymentIntent
+            // que já pertence a outro customer não pode ser reatribuído silenciosamente
+            $stripePaymentIntent = $this->client->paymentIntents->retrieve($invoice->id);
+            $paymentIntentCustomer = is_object($stripePaymentIntent->customer)
+                ? $stripePaymentIntent->customer->id
+                : $stripePaymentIntent->customer;
+            if (!empty($paymentIntentCustomer)
+                && !empty($stripePaymentMethod->customer)
+                && $stripePaymentMethod->customer !== $paymentIntentCustomer) {
+                throw new GatewayException(
+                    "Credit card [{$paymentMethodId}] does not belong to customer [{$paymentIntentCustomer}]"
+                );
+            }
+
+            $updateParams = ['payment_method_types' => ['card']];
+            if (empty($paymentIntentCustomer) && !empty($stripePaymentMethod->customer)) {
+                $updateParams['customer'] = $stripePaymentMethod->customer;
+            }
+            $this->client->paymentIntents->update($invoice->id, $updateParams);
+
+            return $this->client->paymentIntents->confirm($invoice->id, [
+                'payment_method' => $paymentMethodId,
+                'off_session' => true,
+                'expand' => self::PAYMENT_INTENT_EXPAND,
+            ]);
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Converte o PaymentIntent da Stripe em uma Invoice do MultiPayment.
+     *
+     * @param  \Stripe\PaymentIntent  $stripePaymentIntent
+     * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws GatewayException
+     */
+    private function parseInvoice(StripePaymentIntent $stripePaymentIntent, ?Invoice $invoice = null): Invoice
+    {
+        $invoice = $invoice ?? new Invoice();
+
+        // sem expand o latest_charge vem só como id; um charge failed (ex.: pix expirado)
+        // não pode alimentar paidAmount/refundedAmount
+        $stripeCharge = is_object($stripePaymentIntent->latest_charge) ? $stripePaymentIntent->latest_charge : null;
+        $paidCharge = ($stripeCharge && $stripeCharge->status === 'succeeded') ? $stripeCharge : null;
+
+        $invoice->id = $stripePaymentIntent->id;
+        $invoice->gateway = 'stripe';
+        $invoice->status = self::stripeStatusToMultiPayment($stripePaymentIntent, $paidCharge);
+        $invoice->amount = $stripePaymentIntent->amount;
+        $invoice->paidAmount = $paidCharge?->amount_captured;
+        $invoice->refundedAmount = $paidCharge?->amount_refunded;
+        $invoice->paidAt = $paidCharge ? Carbon::createFromTimestamp($paidCharge->created) : null;
+        $balanceTransaction = $paidCharge?->balance_transaction;
+        // a balance transaction do cartão é assíncrona: pode vir nula logo após o confirm
+        // e preenchida num getInvoice posterior
+        $invoice->fee = is_object($balanceTransaction) ? $balanceTransaction->fee : null;
+        $invoice->createdAt = Carbon::createFromTimestamp($stripePaymentIntent->created);
+        $invoice->original = $stripePaymentIntent;
+
+        if (!empty($stripePaymentIntent->customer)) {
+            if (empty($invoice->customer)) {
+                $invoice->customer = new Customer();
+            }
+            $invoice->customer->id = is_object($stripePaymentIntent->customer)
+                ? $stripePaymentIntent->customer->id
+                : $stripePaymentIntent->customer;
+        }
+
+        $detailsType = $stripeCharge?->payment_method_details?->type;
+        if (!empty($detailsType)) {
+            $invoice->paymentMethod = self::PAYMENT_METHOD_TYPES[$detailsType] ?? null;
+        } elseif (count($stripePaymentIntent->payment_method_types ?? []) === 1) {
+            $invoice->paymentMethod = self::PAYMENT_METHOD_TYPES[$stripePaymentIntent->payment_method_types[0]] ?? null;
+        }
+        if (!empty($invoice->paymentMethod)) {
+            $invoice->availablePaymentMethods = [$invoice->paymentMethod];
+        }
+
+        // reconstrói os items serializados em metadata pelo invoiceToStripeData
+        $metadata = !empty($stripePaymentIntent->metadata) ? $stripePaymentIntent->metadata->toArray() : [];
+        $items = [];
+        for ($index = 0; isset($metadata["item_{$index}_price"]); $index++) {
+            $invoiceItem = new InvoiceItem();
+            $invoiceItem->description = $metadata["item_{$index}_description"] ?? null;
+            $invoiceItem->price = (int) $metadata["item_{$index}_price"];
+            $invoiceItem->quantity = (int) ($metadata["item_{$index}_quantity"] ?? 1);
+            $items[] = $invoiceItem;
+        }
+        if (!empty($items)) {
+            $invoice->items = $items;
+        }
+
+        $cardDetails = $stripeCharge?->payment_method_details?->card;
+        if (!empty($cardDetails)) {
+            if (empty($invoice->creditCard)) {
+                $invoice->creditCard = new CreditCard();
+            }
+            $invoice->creditCard->brand = $cardDetails->brand ?? null;
+            $invoice->creditCard->lastDigits = $cardDetails->last4 ?? null;
+            $invoice->creditCard->gateway = 'stripe';
+        }
+
+        $qrCode = $stripePaymentIntent->next_action?->pix_display_qr_code;
+        if (!empty($qrCode)) {
+            if (empty($invoice->pix)) {
+                $invoice->pix = new Pix();
+            }
+            $invoice->pix->qrCodeText = $qrCode->data ?? null;
+            $invoice->pix->qrCodeImageUrl = $qrCode->image_url_png ?? null;
+            $invoice->url = $qrCode->hosted_instructions_url ?? null;
+            $invoice->expiresAt = !empty($qrCode->expires_at)
+                ? Carbon::createFromTimestamp($qrCode->expires_at)
+                : $invoice->expiresAt;
+        } else {
+            // sem next_action de pix não há QR utilizável — limpa dados velhos de um model
+            // reutilizado (ex.: fatura pix expirada re-cobrada com cartão)
+            $invoice->pix = null;
+            $invoice->url = null;
+        }
+
+        return $invoice;
+    }
+
+    /**
+     * Deriva o status genérico do par PaymentIntent + charge — estorno não muda o status
+     * do PaymentIntent na Stripe, então ele vem do charge.
+     *
+     * @param  \Stripe\PaymentIntent  $stripePaymentIntent
+     * @param  object|null  $paidCharge
+     * @return string
+     * @throws GatewayException
+     */
+    private static function stripeStatusToMultiPayment(StripePaymentIntent $stripePaymentIntent, ?object $paidCharge): string
+    {
+        if ($paidCharge && $paidCharge->amount_refunded > 0) {
+            return $paidCharge->refunded
+                ? Invoice::STATUS_REFUNDED
+                : Invoice::STATUS_PARTIALLY_REFUNDED;
+        }
+
+        switch ($stripePaymentIntent->status) {
+            case 'succeeded':
+                return Invoice::STATUS_PAID;
+            case 'canceled':
+                return Invoice::STATUS_CANCELED;
+            // pix expirado volta a requires_payment_method (não vira canceled) e segue
+            // re-cobrável — reportar PENDING preserva essa funcionalidade
+            case 'processing':
+            case 'requires_action':
+            case 'requires_confirmation':
+            case 'requires_payment_method':
+            case 'requires_capture':
+                return Invoice::STATUS_PENDING;
+            default:
+                throw new GatewayException('Unexpected Stripe payment intent status: ' . $stripePaymentIntent->status);
+        }
+    }
+
+    /**
+     * Igual ao stripeRequest, mas traduz recusa de cartão para ChargingException com a
+     * resposta bruta e a razão normalizada (habilitador do fallback de gateway na aplicação).
+     *
+     * @param  callable  $request
+     * @return mixed
+     * @throws ChargingException|GatewayException|GatewayNotAvailableException
+     */
+    private function stripeChargeRequest(callable $request)
+    {
+        return $this->stripeRequest(function () use ($request) {
+            try {
+                return $request();
+            } catch (CardException $e) {
+                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage());
+                // array em vez do ErrorObject para manter o mesmo formato da recusa no attach
+                $exception->chargeResponse = $e->getError()?->toArray();
+                $exception->reason = self::chargeFailureReason(
+                    $e->getError()?->code,
+                    $e->getError()?->decline_code ?? null
+                );
+                throw $exception;
+            }
+        });
+    }
+
+    /**
+     * Normaliza o código de recusa da Stripe para as razões genéricas do pacote.
+     *
+     * @param  string|null  $code
+     * @param  string|null  $declineCode
+     * @return string|null
+     */
+    private static function chargeFailureReason(?string $code, ?string $declineCode): ?string
+    {
+        $normalized = [
+            'card_not_supported' => 'brand_not_supported',
+            'authentication_required' => 'authentication_required',
+            'expired_card' => 'expired_card',
+            'insufficient_funds' => 'insufficient_funds',
+            'incorrect_cvc' => 'incorrect_cvc',
+        ];
+
+        return $normalized[$declineCode ?? '']
+            ?? $normalized[$code ?? '']
+            ?? $code;
     }
 
     /**
@@ -439,10 +850,48 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     * @throws ModelAttributeValidationException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
-        throw $this->operationNotImplemented('createCreditCard');
+        if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
+            throw ModelAttributeValidationException::required('CreditCard', 'customer');
+        }
+        if (empty($creditCard->token)) {
+            // token-only: dados crus exigiriam a liberação de raw card data APIs pela
+            // Stripe e escopo PCI SAQ D — o cartão é tokenizado client-side
+            throw new GatewayException(
+                'The stripe gateway does not accept raw card data;'
+                . ' tokenize the card client-side with Stripe.js and provide the resulting id in the CreditCard token'
+            );
+        }
+
+        $stripePaymentMethod = $this->stripeRequest(function () use ($creditCard) {
+            $paymentMethodId = $this->resolvePaymentMethodId($creditCard->token);
+
+            $stripePaymentMethod = $this->client->paymentMethods->attach(
+                $paymentMethodId,
+                ['customer' => $creditCard->customer->id]
+            );
+
+            // o PaymentMethod da Stripe não tem campo de descrição — vai para metadata
+            if (!empty($creditCard->description)) {
+                $stripePaymentMethod = $this->client->paymentMethods->update(
+                    $stripePaymentMethod->id,
+                    ['metadata' => ['description' => $creditCard->description]]
+                );
+            }
+
+            if (!empty($creditCard->default)) {
+                $this->client->customers->update($creditCard->customer->id, [
+                    'invoice_settings' => ['default_payment_method' => $stripePaymentMethod->id],
+                ]);
+            }
+
+            return $stripePaymentMethod;
+        });
+
+        return $this->parseStripeCard($stripePaymentMethod, $creditCard);
     }
 
     /**
@@ -450,7 +899,14 @@ class StripeGateway implements GatewayContract
      */
     public function getCreditCard(CreditCard $creditCard): CreditCard
     {
-        throw $this->operationNotImplemented('getCreditCard');
+        $stripePaymentMethod = $this->stripeRequest(function () use ($creditCard) {
+            $stripePaymentMethod = $this->client->paymentMethods->retrieve($creditCard->id);
+            $this->assertCardBelongsToCustomer($stripePaymentMethod, $creditCard);
+
+            return $stripePaymentMethod;
+        });
+
+        return $this->parseStripeCard($stripePaymentMethod, $creditCard);
     }
 
     /**
@@ -458,7 +914,89 @@ class StripeGateway implements GatewayContract
      */
     public function deleteCreditCard(CreditCard $creditCard): void
     {
-        throw $this->operationNotImplemented('deleteCreditCard');
+        $this->stripeRequest(function () use ($creditCard) {
+            $stripePaymentMethod = $this->client->paymentMethods->retrieve($creditCard->id);
+            $this->assertCardBelongsToCustomer($stripePaymentMethod, $creditCard);
+
+            return $this->client->paymentMethods->detach($creditCard->id);
+        });
+    }
+
+    /**
+     * Resolve o token do consumidor para um id de PaymentMethod: tokens legados da Stripe
+     * (tok_...) não são utilizáveis diretamente e viram PaymentMethod antes.
+     *
+     * @param  string  $token
+     * @return string
+     * @throws ApiErrorException
+     */
+    private function resolvePaymentMethodId(string $token): string
+    {
+        if (str_starts_with($token, 'tok_')) {
+            return $this->client->paymentMethods->create([
+                'type' => 'card',
+                'card' => ['token' => $token],
+            ])->id;
+        }
+
+        return $token;
+    }
+
+    /**
+     * Espelha a semântica da Iugu (cartão buscado/excluído via customer): quando o model
+     * informa o customer, a posse do PaymentMethod é validada antes da operação.
+     *
+     * @param  \Stripe\PaymentMethod  $stripePaymentMethod
+     * @param  \Potelo\MultiPayment\Models\CreditCard  $creditCard
+     * @return void
+     * @throws GatewayException
+     */
+    private function assertCardBelongsToCustomer(StripePaymentMethod $stripePaymentMethod, CreditCard $creditCard): void
+    {
+        $customerId = $creditCard->customer->id ?? null;
+        if (!empty($customerId) && $stripePaymentMethod->customer !== $customerId) {
+            throw new GatewayException(
+                "Credit card [{$stripePaymentMethod->id}] does not belong to customer [{$customerId}]"
+            );
+        }
+    }
+
+    /**
+     * Converte o PaymentMethod de cartão da Stripe em um CreditCard do MultiPayment.
+     *
+     * @param  \Stripe\PaymentMethod  $stripePaymentMethod
+     * @param  \Potelo\MultiPayment\Models\CreditCard|null  $creditCard
+     * @return \Potelo\MultiPayment\Models\CreditCard
+     */
+    private function parseStripeCard(StripePaymentMethod $stripePaymentMethod, ?CreditCard $creditCard = null): CreditCard
+    {
+        if (is_null($creditCard)) {
+            $creditCard = new CreditCard();
+        }
+
+        $card = $stripePaymentMethod->card;
+        $creditCard->id = $stripePaymentMethod->id;
+        $creditCard->brand = $card->brand ?? null;
+        $creditCard->lastDigits = $card->last4 ?? null;
+        $creditCard->month = isset($card->exp_month)
+            ? str_pad((string) $card->exp_month, 2, '0', STR_PAD_LEFT)
+            : null;
+        $creditCard->year = isset($card->exp_year) ? (string) $card->exp_year : null;
+
+        $metadata = !empty($stripePaymentMethod->metadata) ? $stripePaymentMethod->metadata->toArray() : [];
+        $creditCard->description = $metadata['description'] ?? $creditCard->description;
+
+        if (!empty($stripePaymentMethod->billing_details?->name)) {
+            $names = explode(' ', $stripePaymentMethod->billing_details->name);
+            $creditCard->firstName = $names[array_key_first($names)] ?? null;
+            $creditCard->lastName = $names[array_key_last($names)] ?? null;
+        }
+
+        $creditCard->gateway = 'stripe';
+        $creditCard->original = $stripePaymentMethod;
+        $creditCard->createdAt = Carbon::createFromTimestamp($stripePaymentMethod->created);
+
+        return $creditCard;
     }
 
     /**

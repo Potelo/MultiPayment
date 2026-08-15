@@ -26,11 +26,18 @@ class GatewayException extends MultiPaymentException
     }
 
     /**
+     * Retorna os erros do gateway normalizados para array — podem ter sido
+     * informados como nulo, string, objeto ou array.
+     *
      * @return array
      */
     public function getErrors(): array
     {
-        return $this->errors;
+        if (is_null($this->errors)) {
+            return [];
+        }
+
+        return is_array($this->errors) ? $this->errors : (array) $this->errors;
     }
 
     /**

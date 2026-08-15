@@ -1,0 +1,549 @@
+<?php
+
+namespace Potelo\MultiPayment\Tests\Unit\Gateways;
+
+use Carbon\Carbon;
+use Stripe\ApiRequestor;
+use PHPUnit\Framework\TestCase;
+use Illuminate\Config\Repository;
+use Illuminate\Container\Container;
+use Illuminate\Support\Facades\Facade;
+use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Gateways\StripeGateway;
+use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+
+class StripeGatewayInvoiceTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $app = new Container();
+        $app->instance('config', new Repository([
+            'multi-payment.gateways.stripe.api_key' => 'sk_test_fake',
+        ]));
+        Facade::setFacadeApplication($app);
+
+        // fake vazio por padrão: teste que esquecer withResponses() estoura em vez de ir à rede
+        RecordingStripeHttpClient::withResponses([]);
+    }
+
+    protected function tearDown(): void
+    {
+        ApiRequestor::setHttpClient(null);
+        Facade::clearResolvedInstances();
+        Facade::setFacadeApplication(null);
+
+        parent::tearDown();
+    }
+
+    public function testCreatesCreditCardInvoiceChargingSavedCard(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $result = (new StripeGateway())->createInvoice($this->creditCardInvoiceModel());
+
+        $this->assertCount(1, $httpClient->calls);
+        [$method, $url, $params] = $httpClient->calls[0];
+        $this->assertSame('post', $method);
+        $this->assertSame('/v1/payment_intents', parse_url($url, PHP_URL_PATH));
+        $this->assertSame([
+            'amount' => 12345,
+            'currency' => 'brl',
+            'customer' => 'cus_fake123',
+            'metadata' => [
+                'item_0_description' => 'Assinatura mensal',
+                'item_0_price' => 12345,
+                'item_0_quantity' => 1,
+            ],
+            'payment_method_types' => ['card'],
+            'payment_method' => 'pm_fake123',
+            // o encoder do stripe-php serializa booleanos como string antes da camada HTTP
+            'confirm' => 'true',
+            'off_session' => 'true',
+            'expand' => ['latest_charge.balance_transaction'],
+        ], $params);
+
+        $this->assertSame('pi_fake123', $result->id);
+        $this->assertSame(Invoice::STATUS_PAID, $result->status);
+        $this->assertSame(12345, $result->amount);
+        $this->assertSame(12345, $result->paidAmount);
+        $this->assertSame(0, $result->refundedAmount);
+        $this->assertSame(425, $result->fee);
+        $this->assertInstanceOf(Carbon::class, $result->paidAt);
+        $this->assertSame(Invoice::PAYMENT_METHOD_CREDIT_CARD, $result->paymentMethod);
+        $this->assertSame('visa', $result->creditCard->brand);
+        $this->assertSame('4242', $result->creditCard->lastDigits);
+        $this->assertCount(1, $result->items);
+        $this->assertSame('Assinatura mensal', $result->items[0]->description);
+        $this->assertSame(12345, $result->items[0]->price);
+        $this->assertSame('stripe', $result->gateway);
+    }
+
+    public function testCreatesCreditCardInvoiceSavingTokenizedCardFirst(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->paymentMethodResponse(),
+            $this->paidCardPaymentIntentResponse(),
+        ]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->token = 'pm_fake123';
+        (new StripeGateway())->createInvoice($invoice);
+
+        $paths = array_map(static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH), $httpClient->calls);
+        $this->assertSame([
+            'post /v1/payment_methods/pm_fake123/attach',
+            'post /v1/payment_intents',
+        ], $paths);
+        $this->assertSame('cus_fake123', $httpClient->calls[0][2]['customer']);
+        $this->assertSame('pm_fake123', $httpClient->calls[1][2]['payment_method']);
+    }
+
+    public function testRejectsInvoiceWithMultiplePaymentMethods(): void
+    {
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_CREDIT_CARD, Invoice::PAYMENT_METHOD_PIX];
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('exactly one payment method');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testRejectsBankSlipInvoiceWithClearMessage(): void
+    {
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_BANK_SLIP];
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('does not support bank slip');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testPixInvoiceIsNotImplementedYet(): void
+    {
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('not yet implemented');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testCardDeclineBecomesChargingExceptionWithNormalizedReason(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            [['error' => [
+                'type' => 'card_error',
+                'code' => 'card_declined',
+                'decline_code' => 'generic_decline',
+                'message' => 'Your card was declined.',
+                'payment_intent' => ['id' => 'pi_fake123', 'object' => 'payment_intent', 'status' => 'requires_payment_method'],
+            ]], 402],
+        ]);
+
+        try {
+            (new StripeGateway())->createInvoice($this->creditCardInvoiceModel());
+            $this->fail('Expected ChargingException was not thrown');
+        } catch (ChargingException $exception) {
+            $this->assertSame('card_declined', $exception->reason);
+            $this->assertNotEmpty($exception->chargeResponse);
+            $this->assertSame('pi_fake123', $exception->chargeResponse['payment_intent']['id']);
+        }
+    }
+
+    public function testDeclineDuringCardAttachAlsoBecomesChargingException(): void
+    {
+        // a Stripe valida o cartão já no attach — recusa nesse ponto precisa manter a
+        // semântica de falha de cobrança
+        RecordingStripeHttpClient::withResponses([
+            [['error' => [
+                'type' => 'card_error',
+                'code' => 'card_declined',
+                'decline_code' => 'generic_decline',
+                'message' => 'Your card was declined.',
+            ]], 402],
+        ]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->token = 'pm_fake123';
+
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Expected ChargingException was not thrown');
+        } catch (ChargingException $exception) {
+            $this->assertSame('card_declined', $exception->reason);
+            $this->assertSame('card_error', $exception->chargeResponse['type']);
+        }
+    }
+
+    public function testAuthenticationRequiredDeclineIsNormalized(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            [['error' => [
+                'type' => 'card_error',
+                'code' => 'authentication_required',
+                'decline_code' => 'authentication_required',
+                'message' => 'This transaction requires authentication.',
+            ]], 402],
+        ]);
+
+        try {
+            (new StripeGateway())->createInvoice($this->creditCardInvoiceModel());
+            $this->fail('Expected ChargingException was not thrown');
+        } catch (ChargingException $exception) {
+            $this->assertSame('authentication_required', $exception->reason);
+        }
+    }
+
+    public function testBrandNotSupportedDeclineIsNormalized(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            [['error' => [
+                'type' => 'card_error',
+                'code' => 'card_declined',
+                'decline_code' => 'card_not_supported',
+                'message' => 'Your card is not supported.',
+            ]], 402],
+        ]);
+
+        try {
+            (new StripeGateway())->createInvoice($this->creditCardInvoiceModel());
+            $this->fail('Expected ChargingException was not thrown');
+        } catch (ChargingException $exception) {
+            $this->assertSame('brand_not_supported', $exception->reason);
+        }
+    }
+
+    public function testGetInvoiceParsesFullRefund(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 12345;
+        $response['latest_charge']['refunded'] = true;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(12345, $result->refundedAmount);
+    }
+
+    public function testGetInvoiceParsesPartialRefund(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 2345;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(Invoice::STATUS_PARTIALLY_REFUNDED, $result->status);
+        $this->assertSame(2345, $result->refundedAmount);
+    }
+
+    public function testGetInvoiceReportsExpiredPixAsPendingIgnoringFailedCharge(): void
+    {
+        // pix expirado: o PI volta a requires_payment_method com o charge em failed
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['status'] = 'requires_payment_method';
+        $response['payment_method_types'] = ['pix'];
+        $response['latest_charge']['status'] = 'failed';
+        $response['latest_charge']['paid'] = false;
+        $response['latest_charge']['amount_captured'] = 0;
+        $response['latest_charge']['payment_method_details'] = ['type' => 'pix', 'pix' => []];
+        $response['latest_charge']['balance_transaction'] = null;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(Invoice::STATUS_PENDING, $result->status);
+        $this->assertNull($result->paidAmount);
+        $this->assertNull($result->paidAt);
+        $this->assertSame(Invoice::PAYMENT_METHOD_PIX, $result->paymentMethod);
+    }
+
+    public function testGetInvoiceRejectsUnexpectedStatus(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['status'] = 'partially_funded';
+        $response['latest_charge'] = null;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('Unexpected Stripe payment intent status: partially_funded');
+
+        $this->getInvoice();
+    }
+
+    public function testChargeInvoiceWithCreditCardUpdatesIntentBeforeConfirming(): void
+    {
+        // PI sem customer + PaymentMethod salvo: o customer do dono do cartão é vinculado
+        $pendingIntent = $this->paidCardPaymentIntentResponse(status: 'requires_payment_method');
+        $pendingIntent['customer'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->paymentMethodResponse(customer: 'cus_fake123'),
+            $pendingIntent,
+            $this->paidCardPaymentIntentResponse(),
+            $this->paidCardPaymentIntentResponse(),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->id = 'pm_fake123';
+        $result = (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
+
+        $paths = array_map(static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH), $httpClient->calls);
+        $this->assertSame([
+            'get /v1/payment_methods/pm_fake123',
+            'get /v1/payment_intents/pi_fake123',
+            'post /v1/payment_intents/pi_fake123',
+            'post /v1/payment_intents/pi_fake123/confirm',
+        ], $paths);
+        $this->assertSame(
+            ['payment_method_types' => ['card'], 'customer' => 'cus_fake123'],
+            $httpClient->calls[2][2]
+        );
+        $this->assertSame('pm_fake123', $httpClient->calls[3][2]['payment_method']);
+        $this->assertSame('true', $httpClient->calls[3][2]['off_session']);
+        $this->assertSame(Invoice::STATUS_PAID, $result->status);
+    }
+
+    public function testChargeInvoiceKeepsMatchingCustomerAndOmitsItFromUpdate(): void
+    {
+        // PI e PaymentMethod do mesmo customer: nada de customer no update
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->paymentMethodResponse(customer: 'cus_fake123'),
+            $this->paidCardPaymentIntentResponse(status: 'requires_payment_method'),
+            $this->paidCardPaymentIntentResponse(),
+            $this->paidCardPaymentIntentResponse(),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->id = 'pm_fake123';
+        (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
+
+        $this->assertSame(['payment_method_types' => ['card']], $httpClient->calls[2][2]);
+    }
+
+    public function testChargeInvoiceRejectsCardFromAnotherCustomer(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            $this->paymentMethodResponse(customer: 'cus_other'),
+            $this->paidCardPaymentIntentResponse(status: 'requires_payment_method'),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->id = 'pm_fake123';
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('does not belong to customer');
+
+        (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
+    }
+
+    public function testChargeInvoiceWithLegacyTokenConvertsItIntoPaymentMethod(): void
+    {
+        $pendingIntent = $this->paidCardPaymentIntentResponse(status: 'requires_payment_method');
+        $pendingIntent['customer'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->paymentMethodResponse(),
+            $this->paymentMethodResponse(),
+            $pendingIntent,
+            $this->paidCardPaymentIntentResponse(),
+            $this->paidCardPaymentIntentResponse(),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->token = 'tok_fake123';
+        (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
+
+        $paths = array_map(static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH), $httpClient->calls);
+        $this->assertSame([
+            'post /v1/payment_methods',
+            'get /v1/payment_methods/pm_fake123',
+            'get /v1/payment_intents/pi_fake123',
+            'post /v1/payment_intents/pi_fake123',
+            'post /v1/payment_intents/pi_fake123/confirm',
+        ], $paths);
+        $this->assertSame('pm_fake123', $httpClient->calls[4][2]['payment_method']);
+    }
+
+    public function testGatewayAdicionalOptionsOverrideAndExpandIsMerged(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->gatewayAdicionalOptions = [
+            'statement_descriptor_suffix' => 'POTELO',
+            'off_session' => false,
+            'expand' => ['customer'],
+        ];
+        (new StripeGateway())->createInvoice($invoice);
+
+        $params = $httpClient->calls[0][2];
+        $this->assertSame('POTELO', $params['statement_descriptor_suffix']);
+        // a opção do consumidor vence a chave montada pelo gateway
+        $this->assertSame('false', $params['off_session']);
+        // o expand do consumidor é mesclado, não descartado
+        $this->assertSame(['customer', 'latest_charge.balance_transaction'], $params['expand']);
+    }
+
+    /**
+     * Status do PaymentIntent sem estorno mapeado para o status genérico.
+     *
+     * @return array[]
+     */
+    public static function paymentIntentStatusDataProvider(): array
+    {
+        return [
+            ['succeeded', Invoice::STATUS_PAID],
+            ['canceled', Invoice::STATUS_CANCELED],
+            ['processing', Invoice::STATUS_PENDING],
+            ['requires_action', Invoice::STATUS_PENDING],
+            ['requires_confirmation', Invoice::STATUS_PENDING],
+            ['requires_capture', Invoice::STATUS_PENDING],
+            ['requires_payment_method', Invoice::STATUS_PENDING],
+        ];
+    }
+
+    /**
+     * @dataProvider paymentIntentStatusDataProvider
+     */
+    public function testStatusMapping(string $stripeStatus, string $expected): void
+    {
+        $response = $this->paidCardPaymentIntentResponse(status: $stripeStatus);
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $this->assertSame($expected, $this->getInvoice()->status);
+    }
+
+    public function testExplicitAmountTakesPrecedenceOverItemsSum(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->amount = 999;
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(999, $httpClient->calls[0][2]['amount']);
+    }
+
+    public function testAmountFallsBackToItemsSumMultiplyingQuantity(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->items[0]->quantity = 3;
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(37035, $httpClient->calls[0][2]['amount']);
+    }
+
+    public function testChargeInvoiceWithCreditCardRequiresTokenOrId(): void
+    {
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->creditCard = new CreditCard();
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('Credit card token or id is required');
+
+        (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
+    }
+
+    private function getInvoice(): Invoice
+    {
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        return (new StripeGateway())->getInvoice($invoice);
+    }
+
+    private function creditCardInvoiceModel(): Invoice
+    {
+        $invoice = new Invoice();
+        $invoice->customer = new Customer();
+        $invoice->customer->id = 'cus_fake123';
+        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_CREDIT_CARD];
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->id = 'pm_fake123';
+        $item = new InvoiceItem();
+        $item->description = 'Assinatura mensal';
+        $item->price = 12345;
+        $item->quantity = 1;
+        $invoice->items = [$item];
+
+        return $invoice;
+    }
+
+    private function paidCardPaymentIntentResponse(string $status = 'succeeded'): array
+    {
+        return [
+            'id' => 'pi_fake123',
+            'object' => 'payment_intent',
+            'status' => $status,
+            'amount' => 12345,
+            'currency' => 'brl',
+            'customer' => 'cus_fake123',
+            'created' => 1786700000,
+            'payment_method_types' => ['card'],
+            'next_action' => null,
+            'metadata' => [
+                'item_0_description' => 'Assinatura mensal',
+                'item_0_price' => '12345',
+                'item_0_quantity' => '1',
+            ],
+            'latest_charge' => [
+                'id' => 'ch_fake123',
+                'object' => 'charge',
+                'status' => $status === 'succeeded' ? 'succeeded' : 'failed',
+                'paid' => $status === 'succeeded',
+                'amount' => 12345,
+                'amount_captured' => 12345,
+                'amount_refunded' => 0,
+                'refunded' => false,
+                'created' => 1786700010,
+                'payment_method_details' => [
+                    'type' => 'card',
+                    'card' => ['brand' => 'visa', 'last4' => '4242'],
+                ],
+                'balance_transaction' => [
+                    'id' => 'txn_fake123',
+                    'object' => 'balance_transaction',
+                    'fee' => 425,
+                    'currency' => 'brl',
+                ],
+            ],
+        ];
+    }
+
+    private function paymentMethodResponse(?string $customer = null): array
+    {
+        return [
+            'id' => 'pm_fake123',
+            'object' => 'payment_method',
+            'type' => 'card',
+            'customer' => $customer,
+            'created' => 1786700000,
+            'billing_details' => ['name' => 'Faker Teste'],
+            'metadata' => [],
+            'card' => ['brand' => 'visa', 'last4' => '4242', 'exp_month' => 8, 'exp_year' => 2027],
+        ];
+    }
+}
