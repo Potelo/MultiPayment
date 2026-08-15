@@ -1,17 +1,21 @@
 ## Introdução
 
-MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta o Iugu.
+MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atualmente suporta Iugu e Stripe.
 
 - [Introdução](#introdução)
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
+- [Gateways](#gateways)
+  - [Suporte por gateway](#suporte-por-gateway)
+  - [Particularidades do Stripe](#particularidades-do-stripe)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
     - [Pix Automático](#pix-automático)
     - [CustomerBuilder](#customerbuilder)
     - [getInvoice](#getinvoice)
+    - [Outras operações de fatura](#outras-operações-de-fatura)
     - [charge](#charge)
   - [Models](#models)
     - [Customer](#customer)
@@ -46,6 +50,9 @@ MULTIPAYMENT_DEFAULT=iugu
 #iugu  
 IUGU_ID=
 IUGU_APIKEY=
+
+#stripe
+STRIPE_APIKEY=
 ```  
 
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
@@ -67,6 +74,53 @@ Também é possível utilizar o Facade:
 ```php
 \Potelo\MultiPayment\Facades\MultiPayment::charge($options);  
 ```
+
+## Gateways
+
+### Suporte por gateway
+
+| Operação | Iugu | Stripe |
+|---|---|---|
+| Fatura com cartão de crédito | ✅ | ✅ (token-only) |
+| Fatura com pix | ✅ | ✅ |
+| Fatura com boleto | ✅ | ❌ lança `GatewayException` |
+| Fatura multi-método (`available_payment_methods` com mais de um) | ✅ | ❌ exatamente 1 método por fatura |
+| Estorno total e parcial | ✅ | ✅ |
+| Cancelamento | ✅ | ✅ |
+| Duplicar fatura (`duplicateInvoice`) | ✅ | ✅ somente pix pendente |
+| Cobrar fatura pendente com cartão | ✅ | ✅ (inclusive pix expirado) |
+| Customer (criar/atualizar/buscar) e cartões salvos | ✅ | ✅ |
+| Pix Automático | ✅ | 🚧 em desenvolvimento |
+
+### Particularidades do Stripe
+
+- **Cartão é token-only.** O Stripe não aceita dados crus de cartão pela API (exigiria
+  liberação de "raw card data" e escopo PCI SAQ D). Tokenize o cartão no navegador com
+  Stripe.js e envie o id resultante (`pm_...`) em `credit_card.token` / `CreditCard::$token`
+  (tokens legados `tok_...` também são aceitos). O caminho com `number`/`cvv` lança
+  `GatewayException` orientando o uso de token.
+- **Bandeiras aceitas no Brasil: somente Visa e Mastercard crédito.** Elo, Hipercard, Amex e
+  débito nacional não são suportados pelo Stripe BR. Para essas bandeiras, roteie a cobrança
+  para outro gateway (ex.: Iugu) — de preferência detectando a bandeira pelo BIN antes de
+  tokenizar. Para decidir o fallback programaticamente, use `ChargingException::$reason`,
+  que traz a razão normalizada da recusa (`card_declined`, `brand_not_supported`,
+  `authentication_required`, `expired_card`, `insufficient_funds`, `incorrect_cvc`...).
+  `GatewayNotAvailableException` também sinaliza "tente outro gateway".
+- **Pix exige `tax_document` do cliente** (CPF/CNPJ vai nos billing details do pagamento).
+- **`expires_at` do pix é opcional** (default do Stripe: 4 horas) e, quando informado, deve
+  ficar entre 10 segundos e 14 dias no futuro — diferente da Iugu, onde `expires_at` é a
+  data de vencimento e é obrigatório para pix/boleto.
+- **Pix expirado continua pendente e re-cobrável.** Na Iugu, fatura expirada vira `canceled`;
+  no Stripe ela volta a aguardar pagamento (`pending`) e pode ser paga com cartão via
+  `chargeInvoiceWithCreditCard` ou duplicada com `duplicateInvoice` (nova expiração;
+  a original é cancelada).
+- **`url` da fatura**: no pix é a página hospedada com instruções de pagamento
+  (`hosted_instructions_url`); em fatura de cartão é `null` — não assuma `url` preenchida
+  como na Iugu (`secure_url`).
+- **`fee` é assíncrono para cartão**: pode vir `null` logo após a cobrança e preenchido em um
+  `getInvoice` posterior.
+- **Idempotência**: envie `gateway_adicional_options['idempotency_key']` na criação de
+  faturas e estornos para repassar o cabeçalho `Idempotency-Key` da Stripe.
 
 ## Utilizando
 
@@ -168,6 +222,25 @@ $payment = new \Potelo\MultiPayment\MultiPayment('iugu');
 $foundInvoice = $payment->getInvoice($invoiceId);
 ```
 
+#### Outras operações de fatura
+```php
+$payment = new \Potelo\MultiPayment\MultiPayment('stripe');
+
+// estorno total ou parcial (valor em centavos)
+$payment->refundInvoice($invoiceId);
+$payment->refundInvoice($invoiceId, 5000);
+
+// cancelamento de fatura pendente
+$payment->cancelInvoice($invoiceId);
+
+// duplicar fatura pendente com nova expiração (no Stripe: somente pix; a original é cancelada)
+$payment->duplicateInvoice($invoiceId, \Carbon\Carbon::now()->addDays(3));
+
+// cobrar uma fatura pendente com cartão (token OU id de cartão salvo)
+$payment->chargeInvoiceWithCreditCard($invoiceId, 'pm_...');
+$payment->chargeInvoiceWithCreditCard($invoiceId, null, $creditCardId);
+```
+
 #### charge
 
 ```php  
@@ -222,7 +295,7 @@ $payment->setGateway('iugu')->charge($options);
 | `customer`                    | **obrigatório**                                                     | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`    |
 | `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                   |
 | `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`               |
-| `customer.tax_document`       |                                                                     | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
+| `customer.tax_document`       | **obrigatório** no Stripe para faturas pix                          | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
 | `birth_date`                  |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'01/01/1990'`                        |
 | `customer.phone_number`       |                                                                     | string                         | telefone                                  | `'999999999'`                         |
 | `customer.phone_area`         |                                                                     | string                         | DDD                                       | `'999999999'`                         |
@@ -238,14 +311,15 @@ $payment->setGateway('iugu')->charge($options);
 | `items.description`           | **obrigatório**                                                     | string                         | descrição do item                         | `'Produto 1'`                         |
 | `items.quantity`              | **obrigatório**                                                     | int                            | quantidade do item                        | `1`                                   |
 | `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                               |
-| `payment_method`              |                                                                     | `'credit_card'`,`'bank_slip'`  | método de pagamento                       | `'credit_card'`                       |
-| `expires_at`                  | **obrigatório** caso `payment_method` seja `'bank_slip'` ou `'pix'` | string no formato `yyyy-mm-dd` | data de expiração da fatura               | `2021-10-10`                          |
+| `payment_method`              |                                                                     | `'credit_card'`,`'bank_slip'`,`'pix'` | método de pagamento                | `'credit_card'`                       |
+| `available_payment_methods`   | **obrigatório** no Stripe (exatamente um método) quando não há `credit_card` | array de métodos               | métodos aceitos pela fatura               | `['pix']`                             |
+| `expires_at`                  | **obrigatório** na Iugu caso `payment_method` seja `'bank_slip'` ou `'pix'`; opcional no Stripe (pix — a data precisa cair na janela de 10 segundos a 14 dias no futuro) | string no formato `yyyy-mm-dd` | data de expiração da fatura               | `2021-10-10`                          |
 | `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'`          | array                          | array com os dados do cartão de crédito   | `['number' => '1234567890123456',...` |
-| `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abcdefghijklmnopqrstuvwxyz'`        |
-| `credit_card.number`          | **obrigatório** caso `token` não tenha sido informado               | string                         | número do cartão de crédito               | `'1234567890123456'`                  |
-| `credit_card.month`           | **obrigatório** caso `token` não tenha sido informado               | string                         | mês de expiração do cartão de crédito     | `'12'`                                |
-| `credit_card.year`            | **obrigatório** caso `token` não tenha sido informado               | string                         | ano de expiração do cartão de crédito     | `'2022'`                              |
-| `credit_card.cvv`             | **obrigatório** caso `token` não tenha sido informado               | string                         | código de segurança do cartão de crédito  | `'123'`                               |
+| `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abc123...'` (Iugu) / `'pm_...'` (Stripe) |
+| `credit_card.number`          | **obrigatório** caso `token` não tenha sido informado (somente Iugu — o Stripe é token-only) | string                         | número do cartão de crédito               | `'1234567890123456'`                  |
+| `credit_card.month`           | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | mês de expiração do cartão de crédito     | `'12'`                                |
+| `credit_card.year`            | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | ano de expiração do cartão de crédito     | `'2022'`                              |
+| `credit_card.cvv`             | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | código de segurança do cartão de crédito  | `'123'`                               |
 | `credit_card.first_name`      |                                                                     | string                         | primeiro nome no cartão de crédito        | `'João'`                              |
 | `credit_card.last_name`       |                                                                     | string                         | último nome no cartão de crédito          | `'Maria'`                             |
 | `bank_slip`                   |                                                                     | array                          | array com os dados do boleto              | `['expires_at' => '2022-12-31',...`   |
