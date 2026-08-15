@@ -617,6 +617,264 @@ class StripeGatewayInvoiceTest extends TestCase
         (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
     }
 
+    public function testRefundsInvoiceTotally(): void
+    {
+        $refunded = $this->paidCardPaymentIntentResponse();
+        $refunded['latest_charge']['amount_refunded'] = 12345;
+        $refunded['latest_charge']['refunded'] = true;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['id' => 're_fake123', 'object' => 'refund', 'status' => 'pending', 'amount' => 12345],
+            $refunded,
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $result = (new StripeGateway())->refundInvoice($invoice);
+
+        [$method, $url, $params] = $httpClient->calls[0];
+        $this->assertSame('post', $method);
+        $this->assertSame('/v1/refunds', parse_url($url, PHP_URL_PATH));
+        // sem amount: estorno total
+        $this->assertSame(['payment_intent' => 'pi_fake123'], $params);
+        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(12345, $result->refundedAmount);
+    }
+
+    public function testRefundsInvoicePartially(): void
+    {
+        $refunded = $this->paidCardPaymentIntentResponse();
+        $refunded['latest_charge']['amount_refunded'] = 2345;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['id' => 're_fake123', 'object' => 'refund', 'status' => 'pending', 'amount' => 2345],
+            $refunded,
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->refundedAmount = 2345;
+        $result = (new StripeGateway())->refundInvoice($invoice);
+
+        $this->assertSame(
+            ['payment_intent' => 'pi_fake123', 'amount' => 2345],
+            $httpClient->calls[0][2]
+        );
+        $this->assertSame(Invoice::STATUS_PARTIALLY_REFUNDED, $result->status);
+        $this->assertSame(2345, $result->refundedAmount);
+    }
+
+    public function testRefundInvoiceRequiresId(): void
+    {
+        $this->expectException(ModelAttributeValidationException::class);
+
+        (new StripeGateway())->refundInvoice(new Invoice());
+    }
+
+    public function testDuplicatesPendingPixInvoiceCancelingTheOriginal(): void
+    {
+        $newIntent = $this->pendingPixPaymentIntentResponse();
+        $newIntent['id'] = 'pi_fake456';
+        $canceled = $this->pendingPixPaymentIntentResponse();
+        $canceled['status'] = 'canceled';
+        $canceled['next_action'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->pendingPixPaymentIntentResponse(),
+            $this->duplicableCustomerResponse(),
+            $newIntent,
+            $canceled,
+        ]);
+
+        $expiresAt = Carbon::now()->addDay();
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $result = (new StripeGateway())->duplicateInvoice($invoice, $expiresAt);
+
+        $paths = array_map(static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH), $httpClient->calls);
+        $this->assertSame([
+            'get /v1/payment_intents/pi_fake123',
+            'get /v1/customers/cus_fake123',
+            'post /v1/payment_intents',
+            'post /v1/payment_intents/pi_fake123/cancel',
+        ], $paths);
+
+        // payload completo; o metadata é o da fatura original preservado (valores string,
+        // como a Stripe devolve), não a reserialização dos items
+        $this->assertSame([
+            'amount' => 12345,
+            'currency' => 'brl',
+            'customer' => 'cus_fake123',
+            'metadata' => [
+                'item_0_description' => 'Assinatura mensal',
+                'item_0_price' => '12345',
+                'item_0_quantity' => '1',
+            ],
+            'payment_method_types' => ['pix'],
+            'payment_method_data' => [
+                'type' => 'pix',
+                'billing_details' => [
+                    'name' => 'Fake Customer',
+                    'email' => 'email@exemplo.com',
+                    'tax_id' => '20176996915',
+                ],
+            ],
+            'confirm' => 'true',
+            'payment_method_options' => ['pix' => ['expires_at' => $expiresAt->getTimestamp()]],
+            'expand' => ['latest_charge.balance_transaction'],
+        ], $httpClient->calls[2][2]);
+
+        $this->assertSame('pi_fake456', $result->id);
+        $this->assertSame(Invoice::STATUS_PENDING, $result->status);
+    }
+
+    public function testDuplicateFallsBackToOriginalBillingTaxIdWhenCustomerHasNone(): void
+    {
+        $original = $this->pendingPixPaymentIntentResponse();
+        $original['payment_method'] = [
+            'id' => 'pm_pix_fake',
+            'object' => 'payment_method',
+            'type' => 'pix',
+            'billing_details' => ['name' => 'Fake Customer', 'email' => 'email@exemplo.com', 'tax_id' => '201.769.969-15'],
+        ];
+        $customer = $this->duplicableCustomerResponse();
+        $customer['tax_ids']['data'] = [];
+        $newIntent = $this->pendingPixPaymentIntentResponse();
+        $newIntent['id'] = 'pi_fake456';
+        $canceled = $this->pendingPixPaymentIntentResponse();
+        $canceled['status'] = 'canceled';
+        $canceled['next_action'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([$original, $customer, $newIntent, $canceled]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+
+        $this->assertSame(
+            '201.769.969-15',
+            $httpClient->calls[2][2]['payment_method_data']['billing_details']['tax_id']
+        );
+    }
+
+    public function testDuplicateWithoutAnyTaxDocumentFailsWithoutCancelingTheOriginal(): void
+    {
+        $customer = $this->duplicableCustomerResponse();
+        $customer['tax_ids']['data'] = [];
+        $original = $this->pendingPixPaymentIntentResponse();
+        $original['payment_method'] = null;
+        $original['last_payment_error'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([$original, $customer]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        try {
+            (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+            $this->fail('Expected ModelAttributeValidationException was not thrown');
+        } catch (ModelAttributeValidationException $exception) {
+            // a original não pode ter sido cancelada — só os dois GETs aconteceram
+            $this->assertCount(2, $httpClient->calls);
+        }
+    }
+
+    public function testDuplicatePassesGatewayOptionsToTheNewIntent(): void
+    {
+        $newIntent = $this->pendingPixPaymentIntentResponse();
+        $newIntent['id'] = 'pi_fake456';
+        $canceled = $this->pendingPixPaymentIntentResponse();
+        $canceled['status'] = 'canceled';
+        $canceled['next_action'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->pendingPixPaymentIntentResponse(),
+            $this->duplicableCustomerResponse(),
+            $newIntent,
+            $canceled,
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay(), ['statement_descriptor' => 'DUP']);
+
+        $this->assertSame('DUP', $httpClient->calls[2][2]['statement_descriptor']);
+    }
+
+    public function testDuplicateReportsTheNewInvoiceWhenCancelingTheOriginalFails(): void
+    {
+        $newIntent = $this->pendingPixPaymentIntentResponse();
+        $newIntent['id'] = 'pi_fake456';
+        RecordingStripeHttpClient::withResponses([
+            $this->pendingPixPaymentIntentResponse(),
+            $this->duplicableCustomerResponse(),
+            $newIntent,
+            [['error' => [
+                'type' => 'invalid_request_error',
+                'code' => 'payment_intent_unexpected_state',
+                'message' => 'This PaymentIntent could not be canceled.',
+            ]], 400],
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('Invoice duplicated as [pi_fake456]');
+
+        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+    }
+
+    public function testDuplicateRejectsPaidInvoice(): void
+    {
+        RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('Only pending invoices can be duplicated');
+
+        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+    }
+
+    public function testDuplicateRejectsNonPixInvoice(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse(status: 'requires_payment_method');
+        $response['latest_charge'] = null;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('Only pix invoices can be duplicated');
+
+        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+    }
+
+    public function testDuplicateInvoiceRequiresId(): void
+    {
+        $this->expectException(ModelAttributeValidationException::class);
+
+        (new StripeGateway())->duplicateInvoice(new Invoice(), Carbon::now()->addDay());
+    }
+
+    private function duplicableCustomerResponse(): array
+    {
+        return [
+            'id' => 'cus_fake123',
+            'object' => 'customer',
+            'name' => 'Fake Customer',
+            'email' => 'email@exemplo.com',
+            'phone' => null,
+            'address' => null,
+            'metadata' => [],
+            'created' => 1786700000,
+            'invoice_settings' => ['default_payment_method' => null],
+            'tax_ids' => [
+                'object' => 'list',
+                'data' => [
+                    ['id' => 'txi_fake1', 'object' => 'tax_id', 'type' => 'br_cpf', 'value' => '20176996915'],
+                ],
+            ],
+        ];
+    }
+
     private function getInvoice(): Invoice
     {
         $invoice = new Invoice();

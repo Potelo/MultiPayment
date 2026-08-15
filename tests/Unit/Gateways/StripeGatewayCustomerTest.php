@@ -278,9 +278,9 @@ class StripeGatewayCustomerTest extends TestCase
         RecordingStripeHttpClient::withResponses([]);
 
         $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('Operation [refundInvoice] is not yet implemented by the stripe gateway');
+        $this->expectExceptionMessage('Operation [rescheduleAutomaticPixPayment] is not yet implemented by the stripe gateway');
 
-        (new StripeGateway())->refundInvoice(new Invoice());
+        (new StripeGateway())->rescheduleAutomaticPixPayment(new Invoice());
     }
 
     public function testAuthenticationErrorBecomesGatewayNotAvailable(): void

@@ -40,6 +40,48 @@ class MultiPaymentGatewayRoutingTest extends TestCase
         parent::tearDown();
     }
 
+    public function testDuplicateInvoiceUsesTheSelectedGatewayInsteadOfTheDefault(): void
+    {
+        $pendingPix = [
+            'id' => 'pi_fake123',
+            'object' => 'payment_intent',
+            'status' => 'requires_action',
+            'amount' => 5000,
+            'currency' => 'brl',
+            'customer' => 'cus_fake123',
+            'created' => 1786700000,
+            'payment_method_types' => ['pix'],
+            'next_action' => null,
+            'metadata' => [],
+            'latest_charge' => null,
+        ];
+        $customer = [
+            'id' => 'cus_fake123',
+            'object' => 'customer',
+            'name' => 'Fake Customer',
+            'email' => 'email@exemplo.com',
+            'phone' => null,
+            'address' => null,
+            'metadata' => [],
+            'created' => 1786700000,
+            'invoice_settings' => ['default_payment_method' => null],
+            'tax_ids' => ['object' => 'list', 'data' => [
+                ['id' => 'txi_fake1', 'object' => 'tax_id', 'type' => 'br_cpf', 'value' => '20176996915'],
+            ]],
+        ];
+        $newIntent = array_merge($pendingPix, ['id' => 'pi_fake456']);
+        $canceled = array_merge($pendingPix, ['status' => 'canceled']);
+        $httpClient = RecordingStripeHttpClient::withResponses([$pendingPix, $customer, $newIntent, $canceled]);
+
+        $invoice = (new MultiPayment('stripe'))
+            ->duplicateInvoice('pi_fake123', \Carbon\Carbon::now()->addDay());
+
+        // antes do fix, o model resolveria o gateway default (iugu)
+        $this->assertStringContainsString('api.stripe.com/v1/payment_intents/pi_fake123', $httpClient->calls[0][1]);
+        $this->assertSame('pi_fake456', $invoice->id);
+        $this->assertSame('stripe', $invoice->gateway);
+    }
+
     public function testSetDefaultCardUsesTheSelectedGatewayInsteadOfTheDefault(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([

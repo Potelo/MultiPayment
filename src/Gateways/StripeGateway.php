@@ -579,6 +579,24 @@ class StripeGateway implements GatewayContract
     }
 
     /**
+     * Recupera o CPF/CNPJ dos billing_details do PaymentMethod de um PaymentIntent pix —
+     * o PaymentMethod pode já ter sido consumido (pix expirado), sobrando só a cópia
+     * embutida em last_payment_error.
+     *
+     * @param  \Stripe\PaymentIntent  $stripePaymentIntent  com `payment_method` expandido
+     * @return string|null
+     */
+    private function pixBillingTaxId(StripePaymentIntent $stripePaymentIntent): ?string
+    {
+        $stripePaymentMethod = $stripePaymentIntent->payment_method;
+        if (is_object($stripePaymentMethod) && !empty($stripePaymentMethod->billing_details?->tax_id)) {
+            return $stripePaymentMethod->billing_details->tax_id;
+        }
+
+        return $stripePaymentIntent->last_payment_error?->payment_method?->billing_details?->tax_id ?? null;
+    }
+
+    /**
      * Extrai a idempotency key das opções do consumidor para enviá-la como cabeçalho da
      * requisição (Idempotency-Key) — como parâmetro do payload a API a rejeitaria.
      *
@@ -668,10 +686,28 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     * @throws ModelAttributeValidationException
      */
     public function refundInvoice(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('refundInvoice');
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+
+        // mesma semântica da Iugu: refundedAmount preenchido = estorno parcial; vazio = total
+        $stripeRefundData = ['payment_intent' => $invoice->id];
+        if (!empty($invoice->refundedAmount)) {
+            $stripeRefundData['amount'] = $invoice->refundedAmount;
+        }
+        $stripeRefundData = $this->mergeGatewayAdicionalOptions($stripeRefundData, $invoice);
+        $requestOptions = $this->extractIdempotencyKey($stripeRefundData);
+
+        $this->stripeRequest(function () use ($stripeRefundData, $requestOptions) {
+            return $this->client->refunds->create($stripeRefundData, $requestOptions);
+        });
+
+        // o refund não devolve o PaymentIntent — refetch para reparse com o charge atualizado
+        return $this->getInvoice($invoice);
     }
 
     /**
@@ -911,10 +947,80 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * O PaymentIntent não tem duplicate nativo: a fatura nova é criada com os dados da
+     * original (customer, items, valor) e a nova expiração, e só então a original é
+     * cancelada — se a criação falhar, o consumidor não fica sem fatura nenhuma.
+     * Restrito a faturas pix pendentes (cartão é síncrono, não há o que duplicar).
+     *
+     * @throws ModelAttributeValidationException
      */
     public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
     {
-        throw $this->operationNotImplemented('duplicateInvoice');
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+
+        $original = $this->stripeRequest(function () use ($invoice) {
+            return $this->client->paymentIntents->retrieve(
+                $invoice->id,
+                ['expand' => array_merge(self::PAYMENT_INTENT_EXPAND, ['payment_method'])]
+            );
+        });
+        $parsedOriginal = $this->parseInvoice($original, new Invoice());
+
+        if ($parsedOriginal->status !== Invoice::STATUS_PENDING) {
+            throw new GatewayException(
+                "Only pending invoices can be duplicated on the stripe gateway; invoice [{$invoice->id}] is [{$parsedOriginal->status}]"
+            );
+        }
+        if ($parsedOriginal->paymentMethod !== Invoice::PAYMENT_METHOD_PIX) {
+            throw new GatewayException('Only pix invoices can be duplicated on the stripe gateway');
+        }
+        if (empty($parsedOriginal->customer) || empty($parsedOriginal->customer->id)) {
+            throw new GatewayException(
+                "Invoice [{$invoice->id}] has no customer on the stripe gateway and cannot be duplicated"
+            );
+        }
+
+        // o pix precisa dos billing_details (nome, e-mail, CPF/CNPJ), que vivem no customer
+        $customer = new Customer();
+        $customer->id = $parsedOriginal->customer->id;
+        $customer = $this->getCustomer($customer);
+        if (empty($customer->taxDocument)) {
+            // a original pode ter sido criada com o CPF/CNPJ só no model (billing_details
+            // do PaymentMethod), sem tax id no customer da Stripe — recupera de lá
+            $customer->taxDocument = $this->pixBillingTaxId($original);
+        }
+
+        $duplicated = new Invoice();
+        $duplicated->customer = $customer;
+        $duplicated->amount = $parsedOriginal->amount;
+        $duplicated->items = $parsedOriginal->items;
+        $duplicated->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+        $duplicated->expiresAt = $expiresAt;
+        // preserva o metadata da original (inclusive chaves custom do consumidor);
+        // as gatewayOptions do chamador vêm por último e podem sobrescrever
+        $originalMetadata = !empty($original->metadata) ? $original->metadata->toArray() : [];
+        if (!empty($originalMetadata)) {
+            $duplicated->gatewayAdicionalOptions['metadata'] = $originalMetadata;
+        }
+        if (!empty($gatewayOptions)) {
+            $duplicated->gatewayAdicionalOptions = array_merge($duplicated->gatewayAdicionalOptions, $gatewayOptions);
+        }
+        $duplicated = $this->createPixInvoice($duplicated);
+
+        try {
+            $this->cancelInvoice($parsedOriginal);
+        } catch (MultiPaymentException $e) {
+            // a duplicata já existe — propaga o id dela para o consumidor não a perder
+            throw new GatewayException(
+                "Invoice duplicated as [{$duplicated->id}] but the original [{$invoice->id}] could not be canceled: "
+                . $e->getMessage()
+            );
+        }
+
+        return $duplicated;
     }
 
     /**

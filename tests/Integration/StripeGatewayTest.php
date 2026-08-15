@@ -256,6 +256,95 @@ class StripeGatewayTest extends TestCase
     }
 
     /**
+     * Deve estornar integralmente uma fatura de cartão paga.
+     *
+     * @dataProvider stripeGatewayDataProvider
+     *
+     * @return void
+     */
+    public function testShouldRefundCreditCardInvoiceTotally($gateway)
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
+            ->addItem('Assinatura mensal', 9900, 1)
+            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_CREDIT_CARD])
+            ->addCreditCardToken('pm_card_visa')
+            ->create();
+
+        $this->assertEquals(Invoice::STATUS_PAID, $invoice->status);
+
+        $invoiceRefunded = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id);
+        $this->assertEquals(Invoice::STATUS_REFUNDED, $invoiceRefunded->status);
+        $this->assertEquals(9900, $invoiceRefunded->refundedAmount);
+    }
+
+    /**
+     * Deve estornar parcialmente uma fatura pix paga.
+     *
+     * @dataProvider stripeGatewayDataProvider
+     *
+     * @return void
+     */
+    public function testShouldRefundPixInvoicePartially($gateway)
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer($customerData['name'], 'succeed_immediately@example.com', $customerData['taxDocument'])
+            ->addItem('Assinatura mensal', 12345, 1)
+            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->create();
+
+        $invoicePaid = $this->waitForInvoiceCondition($gateway, $invoice->id, function (Invoice $fetched) {
+            return $fetched->status === Invoice::STATUS_PAID;
+        });
+        $this->assertEquals(Invoice::STATUS_PAID, $invoicePaid->status);
+
+        $invoiceRefunded = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id, 2345);
+        $this->assertEquals(Invoice::STATUS_PARTIALLY_REFUNDED, $invoiceRefunded->status);
+        $this->assertEquals(2345, $invoiceRefunded->refundedAmount);
+        $this->assertEquals(12345, $invoiceRefunded->paidAmount);
+    }
+
+    /**
+     * Deve duplicar uma fatura pix pendente com nova expiração, cancelando a original.
+     *
+     * @dataProvider stripeGatewayDataProvider
+     *
+     * @return void
+     */
+    public function testShouldDuplicatePendingPixInvoice($gateway)
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
+            ->addItem('Assinatura mensal', 5000, 1)
+            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setExpiresAt(\Carbon\Carbon::now()->addHour())
+            ->create();
+
+        $this->assertEquals(Invoice::STATUS_PENDING, $invoice->status);
+
+        $newExpiresAt = \Carbon\Carbon::now()->addDays(2);
+        $invoiceDuplicated = MultiPayment::setGateway($gateway)
+            ->duplicateInvoice($invoice->id, $newExpiresAt);
+
+        $this->assertNotEquals($invoice->id, $invoiceDuplicated->id);
+        $this->assertEquals(Invoice::STATUS_PENDING, $invoiceDuplicated->status);
+        $this->assertEquals(5000, $invoiceDuplicated->amount);
+        $this->assertNotNull($invoiceDuplicated->pix->qrCodeText);
+        $this->assertEqualsWithDelta(
+            $newExpiresAt->getTimestamp(),
+            $invoiceDuplicated->expiresAt->getTimestamp(),
+            60
+        );
+        $this->assertEquals($invoice->customer->id, $invoiceDuplicated->customer->id);
+
+        $originalFetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
+        $this->assertEquals(Invoice::STATUS_CANCELED, $originalFetched->status);
+    }
+
+    /**
      * Boleto está fora do escopo do gateway Stripe e deve falhar com mensagem específica.
      *
      * @dataProvider stripeGatewayDataProvider

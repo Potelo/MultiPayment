@@ -131,6 +131,11 @@ class MultiPayment
             $invoice = $invoiceInstance;
         }
 
+        // sem isso o model resolveria o gateway default, ignorando o setGateway() desta instância
+        if (empty($invoice->gateway)) {
+            $invoice->gateway = $this->gateway;
+        }
+
         return $invoice->duplicate($expiresAt, $gatewayOptions);
     }
 
@@ -156,7 +161,7 @@ class MultiPayment
      * @param  string  $id
      * @param  int|null  $partialValueCents
      *
-     * @return void
+     * @return \Potelo\MultiPayment\Models\Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
     public function refundInvoice(string $id, ?int $partialValueCents = null): Invoice
