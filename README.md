@@ -148,7 +148,9 @@ Confira `src/MultiPayment/Builders/InvoiceBuilder.php` para saber quais métodos
 
 #### Pix Automático
 
-O Pix Automático está disponível no gateway Iugu e é configurado como parte da fatura:
+O Pix Automático está disponível no gateway Iugu. No Stripe o suporte está **pendente** (aguardando a habilitação do recurso na conta): todas as operações de Pix Automático — inclusive criar fatura com `automatic_pix` — lançam `GatewayException` com mensagem "not yet implemented" até que essa integração seja concluída.
+
+Na Iugu, ele é configurado como parte da fatura:
 
 ```php
 use Potelo\MultiPayment\Models\AutomaticPix;
@@ -196,7 +198,7 @@ STRIPE_APIKEY=sua_chave_sk_test \
 ./vendor/bin/phpunit -c phpunit.xml.dist --testsuite Integration
 ```
 
-Atualmente, a sandbox responde que Pix Automático não está disponível no modo de
+Atualmente, a sandbox da Iugu responde que Pix Automático não está disponível no modo de
 teste. Os cenários que dependem desse recurso estão identificados com o grupo
 `iugu-sandbox-limitation` e usam um `skip` explícito com a razão da limitação. Os
 testes permanecem junto das classes responsáveis pelo builder e pela facade para

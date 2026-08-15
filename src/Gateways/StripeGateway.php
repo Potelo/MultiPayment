@@ -427,6 +427,12 @@ class StripeGateway implements GatewayContract
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
+        // sem esta guarda a fatura seria criada como pix comum, descartando a recorrência
+        // silenciosamente — o suporte a Pix Automático no Stripe ainda não foi construído
+        if (!empty($invoice->automaticPix)) {
+            throw $this->operationNotImplemented('createInvoice with automatic pix');
+        }
+
         $paymentMethod = $this->invoicePaymentMethod($invoice);
         switch ($paymentMethod) {
             case Invoice::PAYMENT_METHOD_CREDIT_CARD:

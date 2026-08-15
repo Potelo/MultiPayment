@@ -173,6 +173,17 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertNull($result->paidAmount);
     }
 
+    public function testRejectsInvoiceWithAutomaticPixUntilSupported(): void
+    {
+        $invoice = $this->pixInvoiceModel();
+        $invoice->automaticPix = new \Potelo\MultiPayment\Models\AutomaticPix();
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessage('Operation [createInvoice with automatic pix] is not yet implemented');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
     public function testPixInvoiceRequiresCustomerTaxDocument(): void
     {
         $invoice = $this->pixInvoiceModel();
