@@ -128,15 +128,165 @@ class StripeGatewayInvoiceTest extends TestCase
         (new StripeGateway())->createInvoice($invoice);
     }
 
-    public function testPixInvoiceIsNotImplementedYet(): void
+    public function testCreatesPixInvoiceFullyServerSideAndParsesQrCode(): void
     {
-        $invoice = $this->creditCardInvoiceModel();
-        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('not yet implemented');
+        $invoice = $this->pixInvoiceModel();
+        // o parse sobrescreve expiresAt com o valor devolvido pela Stripe — captura antes
+        $requestedExpiresAt = $invoice->expiresAt->getTimestamp();
+        $result = (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertCount(1, $httpClient->calls);
+        [$method, $url, $params] = $httpClient->calls[0];
+        $this->assertSame('post', $method);
+        $this->assertSame('/v1/payment_intents', parse_url($url, PHP_URL_PATH));
+        $this->assertSame([
+            'amount' => 12345,
+            'currency' => 'brl',
+            'customer' => 'cus_fake123',
+            'metadata' => [
+                'item_0_description' => 'Assinatura mensal',
+                'item_0_price' => 12345,
+                'item_0_quantity' => 1,
+            ],
+            'payment_method_types' => ['pix'],
+            'payment_method_data' => [
+                'type' => 'pix',
+                'billing_details' => [
+                    'name' => 'Fake Customer',
+                    'email' => 'email@exemplo.com',
+                    'tax_id' => '20176996915',
+                ],
+            ],
+            'confirm' => 'true',
+            'payment_method_options' => ['pix' => ['expires_at' => $requestedExpiresAt]],
+            'expand' => ['latest_charge.balance_transaction'],
+        ], $params);
+
+        $this->assertSame(Invoice::STATUS_PENDING, $result->status);
+        $this->assertSame(Invoice::PAYMENT_METHOD_PIX, $result->paymentMethod);
+        $this->assertSame('00020126pixcopiaecola', $result->pix->qrCodeText);
+        $this->assertSame('https://qr.stripe.com/test.png', $result->pix->qrCodeImageUrl);
+        $this->assertSame('https://payments.stripe.com/qr/instructions/test', $result->url);
+        $this->assertSame(1786800000, $result->expiresAt->getTimestamp());
+        $this->assertNull($result->paidAmount);
+    }
+
+    public function testPixInvoiceRequiresCustomerTaxDocument(): void
+    {
+        $invoice = $this->pixInvoiceModel();
+        $invoice->customer->taxDocument = null;
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('taxDocument');
 
         (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testPixInvoiceRequiresCustomer(): void
+    {
+        $invoice = $this->pixInvoiceModel();
+        $invoice->customer = null;
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('taxDocument');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testPixInvoiceWithoutExpiresAtOmitsPaymentMethodOptions(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->expiresAt = null;
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertArrayNotHasKey('payment_method_options', $httpClient->calls[0][2]);
+    }
+
+    public function testPixInvoiceRejectsExpiresAtOutsideStripeWindow(): void
+    {
+        $invoice = $this->pixInvoiceModel();
+        $invoice->expiresAt = Carbon::now()->subMinute();
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('more than 10 seconds and less than 14 days');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testPixInvoiceBillingDetailsOmitsMissingNameAndEmail(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->customer->name = null;
+        $invoice->customer->email = null;
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(
+            ['tax_id' => '20176996915'],
+            $httpClient->calls[0][2]['payment_method_data']['billing_details']
+        );
+    }
+
+    public function testIdempotencyKeyFromGatewayAdicionalOptionsBecomesRequestHeader(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->gatewayAdicionalOptions = ['idempotency_key' => 'chave-unica-123'];
+        (new StripeGateway())->createInvoice($invoice);
+
+        // a chave não pode vazar como parâmetro do payload (a API a rejeitaria)
+        $this->assertArrayNotHasKey('idempotency_key', $httpClient->calls[0][2]);
+    }
+
+    public function testCancelsPendingInvoice(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse(status: 'canceled');
+        $response['latest_charge'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([$response]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $result = (new StripeGateway())->cancelInvoice($invoice);
+
+        [$method, $url, $params] = $httpClient->calls[0];
+        $this->assertSame('post', $method);
+        $this->assertSame('/v1/payment_intents/pi_fake123/cancel', parse_url($url, PHP_URL_PATH));
+        $this->assertSame(['expand' => ['latest_charge.balance_transaction']], $params);
+        $this->assertSame(Invoice::STATUS_CANCELED, $result->status);
+    }
+
+    public function testCancelPaidInvoiceBecomesGatewayException(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            [['error' => [
+                'type' => 'invalid_request_error',
+                'code' => 'payment_intent_unexpected_state',
+                'message' => 'This PaymentIntent could not be canceled because it has a status of succeeded.',
+            ]], 400],
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        try {
+            (new StripeGateway())->cancelInvoice($invoice);
+            $this->fail('Expected GatewayException was not thrown');
+        } catch (GatewayException $exception) {
+            $this->assertSame('payment_intent_unexpected_state', $exception->getErrors()['code']);
+        }
+    }
+
+    public function testCancelInvoiceRequiresId(): void
+    {
+        $this->expectException(ModelAttributeValidationException::class);
+
+        (new StripeGateway())->cancelInvoice(new Invoice());
     }
 
     public function testCardDeclineBecomesChargingExceptionWithNormalizedReason(): void
@@ -490,6 +640,38 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->items = [$item];
 
         return $invoice;
+    }
+
+    private function pixInvoiceModel(): Invoice
+    {
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->creditCard = null;
+        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+        $invoice->customer->name = 'Fake Customer';
+        $invoice->customer->email = 'email@exemplo.com';
+        $invoice->customer->taxDocument = '20176996915';
+        $invoice->expiresAt = Carbon::now()->addHour();
+
+        return $invoice;
+    }
+
+    private function pendingPixPaymentIntentResponse(): array
+    {
+        $response = $this->paidCardPaymentIntentResponse(status: 'requires_action');
+        $response['payment_method_types'] = ['pix'];
+        $response['latest_charge'] = null;
+        $response['next_action'] = [
+            'type' => 'pix_display_qr_code',
+            'pix_display_qr_code' => [
+                'data' => '00020126pixcopiaecola',
+                'image_url_png' => 'https://qr.stripe.com/test.png',
+                'image_url_svg' => 'https://qr.stripe.com/test.svg',
+                'expires_at' => 1786800000,
+                'hosted_instructions_url' => 'https://payments.stripe.com/qr/instructions/test',
+            ],
+        ];
+
+        return $response;
     }
 
     private function paidCardPaymentIntentResponse(string $status = 'succeeded'): array

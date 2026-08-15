@@ -431,6 +431,8 @@ class StripeGateway implements GatewayContract
         switch ($paymentMethod) {
             case Invoice::PAYMENT_METHOD_CREDIT_CARD:
                 return $this->createCreditCardInvoice($invoice);
+            case Invoice::PAYMENT_METHOD_PIX:
+                return $this->createPixInvoice($invoice);
             case Invoice::PAYMENT_METHOD_BANK_SLIP:
                 throw new GatewayException('The stripe gateway does not support bank slip invoices; use the iugu gateway instead');
             default:
@@ -510,14 +512,89 @@ class StripeGateway implements GatewayContract
         $stripePaymentIntentData['confirm'] = true;
         $stripePaymentIntentData['off_session'] = true;
         $stripePaymentIntentData = $this->mergeGatewayAdicionalOptions($stripePaymentIntentData, $invoice);
+        $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
 
-        $stripePaymentIntent = $this->stripeChargeRequest(function () use ($stripePaymentIntentData) {
+        $stripePaymentIntent = $this->stripeChargeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
             return $this->client->paymentIntents->create(
-                $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND)
+                $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND),
+                $requestOptions
             );
         });
 
         return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Cria e confirma um PaymentIntent de pix 100% server-side. A fatura volta pendente
+     * com o QR code em next_action; o pagamento é assíncrono (acompanhar via getInvoice).
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws GatewayException|ModelAttributeValidationException
+     */
+    private function createPixInvoice(Invoice $invoice): Invoice
+    {
+        // o pix exige CPF/CNPJ no billing_details em produção — falhar cedo evita um
+        // erro obscuro da API (a sandbox não valida, produção sim)
+        if (empty($invoice->customer) || empty($invoice->customer->taxDocument)) {
+            throw ModelAttributeValidationException::required('Customer', 'taxDocument');
+        }
+
+        $stripePaymentIntentData = $this->invoiceToStripeData($invoice);
+        $stripePaymentIntentData['payment_method_types'] = ['pix'];
+        $stripePaymentIntentData['payment_method_data'] = [
+            'type' => 'pix',
+            'billing_details' => array_filter([
+                'name' => $invoice->customer->name,
+                'email' => $invoice->customer->email,
+                'tax_id' => $invoice->customer->taxDocument,
+            ]),
+        ];
+        $stripePaymentIntentData['confirm'] = true;
+        if (!empty($invoice->expiresAt)) {
+            // janela aceita pela Stripe: mais de 10 segundos e menos de 14 dias no futuro.
+            // Na Iugu expires_at é due_date (date-only, "vence hoje" é válido) — falhar cedo
+            // evita o erro obscuro de parâmetro da API para quem vem dessa semântica
+            if ($invoice->expiresAt->lessThan(Carbon::now()->addSeconds(10))
+                || $invoice->expiresAt->greaterThan(Carbon::now()->addDays(14))) {
+                throw ModelAttributeValidationException::invalid(
+                    'Invoice',
+                    'expiresAt',
+                    'expiresAt must be more than 10 seconds and less than 14 days in the future for pix invoices on the stripe gateway'
+                );
+            }
+            $stripePaymentIntentData['payment_method_options']['pix']['expires_at'] = $invoice->expiresAt->getTimestamp();
+        }
+        $stripePaymentIntentData = $this->mergeGatewayAdicionalOptions($stripePaymentIntentData, $invoice);
+        $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
+
+        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
+            return $this->client->paymentIntents->create(
+                $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND),
+                $requestOptions
+            );
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Extrai a idempotency key das opções do consumidor para enviá-la como cabeçalho da
+     * requisição (Idempotency-Key) — como parâmetro do payload a API a rejeitaria.
+     *
+     * @param  array  $stripeData  recebe o payload por referência e remove a chave dele
+     * @return array
+     */
+    private function extractIdempotencyKey(array &$stripeData): array
+    {
+        if (!array_key_exists('idempotency_key', $stripeData)) {
+            return [];
+        }
+
+        $requestOptions = ['idempotency_key' => $stripeData['idempotency_key']];
+        unset($stripeData['idempotency_key']);
+
+        return $requestOptions;
     }
 
     /**
@@ -842,10 +919,24 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     * @throws ModelAttributeValidationException
      */
     public function cancelInvoice(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('cancelInvoice');
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+
+        // só estados não-terminais são canceláveis; PaymentIntent pago recusa o cancel
+        // com payment_intent_unexpected_state (vira GatewayException)
+        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice) {
+            return $this->client->paymentIntents->cancel(
+                $invoice->id,
+                ['expand' => self::PAYMENT_INTENT_EXPAND]
+            );
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
     }
 
     /**

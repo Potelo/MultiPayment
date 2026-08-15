@@ -46,6 +46,12 @@ class MultiPaymentGatewayRoutingTest extends TestCase
             [
                 'id' => 'cus_fake123',
                 'object' => 'customer',
+                // campos lidos pelo parseCustomer: ausentes, o StripeObject emite aviso "Undefined property"
+                'name' => null,
+                'email' => null,
+                'phone' => null,
+                'address' => null,
+                'metadata' => [],
                 'created' => 1786700000,
                 'invoice_settings' => ['default_payment_method' => 'pm_fake123'],
             ],
