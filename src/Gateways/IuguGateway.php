@@ -19,14 +19,21 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
+use Potelo\MultiPayment\Models\Plan;
+use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Models\SubscriptionItem;
+use Potelo\MultiPayment\Models\SubscriptionDiscount;
+use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract
+class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 {
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
@@ -432,7 +439,7 @@ class IuguGateway implements GatewayContract
 
         $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id)
             . '/reschedule_automatic_pix_payment';
-        $response = $this->automaticPixRequest('POST', $url, [], 'rescheduling automatic pix payment');
+        $response = $this->iuguRequest('POST', $url, [], 'rescheduling automatic pix payment');
 
         if (!empty($response->id) && !empty($response->status) && isset($response->total_cents)) {
             return $this->parseInvoice($response, $invoice);
@@ -454,7 +461,7 @@ class IuguGateway implements GatewayContract
 
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
             . rawurlencode($automaticPix->id) . '/cancel';
-        $response = $this->automaticPixRequest('PUT', $url, [], 'cancelling automatic pix recurrence');
+        $response = $this->iuguRequest('PUT', $url, [], 'cancelling automatic pix recurrence');
 
         $cancellation = $this->parseAutomaticPixCancellation($response);
         $cancellation->recurrenceId = $automaticPix->id;
@@ -479,7 +486,7 @@ class IuguGateway implements GatewayContract
             'end_to_end_id' => $charge->endToEndId,
         ], '', '&', PHP_QUERY_RFC3986);
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrence_payments/cancel?' . $query;
-        $response = $this->automaticPixRequest(
+        $response = $this->iuguRequest(
             'POST',
             $url,
             [],
@@ -508,7 +515,7 @@ class IuguGateway implements GatewayContract
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
             . rawurlencode($cancellation->recurrenceId) . '/cancellations/'
             . rawurlencode($cancellation->id);
-        $response = $this->automaticPixRequest('GET', $url, [], 'getting automatic pix cancellation');
+        $response = $this->iuguRequest('GET', $url, [], 'getting automatic pix cancellation');
 
         return $this->parseAutomaticPixCancellation($response, $cancellation);
     }
@@ -532,7 +539,7 @@ class IuguGateway implements GatewayContract
         $query = http_build_query(['limit' => $limit, 'page' => $page], '', '&', PHP_QUERY_RFC3986);
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
             . rawurlencode($automaticPix->id) . '/cancellations?' . $query;
-        $response = $this->automaticPixRequest('GET', $url, [], 'listing automatic pix cancellations');
+        $response = $this->iuguRequest('GET', $url, [], 'listing automatic pix cancellations');
 
         $items = $this->automaticPixCancellationItems($response);
 
@@ -663,7 +670,7 @@ class IuguGateway implements GatewayContract
     /**
      * Perform a raw Iugu request while preserving the package exception contract.
      */
-    private function automaticPixRequest(
+    private function iuguRequest(
         string $method,
         string $url,
         array $data,
@@ -1209,5 +1216,1042 @@ class IuguGateway implements GatewayContract
         $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
         return $creditCard;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createSubscription(Subscription $subscription): Subscription
+    {
+        $data = array_merge(
+            $this->subscriptionToIuguData($subscription),
+            $subscription->gatewayAdicionalOptions
+        );
+
+        $response = $this->iuguRequest(
+            'POST',
+            Iugu::getBaseURI() . '/subscriptions',
+            $data,
+            'creating subscription'
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getSubscription(Subscription $subscription): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $response = $this->iuguRequest(
+            'GET',
+            $this->subscriptionUrl($subscription->id),
+            [],
+            'getting subscription'
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function updateSubscription(Subscription $subscription): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $data = array_merge(
+            $this->subscriptionToIuguData($subscription, false),
+            $subscription->gatewayAdicionalOptions
+        );
+        $subitems = $data['subitems'] ?? null;
+        unset($data['subitems']);
+
+        if (!is_null($subitems)) {
+            // a Iugu recusa remover e adicionar subitens na mesma requisição, então a remoção
+            // vai sozinha e antes; entre as duas a assinatura fica sem os itens removidos
+            $toDestroy = $this->iuguSubitemsToDestroy(
+                $subscription->id,
+                $subitems,
+                !is_null($subscription->items),
+                !is_null($subscription->discounts)
+            );
+
+            if (!empty($toDestroy)) {
+                $this->iuguRequest(
+                    'PUT',
+                    $this->subscriptionUrl($subscription->id),
+                    ['subitems' => $toDestroy],
+                    'removing subscription items'
+                );
+            }
+
+            if (!empty($subitems)) {
+                $data['subitems'] = $subitems;
+            }
+        }
+
+        $response = $this->iuguRequest(
+            'PUT',
+            $this->subscriptionUrl($subscription->id),
+            $data,
+            'updating subscription'
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function suspendSubscription(Subscription $subscription): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $response = $this->iuguRequest(
+            'POST',
+            $this->subscriptionUrl($subscription->id) . '/suspend',
+            [],
+            'suspending subscription'
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function resumeSubscription(Subscription $subscription): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $response = $this->iuguRequest(
+            'POST',
+            $this->subscriptionUrl($subscription->id) . '/activate',
+            [],
+            'resuming subscription'
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function cancelSubscription(Subscription $subscription, bool $atPeriodEnd = false): Subscription
+    {
+        if ($atPeriodEnd) {
+            throw new GatewayException(
+                'Iugu does not support cancelling a subscription at the end of the period. '
+                . 'Suspend it on the date instead.'
+            );
+        }
+
+        return $this->suspendSubscription($subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function changeSubscriptionPlan(
+        Subscription $subscription,
+        string $planId,
+        bool $charge = true
+    ): Subscription {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        if ($charge) {
+            $this->iuguRequest(
+                'POST',
+                $this->subscriptionUrl($subscription->id) . '/change_plan/' . rawurlencode($planId),
+                [],
+                'changing subscription plan'
+            );
+
+            $subscription->planId = $planId;
+
+            return $this->getSubscription($subscription);
+        }
+
+        $data = ['plan_identifier' => $planId, 'skip_charge' => true];
+
+        if (!empty($subscription->nextBillingAt)) {
+            $data['expires_at'] = $subscription->nextBillingAt->format('Y-m-d');
+        }
+
+        $response = $this->iuguRequest(
+            'PUT',
+            $this->subscriptionUrl($subscription->id),
+            $data,
+            'changing subscription plan'
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function previewSubscriptionPlanChange(
+        Subscription $subscription,
+        string $planId
+    ): SubscriptionPlanChange {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $response = $this->iuguRequest(
+            'GET',
+            $this->subscriptionUrl($subscription->id)
+                . '/change_plan_simulation/' . rawurlencode($planId),
+            [],
+            'simulating subscription plan change'
+        );
+
+        return $this->parseIuguPlanChange($response);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listSubscriptions(Customer $customer, int $page = 1, int $limit = 100): array
+    {
+        if (empty($customer->id)) {
+            throw ModelAttributeValidationException::required('Customer', 'id');
+        }
+
+        if ($page < 1) {
+            throw new GatewayException('Subscription page must be at least 1');
+        }
+
+        if ($limit < 1 || $limit > 100) {
+            throw new GatewayException('Subscription limit must be between 1 and 100');
+        }
+
+        $query = http_build_query([
+            'customer_id' => $customer->id,
+            'limit' => $limit,
+            'start' => ($page - 1) * $limit,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        $response = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/subscriptions?' . $query,
+            [],
+            'listing subscriptions'
+        );
+
+        $items = is_array($response) ? $response : ($response->items ?? []);
+
+        return array_map(fn($item) => $this->parseIuguSubscription($item), $items);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createPlan(Plan $plan): Plan
+    {
+        $response = $this->iuguRequest(
+            'POST',
+            Iugu::getBaseURI() . '/plans',
+            array_merge($this->planToIuguData($plan), $plan->gatewayAdicionalOptions),
+            'creating plan'
+        );
+
+        return $this->parseIuguPlan($response, $plan);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getPlan(Plan $plan): Plan
+    {
+        if (!empty($plan->id)) {
+            $url = Iugu::getBaseURI() . '/plans/' . rawurlencode($plan->id);
+        } elseif (!empty($plan->identifier)) {
+            $url = Iugu::getBaseURI() . '/plans/identifier/' . rawurlencode($plan->identifier);
+        } else {
+            throw ModelAttributeValidationException::required('Plan', 'id or identifier');
+        }
+
+        return $this->parseIuguPlan($this->iuguRequest('GET', $url, [], 'getting plan'), $plan);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listPlans(int $page = 1, int $limit = 100): array
+    {
+        if ($page < 1) {
+            throw new GatewayException('Plan page must be at least 1');
+        }
+
+        if ($limit < 1 || $limit > 100) {
+            throw new GatewayException('Plan limit must be between 1 and 100');
+        }
+
+        $query = http_build_query([
+            'limit' => $limit,
+            'start' => ($page - 1) * $limit,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        $response = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/plans?' . $query,
+            [],
+            'listing plans'
+        );
+
+        $items = is_array($response) ? $response : ($response->items ?? []);
+
+        return array_map(fn($item) => $this->parseIuguPlan($item), $items);
+    }
+
+    /**
+     * Sempre lança: a Iugu não tem desativação de plano.
+     *
+     * @param  Plan  $plan
+     *
+     * @return Plan
+     * @throws GatewayException
+     */
+    public function deactivatePlan(Plan $plan): Plan
+    {
+        throw new GatewayException(
+            'Iugu plans have no active flag, so a plan cannot be deactivated. '
+            . 'Stop referencing it when creating subscriptions instead.'
+        );
+    }
+
+    /**
+     * Monta o payload de assinatura da Iugu a partir do model.
+     *
+     * Itens e descontos viram uma única lista de `subitems`: desconto é subitem de `price_cents`
+     * negativo. Com $creating falso, só os atributos preenchidos entram no payload.
+     *
+     * @param  Subscription  $subscription
+     * @param  bool  $creating
+     *
+     * @return array
+     * @throws GatewayException|ModelAttributeValidationException
+     */
+    private function subscriptionToIuguData(Subscription $subscription, bool $creating = true): array
+    {
+        $data = [];
+
+        if ($creating) {
+            if (empty($subscription->customer) || empty($subscription->customer->id)) {
+                throw ModelAttributeValidationException::required('Subscription', 'customer');
+            }
+
+            $data['customer_id'] = $subscription->customer->id;
+            $data['plan_identifier'] = $subscription->planId;
+        }
+
+        if (
+            !empty($subscription->nextBillingAt)
+            && !empty($subscription->trialEndsAt)
+            && !$subscription->nextBillingAt->isSameDay($subscription->trialEndsAt)
+        ) {
+            throw new GatewayException(
+                'Iugu stores the trial end and the next billing date in the same field, so '
+                . 'nextBillingAt and trialEndsAt cannot hold different dates.'
+            );
+        }
+
+        $expiresAt = $subscription->nextBillingAt ?? $subscription->trialEndsAt;
+
+        if (!empty($expiresAt) && ($creating || !$this->isOriginalExpiresAt($subscription, $expiresAt))) {
+            $data['expires_at'] = $expiresAt->format('Y-m-d');
+        }
+
+        if (
+            !empty($subscription->availablePaymentMethods)
+            && ($creating || !$this->isOriginalPayableWith($subscription))
+        ) {
+            $data['payable_with'] = $subscription->availablePaymentMethods;
+        }
+
+        if (!empty($subscription->metadata)) {
+            $data['custom_variables'] = array_map(
+                fn($name, $value) => ['name' => $name, 'value' => $value],
+                array_keys($subscription->metadata),
+                array_values($subscription->metadata)
+            );
+        }
+
+        if (!is_null($subscription->items) || !is_null($subscription->discounts)) {
+            $data['subitems'] = array_merge(
+                array_map(
+                    fn(SubscriptionItem $item) => $this->subscriptionItemToIuguData($item),
+                    $subscription->items ?? []
+                ),
+                array_map(
+                    fn(SubscriptionDiscount $discount) => $this->subscriptionDiscountToIuguData($discount),
+                    $subscription->discounts ?? []
+                )
+            );
+        }
+
+        return $data;
+    }
+
+    /**
+     * Diz se a data informada é a mesma que veio do gateway na leitura.
+     *
+     * @param  Subscription  $subscription
+     * @param  Carbon  $expiresAt
+     *
+     * @return bool
+     */
+    private function isOriginalExpiresAt(Subscription $subscription, Carbon $expiresAt): bool
+    {
+        $original = $subscription->original->expires_at ?? null;
+
+        return !empty($original)
+            && (new Carbon($original))->format('Y-m-d') === $expiresAt->format('Y-m-d');
+    }
+
+    /**
+     * Diz se os métodos de pagamento informados são os mesmos que vieram do gateway na leitura.
+     *
+     * A comparação é feita depois da expansão, para que `all` não seja reenviado como a lista
+     * dos três métodos.
+     *
+     * @param  Subscription  $subscription
+     *
+     * @return bool
+     */
+    private function isOriginalPayableWith(Subscription $subscription): bool
+    {
+        $original = $subscription->original->payable_with ?? null;
+
+        if (empty($original)) {
+            return false;
+        }
+
+        return $this->iuguPayableWithToPaymentMethods($original)
+            === array_values($subscription->availablePaymentMethods);
+    }
+
+    /**
+     * Monta um subitem da Iugu a partir de um item de assinatura.
+     *
+     * @param  SubscriptionItem  $item
+     *
+     * @return array
+     */
+    private function subscriptionItemToIuguData(SubscriptionItem $item): array
+    {
+        if (is_null($item->amount)) {
+            throw ModelAttributeValidationException::required('SubscriptionItem', 'amount');
+        }
+
+        $data = [
+            'description' => $item->description,
+            'price_cents' => $item->amount,
+            'quantity' => $item->quantity ?? 1,
+            // o encoder do SDK transforma false em string vazia, então vai como inteiro
+            'recurrent' => (int) $item->recurring,
+        ];
+
+        if (!empty($item->id)) {
+            $data['id'] = $item->id;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Monta um subitem da Iugu a partir de um desconto de assinatura.
+     *
+     * Desconto percentual e desconto limitado a mais de um ciclo não têm equivalente na Iugu.
+     *
+     * @param  SubscriptionDiscount  $discount
+     *
+     * @return array
+     * @throws GatewayException
+     */
+    private function subscriptionDiscountToIuguData(SubscriptionDiscount $discount): array
+    {
+        if (!is_null($discount->percentOff)) {
+            throw new GatewayException(
+                'Iugu does not support percentage discounts on subscriptions. Use amountOff.'
+            );
+        }
+
+        if (is_null($discount->amountOff)) {
+            throw ModelAttributeValidationException::required('SubscriptionDiscount', 'amountOff');
+        }
+
+        if (!is_null($discount->cycles) && $discount->cycles > 1) {
+            throw new GatewayException(
+                'Iugu discounts last either one invoice or until removed, so cycles greater '
+                . 'than 1 cannot be represented. Use cycles 1 or null.'
+            );
+        }
+
+        $data = [
+            'description' => $discount->description,
+            'price_cents' => -abs($discount->amountOff),
+            'quantity' => 1,
+            'recurrent' => (int) is_null($discount->cycles),
+        ];
+
+        if (!empty($discount->id)) {
+            $data['id'] = $discount->id;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Lista os subitens a destruir: os que a assinatura tem no gateway e que não aparecem, por
+     * id, na lista desejada.
+     *
+     * Só entram os subitens do tipo que está sendo substituído — item quando $replacingItems, e
+     * desconto, que na Iugu é subitem de `price_cents` negativo, quando $replacingDiscounts.
+     * Faz um GET na assinatura para descobrir o estado atual.
+     *
+     * @param  string  $subscriptionId
+     * @param  array  $desiredSubitems
+     * @param  bool  $replacingItems
+     * @param  bool  $replacingDiscounts
+     *
+     * @return array
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function iuguSubitemsToDestroy(
+        string $subscriptionId,
+        array $desiredSubitems,
+        bool $replacingItems,
+        bool $replacingDiscounts
+    ): array {
+        $current = $this->iuguRequest(
+            'GET',
+            $this->subscriptionUrl($subscriptionId),
+            [],
+            'getting subscription items'
+        );
+
+        $keptIds = array_map('strval', array_filter(array_column($desiredSubitems, 'id')));
+
+        $toDestroy = [];
+        foreach ((array) ($current->subitems ?? []) as $subitem) {
+            $subitem = (object) $subitem;
+            $id = $subitem->id ?? null;
+
+            if (empty($id) || in_array((string) $id, $keptIds, true)) {
+                continue;
+            }
+
+            $replacing = ($subitem->price_cents ?? 0) < 0 ? $replacingDiscounts : $replacingItems;
+
+            if ($replacing) {
+                $toDestroy[] = ['id' => $id, '_destroy' => true];
+            }
+        }
+
+        return $toDestroy;
+    }
+
+    /**
+     * Converte a assinatura da Iugu numa assinatura do MultiPayment.
+     *
+     * Subitem de `price_cents` negativo vira desconto, não item.
+     *
+     * @param  mixed  $iuguSubscription
+     * @param  Subscription|null  $subscription
+     *
+     * @return Subscription
+     */
+    private function parseIuguSubscription($iuguSubscription, ?Subscription $subscription = null): Subscription
+    {
+        $iuguSubscription = (object) $iuguSubscription;
+        $subscription = $subscription ?? new Subscription();
+
+        $subscription->id = $iuguSubscription->id ?? $subscription->id;
+        if (isset($iuguSubscription->recent_invoices)) {
+            $subscription->latestInvoice = $this->parseIuguRecentInvoice($iuguSubscription);
+        }
+        $subscription->status = $this->iuguToMultiPaymentSubscriptionStatus($iuguSubscription)
+            ?? $subscription->status;
+        $subscription->planId = $iuguSubscription->plan_identifier ?? $subscription->planId;
+        $subscription->amount = $iuguSubscription->price_cents ?? $subscription->amount;
+
+        if (!empty($iuguSubscription->customer_id)) {
+            // cliente de outro id não é o mesmo cliente: manter os atributos antigos produziria
+            // um Customer com id de um e documento de outro
+            if (
+                is_null($subscription->customer)
+                || $subscription->customer->id !== $iuguSubscription->customer_id
+            ) {
+                $subscription->customer = new Customer();
+            }
+
+            $subscription->customer->id = $iuguSubscription->customer_id;
+            $subscription->customer->name = $iuguSubscription->customer_name
+                ?? $subscription->customer->name;
+            $subscription->customer->email = $iuguSubscription->customer_email
+                ?? $subscription->customer->email;
+        }
+
+        if (!empty($iuguSubscription->expires_at)) {
+            $subscription->nextBillingAt = new Carbon($iuguSubscription->expires_at);
+
+            if (!empty($iuguSubscription->in_trial)) {
+                $subscription->trialEndsAt = $subscription->nextBillingAt->copy();
+            }
+        }
+
+        if (!empty($iuguSubscription->created_at)) {
+            $subscription->createdAt = new Carbon($iuguSubscription->created_at);
+        }
+
+        if (isset($iuguSubscription->subitems)) {
+            $subscription->items = [];
+            $subscription->discounts = [];
+
+            foreach ((array) $iuguSubscription->subitems as $iuguSubitem) {
+                $iuguSubitem = (object) $iuguSubitem;
+
+                if (($iuguSubitem->price_cents ?? 0) < 0) {
+                    $subscription->discounts[] = $this->parseIuguSubscriptionDiscount($iuguSubitem);
+                } else {
+                    $subscription->items[] = $this->parseIuguSubscriptionItem($iuguSubitem);
+                }
+            }
+        }
+
+        if (!empty($iuguSubscription->payable_with)) {
+            $subscription->availablePaymentMethods = $this->iuguPayableWithToPaymentMethods(
+                $iuguSubscription->payable_with
+            );
+        }
+
+        if (!empty($iuguSubscription->custom_variables)) {
+            $metadata = [];
+            foreach ((array) $iuguSubscription->custom_variables as $variable) {
+                $variable = (object) $variable;
+                if (isset($variable->name)) {
+                    $metadata[$variable->name] = $variable->value ?? null;
+                }
+            }
+            $subscription->metadata = $metadata;
+        }
+
+        $subscription->gateway = 'iugu';
+        $subscription->original = $iuguSubscription;
+
+        return $subscription;
+    }
+
+    /**
+     * Converte um subitem de valor não negativo da Iugu num item de assinatura.
+     *
+     * @param  object  $iuguSubitem
+     *
+     * @return SubscriptionItem
+     */
+    private function parseIuguSubscriptionItem(object $iuguSubitem): SubscriptionItem
+    {
+        $item = new SubscriptionItem();
+        $item->id = $iuguSubitem->id ?? null;
+        $item->description = $iuguSubitem->description ?? null;
+        $item->amount = $iuguSubitem->price_cents ?? null;
+        $item->quantity = $iuguSubitem->quantity ?? null;
+        $item->recurring = (bool) ($iuguSubitem->recurrent ?? false);
+
+        return $item;
+    }
+
+    /**
+     * Converte um subitem de valor negativo da Iugu num desconto de assinatura.
+     *
+     * @param  object  $iuguSubitem
+     *
+     * @return SubscriptionDiscount
+     */
+    private function parseIuguSubscriptionDiscount(object $iuguSubitem): SubscriptionDiscount
+    {
+        $discount = new SubscriptionDiscount();
+        $discount->id = $iuguSubitem->id ?? null;
+        $discount->description = $iuguSubitem->description ?? null;
+        $discount->amountOff = abs($iuguSubitem->price_cents) * (int) ($iuguSubitem->quantity ?? 1);
+        $discount->cycles = empty($iuguSubitem->recurrent) ? 1 : null;
+
+        return $discount;
+    }
+
+    /**
+     * Converte as flags de estado da assinatura da Iugu no status do MultiPayment.
+     *
+     * A Iugu não tem estado de inadimplência: assinatura com fatura vencida em aberto continua
+     * `active` com `expires_at` no passado. PAST_DUE é derivado dessa combinação.
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return string|null
+     */
+    private function iuguToMultiPaymentSubscriptionStatus(object $iuguSubscription): ?string
+    {
+        if (!empty($iuguSubscription->suspended)) {
+            return Subscription::STATUS_SUSPENDED;
+        }
+
+        if (!empty($iuguSubscription->in_trial)) {
+            return Subscription::STATUS_TRIALING;
+        }
+
+        if ($this->iuguSubscriptionIsPastDue($iuguSubscription)) {
+            return Subscription::STATUS_PAST_DUE;
+        }
+
+        if (isset($iuguSubscription->active)) {
+            return $iuguSubscription->active
+                ? Subscription::STATUS_ACTIVE
+                : Subscription::STATUS_PENDING;
+        }
+
+        return null;
+    }
+
+    /**
+     * Diz se o resumo de fatura ainda tem valor a receber.
+     *
+     * `expired` conta: na Iugu a fatura vencida não foi paga nem cancelada, embora o pacote
+     * mapeie esse status para `Invoice::STATUS_CANCELED`.
+     *
+     * @param  object  $iuguInvoice
+     *
+     * @return bool
+     */
+    private function iuguInvoiceIsOpen(object $iuguInvoice): bool
+    {
+        return in_array(
+            $iuguInvoice->status ?? null,
+            [self::STATUS_PENDING, self::STATUS_EXPIRED, self::STATUS_PARTIALLY_PAID],
+            true
+        );
+    }
+
+    /**
+     * Diz se a assinatura está com cobrança vencida: data da próxima cobrança no passado e
+     * alguma fatura ainda em aberto.
+     *
+     * Olha todas as faturas, e não só a escolhida como `latestInvoice`: uma fatura cancelada de
+     * vencimento posterior esconderia uma pendente anterior.
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return bool
+     */
+    private function iuguSubscriptionIsPastDue(object $iuguSubscription): bool
+    {
+        if (empty($iuguSubscription->expires_at)) {
+            return false;
+        }
+
+        if (!(new Carbon($iuguSubscription->expires_at))->endOfDay()->isPast()) {
+            return false;
+        }
+
+        foreach ($this->iuguRecentInvoices($iuguSubscription) as $entrada) {
+            if ($this->iuguInvoiceIsOpen($entrada)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Normaliza `recent_invoices` numa lista de objetos.
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return object[]
+     */
+    private function iuguRecentInvoices(object $iuguSubscription): array
+    {
+        $recent = $iuguSubscription->recent_invoices ?? null;
+
+        if (empty($recent) || !is_array($recent)) {
+            return [];
+        }
+
+        return array_map(fn($entrada) => (object) $entrada, array_values($recent));
+    }
+
+    /**
+     * Escolhe a entrada mais recente de `recent_invoices`.
+     *
+     * Vence a de maior `due_date`. Entrada sem `due_date` perde para qualquer uma com data, e
+     * empate é resolvido pelo menor id, para que a escolha não dependa da ordem da resposta.
+     *
+     * Entrada sem `id` é ignorada, porque não daria para buscar a fatura depois.
+     *
+     * @param  array  $recent
+     *
+     * @return object|null
+     */
+    private function latestIuguRecentInvoice(array $recent): ?object
+    {
+        $escolhida = null;
+
+        foreach ($recent as $entrada) {
+            if (empty($entrada->id)) {
+                continue;
+            }
+
+            if (is_null($escolhida)) {
+                $escolhida = $entrada;
+                continue;
+            }
+
+            $data = $entrada->due_date ?? null;
+            $atual = $escolhida->due_date ?? null;
+
+            if ($data === $atual) {
+                if ((string) $entrada->id < (string) $escolhida->id) {
+                    $escolhida = $entrada;
+                }
+
+                continue;
+            }
+
+            if (is_null($atual) || (!is_null($data) && $data > $atual)) {
+                $escolhida = $entrada;
+            }
+        }
+
+        return $escolhida;
+    }
+
+    /**
+     * Converte a entrada mais recente de `recent_invoices` numa fatura do MultiPayment.
+     *
+     * A Iugu devolve essas faturas resumidas, sem itens nem valores em centavos, então só os
+     * campos presentes são preenchidos; `original` guarda o resumo cru.
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return Invoice|null
+     */
+    private function parseIuguRecentInvoice(object $iuguSubscription): ?Invoice
+    {
+        $iuguInvoice = $this->latestIuguRecentInvoice(
+            $this->iuguRecentInvoices($iuguSubscription)
+        );
+
+        if (is_null($iuguInvoice)) {
+            return null;
+        }
+
+        $invoice = new Invoice();
+        $invoice->id = $iuguInvoice->id;
+
+        try {
+            $invoice->status = isset($iuguInvoice->status)
+                ? self::iuguStatusToMultiPayment($iuguInvoice->status)
+                : null;
+        } catch (GatewayException $e) {
+            // status fora do mapa não derruba a leitura da assinatura; o status cru continua
+            // em `original`
+            $invoice->status = null;
+        }
+
+        $invoice->expiresAt = !empty($iuguInvoice->due_date)
+            ? new Carbon($iuguInvoice->due_date)
+            : null;
+        $invoice->url = $iuguInvoice->secure_url ?? null;
+        $invoice->gateway = 'iugu';
+        $invoice->original = $iuguInvoice;
+
+        return $invoice;
+    }
+
+    /**
+     * Converte a simulação de troca de plano da Iugu no model do MultiPayment.
+     *
+     * @param  mixed  $response
+     *
+     * @return SubscriptionPlanChange
+     */
+    private function parseIuguPlanChange($response): SubscriptionPlanChange
+    {
+        $response = (object) $response;
+        $planChange = new SubscriptionPlanChange();
+
+        // cost e total_cents podem vir formatados ("R$ 300,00"), então só numérico é aceito
+        foreach (['cost', 'price_cents', 'total_cents', 'cost_cents'] as $field) {
+            if (isset($response->{$field}) && is_numeric($response->{$field})) {
+                $planChange->amount = (int) $response->{$field};
+                break;
+            }
+        }
+
+        foreach (['subitems', 'items'] as $field) {
+            if (!empty($response->{$field}) && is_array($response->{$field})) {
+                $planChange->items = array_map(function ($line) {
+                    $line = (object) $line;
+                    $item = new InvoiceItem();
+                    $item->description = $line->description ?? null;
+                    $item->price = $line->price_cents ?? null;
+                    $item->quantity = $line->quantity ?? null;
+
+                    return $item;
+                }, $response->{$field});
+                break;
+            }
+        }
+
+        if (!empty($response->expires_at)) {
+            $planChange->effectiveAt = new Carbon($response->expires_at);
+        }
+
+        $planChange->gateway = 'iugu';
+        $planChange->original = $response;
+
+        return $planChange;
+    }
+
+    /**
+     * Monta o payload de plano da Iugu a partir do model.
+     *
+     * @param  Plan  $plan
+     *
+     * @return array
+     * @throws GatewayException
+     */
+    private function planToIuguData(Plan $plan): array
+    {
+        $data = [
+            'name' => $plan->name,
+            'identifier' => $plan->identifier ?? $plan->name,
+            'interval' => $plan->intervalCount ?? 1,
+            'interval_type' => $this->multiPaymentToIuguInterval($plan->interval),
+            'value_cents' => $plan->amount,
+        ];
+
+        if (!empty($plan->currency)) {
+            $data['currency'] = $plan->currency;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Converte o intervalo genérico no `interval_type` da Iugu.
+     *
+     * @param  string|null  $interval
+     *
+     * @return string
+     * @throws GatewayException
+     */
+    private function multiPaymentToIuguInterval(?string $interval): string
+    {
+        return match ($interval) {
+            Plan::INTERVAL_WEEK => 'weeks',
+            Plan::INTERVAL_MONTH => 'months',
+            default => throw new GatewayException(
+                "Iugu only supports weekly and monthly plans, `{$interval}` given."
+            ),
+        };
+    }
+
+    /**
+     * Converte o plano da Iugu num plano do MultiPayment.
+     *
+     * @param  mixed  $iuguPlan
+     * @param  Plan|null  $plan
+     *
+     * @return Plan
+     */
+    private function parseIuguPlan($iuguPlan, ?Plan $plan = null): Plan
+    {
+        $iuguPlan = (object) $iuguPlan;
+        $plan = $plan ?? new Plan();
+
+        $plan->id = $iuguPlan->id ?? $plan->id;
+        $plan->identifier = $iuguPlan->identifier ?? $plan->identifier;
+        $plan->name = $iuguPlan->name ?? $plan->name;
+        $plan->intervalCount = $iuguPlan->interval ?? $plan->intervalCount;
+        $plan->interval = match ($iuguPlan->interval_type ?? null) {
+            'weeks' => Plan::INTERVAL_WEEK,
+            'months' => Plan::INTERVAL_MONTH,
+            default => $plan->interval,
+        };
+
+        // o create recebe value_cents, mas a resposta traz os valores em prices[], um por moeda
+        if (isset($iuguPlan->value_cents)) {
+            $plan->amount = $iuguPlan->value_cents;
+        } elseif (!empty($iuguPlan->prices)) {
+            $price = (object) ((array) $iuguPlan->prices)[0];
+            $plan->amount = $price->value_cents ?? $plan->amount;
+            $plan->currency = $price->currency ?? $plan->currency;
+        }
+
+        $plan->gateway = 'iugu';
+        $plan->original = $iuguPlan;
+
+        return $plan;
+    }
+
+    /**
+     * Converte o `payable_with` da Iugu na lista de métodos de pagamento do MultiPayment.
+     *
+     * O valor `all` expande para os três métodos.
+     *
+     * @param  mixed  $payableWith
+     *
+     * @return string[]
+     */
+    private function iuguPayableWithToPaymentMethods($payableWith): array
+    {
+        $todos = [
+            Invoice::PAYMENT_METHOD_CREDIT_CARD,
+            Invoice::PAYMENT_METHOD_BANK_SLIP,
+            Invoice::PAYMENT_METHOD_PIX,
+        ];
+
+        $methods = [];
+        foreach ((array) $payableWith as $iuguMethod) {
+            if ($iuguMethod === 'all') {
+                return $todos;
+            }
+
+            $method = $this->iuguToMultiPaymentPaymentMethod($iuguMethod);
+
+            if (!is_null($method)) {
+                $methods[] = $method;
+            }
+        }
+
+        return $methods;
+    }
+
+    /**
+     * Monta a url de uma assinatura na Iugu.
+     *
+     * @param  string  $id
+     *
+     * @return string
+     */
+    private function subscriptionUrl(string $id): string
+    {
+        return Iugu::getBaseURI() . '/subscriptions/' . rawurlencode($id);
     }
 }

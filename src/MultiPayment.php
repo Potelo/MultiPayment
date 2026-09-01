@@ -7,13 +7,18 @@ use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\Plan;
+use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Builders\CreditCardBuilder;
+use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
@@ -94,6 +99,72 @@ class MultiPayment
     public function newCreditCard(): CreditCardBuilder
     {
         return new CreditCardBuilder($this->gateway);
+    }
+
+    /**
+     * Return a SubscriptionBuilder instance
+     *
+     * @return SubscriptionBuilder
+     */
+    public function newSubscription(): SubscriptionBuilder
+    {
+        return new SubscriptionBuilder($this->gateway);
+    }
+
+    /**
+     * List the subscriptions of a customer
+     *
+     * @param  Customer|string  $customer
+     * @param  int  $page
+     * @param  int  $limit
+     *
+     * @return Subscription[]
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function listSubscriptions(Customer|string $customer, int $page = 1, int $limit = 100): array
+    {
+        if (is_string($customer)) {
+            $customerModel = new Customer();
+            $customerModel->id = $customer;
+            $customer = $customerModel;
+        }
+
+        return $this->gatewayImplementing(SubscriptionContract::class)
+            ->listSubscriptions($customer, $page, $limit);
+    }
+
+    /**
+     * List the gateway plans
+     *
+     * @param  int  $page
+     * @param  int  $limit
+     *
+     * @return Plan[]
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    public function listPlans(int $page = 1, int $limit = 100): array
+    {
+        return $this->gatewayImplementing(PlanContract::class)->listPlans($page, $limit);
+    }
+
+    /**
+     * Ensure this instance's gateway implements the given contract.
+     *
+     * @param  class-string  $contract
+     *
+     * @return GatewayContract
+     * @throws GatewayException
+     */
+    private function gatewayImplementing(string $contract): GatewayContract
+    {
+        if (!$this->gateway instanceof $contract) {
+            throw new GatewayException(
+                'Gateway [' . get_class($this->gateway) . '] does not implement '
+                . substr(strrchr($contract, '\\'), 1)
+            );
+        }
+
+        return $this->gateway;
     }
 
     /**

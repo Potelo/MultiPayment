@@ -76,7 +76,6 @@ class MultiPaymentGatewayRoutingTest extends TestCase
         $invoice = (new MultiPayment('stripe'))
             ->duplicateInvoice('pi_fake123', \Carbon\Carbon::now()->addDay());
 
-        // antes do fix, o model resolveria o gateway default (iugu)
         $this->assertStringContainsString('api.stripe.com/v1/payment_intents/pi_fake123', $httpClient->calls[0][1]);
         $this->assertSame('pi_fake456', $invoice->id);
         $this->assertSame('stripe', $invoice->gateway);
@@ -101,7 +100,6 @@ class MultiPaymentGatewayRoutingTest extends TestCase
 
         $customer = (new MultiPayment('stripe'))->setDefaultCard('cus_fake123', 'pm_fake123');
 
-        // a chamada foi à API da Stripe — antes do fix, o model resolvia o gateway default (iugu)
         $this->assertCount(1, $httpClient->calls);
         $this->assertStringContainsString('api.stripe.com/v1/customers/cus_fake123', $httpClient->calls[0][1]);
         $this->assertSame('pm_fake123', $customer->defaultCard->id);

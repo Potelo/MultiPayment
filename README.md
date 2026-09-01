@@ -13,6 +13,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
     - [Pix Automático](#pix-automático)
+    - [Assinaturas e planos](#assinaturas-e-planos)
     - [CustomerBuilder](#customerbuilder)
     - [getInvoice](#getinvoice)
     - [Outras operações de fatura](#outras-operações-de-fatura)
@@ -20,6 +21,8 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
+    - [Subscription](#subscription)
+    - [Plan](#plan)
 
 ## Requisitos
   - PHP 8.0+
@@ -91,6 +94,14 @@ Também é possível utilizar o Facade:
 | Cobrar fatura pendente com cartão | ✅ | ✅ (inclusive pix expirado) |
 | Customer (criar/atualizar/buscar) e cartões salvos | ✅ | ✅ |
 | Pix Automático | ✅ | 🚧 em desenvolvimento |
+| Assinatura (criar, buscar, atualizar, suspender, retomar, cancelar, listar) | ✅ | 🚧 em desenvolvimento |
+| Cancelar assinatura ao fim do período (`cancel(atPeriodEnd: true)`) | ❌ lança `GatewayException` | 🚧 em desenvolvimento |
+| Troca de plano e simulação (`changePlan`, `previewPlanChange`) | ✅ | 🚧 em desenvolvimento |
+| Desconto na assinatura | ✅ somente valor fixo (`amountOff`), com `cycles` 1 ou `null` | 🚧 em desenvolvimento |
+| Plano (criar, buscar, listar) | ✅ intervalos `week` e `month` | 🚧 em desenvolvimento |
+| Desativar plano (`deactivatePlan`) | ❌ lança `GatewayException` | 🚧 em desenvolvimento |
+
+🚧 = ainda não implementado no gateway; hoje a chamada lança `GatewayException`.
 
 ### Particularidades do Stripe
 
@@ -203,6 +214,117 @@ teste. Os cenários que dependem desse recurso estão identificados com o grupo
 `iugu-sandbox-limitation` e usam um `skip` explícito com a razão da limitação. Os
 testes permanecem junto das classes responsáveis pelo builder e pela facade para
 que possam ser reativados quando o ambiente passar a suportar o fluxo.
+
+#### Assinaturas e planos
+
+Assinatura recorrente está disponível no gateway Iugu. No Stripe as operações ainda não existem
+e o `StripeGateway` não implementa `SubscriptionContract` nem `PlanContract`: `save()` e `get()`
+lançam `GatewayException::methodNotFound`, e os métodos de domínio (`suspend()`, `resume()`,
+`cancel()`, `changePlan()`, `previewPlanChange()`) lançam `GatewayException` avisando que o
+gateway não implementa o contract.
+
+```php
+use Potelo\MultiPayment\Models\Plan;
+
+$plan = new Plan();
+$plan->name = 'Mensal';
+$plan->identifier = 'plano_mensal';
+$plan->amount = 10000; // centavos
+$plan->interval = Plan::INTERVAL_MONTH; // week ou month; a Iugu não aceita year
+$plan->intervalCount = 1;
+$plan->save('iugu');
+
+$subscription = (new \Potelo\MultiPayment\MultiPayment('iugu'))
+    ->newSubscription()
+    ->setPlanId('plano_mensal')
+    ->setCustomerId($customer->id)
+    ->setNextBillingAt('2026-10-01')
+    ->addItem('Consultas extras', 2500, 2)         // item recorrente, valor em centavos
+    ->addAmountDiscount('Promo', 500, cycles: 1)   // desconto só na próxima fatura
+    ->setAvailablePaymentMethods(['pix'])
+    ->create();
+
+echo $subscription->status; // na Iugu: trialing, active, suspended, pending ou past_due
+```
+
+Operações sobre a assinatura:
+
+```php
+$subscription->suspend();
+$subscription->resume();
+$subscription->cancel();                        // na Iugu, cancelar é suspender
+$subscription->changePlan('plano_anual');       // aplica a troca e gera cobrança imediata
+$subscription->changePlan('plano_anual', charge: false);
+$preview = $subscription->previewPlanChange('plano_anual'); // simula, não aplica
+
+// itens e descontos são declarativos: a lista informada vira o estado da assinatura, e a lista
+// que ficar em null é preservada como está no gateway
+$mantido = new SubscriptionItem();
+$mantido->id = $subscription->items[0]->id;
+$subscription->items = [$mantido];
+$subscription->save();
+
+$assinaturas = (new \Potelo\MultiPayment\MultiPayment('iugu'))->listSubscriptions($customer->id);
+$planos = (new \Potelo\MultiPayment\MultiPayment('iugu'))->listPlans();
+```
+
+Particularidades da Iugu:
+
+- **Cancelar é suspender.** `cancel(atPeriodEnd: true)` lança `GatewayException`; para encerrar
+  ao fim do período, suspenda na data.
+- **Desconto é sempre valor fixo.** `percentOff` lança `GatewayException`, e `cycles` só aceita
+  `1` (uma fatura) ou `null` (até ser removido).
+- **Planos são semanais ou mensais.** `Plan::INTERVAL_YEAR` lança `GatewayException`.
+- **Planos não são desativáveis.** `deactivatePlan` lança `GatewayException`.
+- **`nextBillingAt` e `trialEndsAt` são o mesmo campo** (`expires_at`); informar os dois com
+  datas diferentes lança `GatewayException`. Ao prorrogar um trial lido do gateway, zere
+  `nextBillingAt` antes, porque a leitura preenche os dois.
+- **`past_due` é derivado.** A Iugu não tem esse estado: o pacote o reporta quando a data da
+  próxima cobrança já passou e **alguma** fatura de `recent_invoices` continua em aberto —
+  pendente, vencida (`expired`) ou parcialmente paga. Olha todas, e não só a que virou
+  `latestInvoice`, senão uma cancelada de vencimento posterior esconderia uma pendente anterior.
+  Em compensação, fatura antiga que deixou de ser dívida por fora do pacote continua contando
+  enquanto estiver em `recent_invoices`.
+- **`latestInvoice` é a fatura mais recente, não a que gerou a inadimplência.** Vence a de maior
+  vencimento, com o menor id desempatando, e entrada sem id é descartada — a ordem em que a Iugu
+  devolve as faturas não influencia. Em `past_due` ela pode estar **quitada**, ou vir `null`:
+  para chegar na fatura a pagar, liste as faturas do cliente. Vem resumida — id, status,
+  vencimento e, quando a Iugu manda, a url; sem valor em centavos (`amount` fica `null`). Use
+  `getInvoice()` pelo id para a fatura completa.
+- **Atualizar itens ou descontos custa chamadas extras.** A Iugu recusa remover e adicionar
+  subitens na mesma chamada, então o pacote lê a assinatura, envia a remoção sozinha e só depois
+  a atualização — até três requisições. Entre a remoção e a atualização a assinatura fica sem os
+  itens removidos, e se a segunda falhar eles não voltam sozinhos.
+- **`paymentMethod`, `cancelAtPeriodEnd` e `canceledAt` não são mapeados** na Iugu, nas duas
+  direções.
+- **Reativar exige data de cobrança.** Assinatura criada sem `nextBillingAt` fica sem data no
+  gateway e, por isso, não volta com `resume()`: a Iugu responde sem erro e sem mudar nada, e o
+  `status` devolvido segue `suspended`.
+- **`active` e `suspended` são flags independentes.** Assinatura suspensa pode continuar com
+  `active: true` na Iugu; o pacote dá precedência a `suspended` e reporta `suspended`.
+- **A simulação de troca não traz linhas.** `previewPlanChange()` preenche só `amount` e
+  `effectiveAt`; `items` fica `null` e o resto (`discount`, `cycles`, `old_plan`, `new_plan`)
+  está em `original`.
+- **Trocar de plano com cobrança gera fatura pendente, não pagamento.** `changePlan()` com
+  `charge: true` (o padrão) faz a Iugu emitir a fatura na hora, com vencimento imediato e não na
+  data do próximo ciclo. Ela volta resumida em `latestInvoice`, com status `pending`; use
+  `getInvoice()` pelo id para o valor em centavos. Com `charge: false` nada é cobrado.
+- **O plano de uma assinatura existente não muda por `save()`**; use `changePlan()`.
+- **Plano não é atualizável.** `save()` num `Plan` que já tem `id` lança `GatewayException`; para
+  mudar preço ou intervalo, crie outro plano e troque as assinaturas com `changePlan()`.
+- **Fatura vencida lê como `canceled`.** A Iugu chama de `expired` a fatura que venceu sem
+  pagamento, e o pacote a mapeia para `Invoice::STATUS_CANCELED` — mas ela ainda conta como
+  dívida na derivação de `past_due`. Para decidir se há pendência, olhe o `status` da assinatura,
+  não o da fatura.
+- **A assinatura lida traz o cliente resumido.** `Subscription::get()` preenche `customer` com
+  id, nome e e-mail — documento, endereço e telefone não vêm da Iugu. Eles sobrevivem se o
+  `customer` local já tiver o mesmo id; se o id for outro, ou o local não tiver id, o pacote
+  troca o objeto para não misturar dados de dois clientes.
+
+No update, data de cobrança e métodos de pagamento só são enviados quando mudaram em relação
+ao que veio na leitura — um `save()` que mexeu só nos itens não altera a data de cobrança.
+
+Confira `src/Builders/SubscriptionBuilder.php` para saber quais métodos estão disponíveis.
 
 #### CustomerBuilder
 ```php
@@ -357,3 +479,22 @@ $invoice->creditCard->customer = $customer;
 $invoice->save('iugu');
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
 ```
+#### Subscription
+```php
+$subscription = new Subscription();
+$subscription->planId = 'plano_mensal';
+$subscription->customer = $customer;
+$subscription->save('iugu');
+echo $subscription->id;
+```
+#### Plan
+```php
+$plan = new Plan();
+$plan->name = 'Mensal';
+$plan->identifier = 'plano_mensal';
+$plan->amount = 10000;
+$plan->interval = Plan::INTERVAL_MONTH;
+$plan->save('iugu');
+echo $plan->id;
+```
+
