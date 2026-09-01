@@ -924,6 +924,46 @@ class StripeGatewayInvoiceTest extends TestCase
         return $invoice;
     }
 
+    /**
+     * O StripeObject registra "Undefined property" no logger da Stripe ao ler uma chave
+     * ausente, e `?->` não protege contra isso porque o objeto pai existe. Em fatura pix
+     * paga, payment_method_details vem sem `card`, então o parse não pode acessar a chave
+     * às cegas sob pena de sujar o log de produção a cada fatura.
+     */
+    public function testParsingPaidPixInvoiceDoesNotLogUndefinedProperty(): void
+    {
+        RecordingStripeHttpClient::withResponses([$this->paidPixPaymentIntentResponse()]);
+
+        $loggerAnterior = \Stripe\Stripe::getLogger();
+        $logger = new RecordingStripeLogger();
+        \Stripe\Stripe::setLogger($logger);
+
+        try {
+            $invoice = new Invoice();
+            $invoice->id = 'pi_fake123';
+            $result = (new StripeGateway())->getInvoice($invoice);
+        } finally {
+            \Stripe\Stripe::setLogger($loggerAnterior);
+        }
+
+        $this->assertSame(Invoice::STATUS_PAID, $result->status);
+        $this->assertSame(Invoice::PAYMENT_METHOD_PIX, $result->paymentMethod);
+        $this->assertNull($result->creditCard);
+        $this->assertSame([], $logger->messages);
+    }
+
+    private function paidPixPaymentIntentResponse(): array
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['payment_method_types'] = ['pix'];
+        $response['latest_charge']['payment_method_details'] = [
+            'type' => 'pix',
+            'pix' => ['bank_transaction_id' => 'E00000000202601011200abcdef123456'],
+        ];
+
+        return $response;
+    }
+
     private function pendingPixPaymentIntentResponse(): array
     {
         $response = $this->paidCardPaymentIntentResponse(status: 'requires_action');

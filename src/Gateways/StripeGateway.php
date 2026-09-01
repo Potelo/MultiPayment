@@ -837,7 +837,11 @@ class StripeGateway implements GatewayContract
             $invoice->items = $items;
         }
 
-        $cardDetails = $stripeCharge?->payment_method_details?->card;
+        // `?->` não basta: em cobrança pix o payment_method_details existe e apenas não tem
+        // a chave `card`, e o StripeObject loga "Undefined property" via Stripe::getLogger()
+        // ao ler propriedade ausente. isset() passa pelo __isset e não polui o log.
+        $paymentMethodDetails = $stripeCharge?->payment_method_details;
+        $cardDetails = isset($paymentMethodDetails->card) ? $paymentMethodDetails->card : null;
         if (!empty($cardDetails)) {
             if (empty($invoice->creditCard)) {
                 $invoice->creditCard = new CreditCard();
@@ -1177,7 +1181,7 @@ class StripeGateway implements GatewayContract
             $creditCard = new CreditCard();
         }
 
-        $card = $stripePaymentMethod->card;
+        $card = isset($stripePaymentMethod->card) ? $stripePaymentMethod->card : null;
         $creditCard->id = $stripePaymentMethod->id;
         $creditCard->brand = $card->brand ?? null;
         $creditCard->lastDigits = $card->last4 ?? null;
