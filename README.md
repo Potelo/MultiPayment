@@ -1135,10 +1135,11 @@ Particularidades da Iugu:
 - **Planos não são desativáveis.** `deactivatePlan` lança `UnsupportedOperationException`
   (`PLAN_DEACTIVATION`, `gateway_limitation`).
 - **`nextBillingAt` e `trialEndsAt` são o mesmo campo** (`expires_at`), e o que os distingue é
-  a cobrança do primeiro ciclo: por padrão a Iugu cobra o cartão padrão na criação, mesmo com
-  `expires_at` no futuro (observado na sandbox), então um trial (`setTrialDays()` ou
-  `setTrialEndsAt()`) vai com `only_charge_on_due_date`, e a primeira cobrança acontece no fim
-  do teste; `setNextBillingAt()` sozinho vai só como `expires_at`, com a cobrança imediata da
+  a cobrança do primeiro ciclo: por padrão a Iugu fatura o primeiro ciclo na criação e cobra o
+  cartão padrão na hora, mesmo com `expires_at` no futuro (observado na sandbox), então um
+  trial (`setTrialDays()` ou `setTrialEndsAt()`) vai com `only_charge_on_due_date`, e a
+  assinatura nasce sem fatura (`latestInvoice` nulo) e sem cobrança até o fim do teste;
+  `setNextBillingAt()` sozinho vai só como `expires_at`, com a fatura e a cobrança imediatas da
   Iugu (`gateway_options['only_charge_on_due_date']` sobrepõe os dois). Informar `trialEndsAt`
   (ou `trialDays`) e `nextBillingAt` com datas diferentes lança `GatewayException`. Ao prorrogar
   um trial lido do gateway, zere `nextBillingAt` antes, porque a leitura preenche os dois.
