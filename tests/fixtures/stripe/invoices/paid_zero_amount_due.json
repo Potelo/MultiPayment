@@ -1,0 +1,160 @@
+{
+  "id": "in_1UBHUNPjx0CusuMrEG6etDb8",
+  "object": "invoice",
+  "account_country": "BR",
+  "account_name": "Escavador",
+  "account_tax_ids": null,
+  "amount_due": 0,
+  "amount_overpaid": 0,
+  "amount_paid": 0,
+  "amount_remaining": 0,
+  "amount_shipping": 0,
+  "application": null,
+  "attempt_count": 0,
+  "attempted": true,
+  "auto_advance": false,
+  "automatic_tax": {
+    "disabled_reason": null,
+    "enabled": false,
+    "liability": null,
+    "provider": null,
+    "status": null
+  },
+  "automatically_finalizes_at": null,
+  "billing_reason": "manual",
+  "collection_method": "charge_automatically",
+  "created": 1788368299,
+  "currency": "brl",
+  "custom_fields": null,
+  "customer": "cus_VBen1v8T4Qa6XX",
+  "customer_account": null,
+  "customer_address": null,
+  "customer_email": "fixture@example.com",
+  "customer_name": "Fixture Customer",
+  "customer_phone": null,
+  "customer_shipping": null,
+  "customer_tax_exempt": "none",
+  "customer_tax_ids": [
+    {
+      "type": "br_cpf",
+      "value": "201.769.969-15"
+    }
+  ],
+  "default_payment_method": null,
+  "default_source": null,
+  "default_tax_rates": [],
+  "description": null,
+  "discounts": [],
+  "due_date": null,
+  "effective_at": 1788368300,
+  "ending_balance": 0,
+  "footer": null,
+  "from_invoice": null,
+  "hosted_invoice_url": "https://invoice.stripe.com/i/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQmVuM3VLbkNZS2tVc0ppOWZmSEoxcDltdEtNSFlNLDE3ODkwOTEwMA0200daC6w6MF?s=ap",
+  "invoice_pdf": "https://pay.stripe.com/invoice/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQmVuM3VLbkNZS2tVc0ppOWZmSEoxcDltdEtNSFlNLDE3ODkwOTEwMA0200daC6w6MF/pdf?s=ap",
+  "issuer": {
+    "type": "self"
+  },
+  "last_finalization_error": null,
+  "latest_revision": null,
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_1UBHUNPjx0CusuMr4FkbSzmo",
+        "object": "line_item",
+        "amount": 0,
+        "currency": "brl",
+        "description": "Período de teste",
+        "discount_amounts": [],
+        "discountable": true,
+        "discounts": [],
+        "invoice": "in_1UBHUNPjx0CusuMrEG6etDb8",
+        "livemode": false,
+        "metadata": [],
+        "parent": {
+          "invoice_item_details": {
+            "invoice_item": "ii_1UBHUNPjx0CusuMrbRF91HQA",
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "subscription": null
+          },
+          "subscription_item_details": null,
+          "type": "invoice_item_details"
+        },
+        "period": {
+          "end": 1788368299,
+          "start": 1788368299
+        },
+        "pretax_credit_amounts": [],
+        "pricing": {
+          "price_details": {
+            "price": "price_1UBHUNPjx0CusuMrbGQ5kEqP",
+            "product": "prod_VBenoD0uH86i0j"
+          },
+          "type": "price_details",
+          "unit_amount_decimal": "0"
+        },
+        "quantity": 1,
+        "quantity_decimal": "1",
+        "subtotal": 0,
+        "taxes": []
+      }
+    ],
+    "has_more": false,
+    "total_count": 1,
+    "url": "/v1/invoices/in_1UBHUNPjx0CusuMrEG6etDb8/lines"
+  },
+  "livemode": false,
+  "metadata": [],
+  "next_payment_attempt": null,
+  "number": "HJRZH2D7-0006",
+  "on_behalf_of": null,
+  "parent": null,
+  "payment_settings": {
+    "default_mandate": null,
+    "payment_method_options": null,
+    "payment_method_types": null
+  },
+  "payments": {
+    "object": "list",
+    "data": [],
+    "has_more": false,
+    "url": "/v1/invoices/payments"
+  },
+  "period_end": 1788368299,
+  "period_start": 1788368299,
+  "post_payment_credit_notes_amount": 0,
+  "pre_payment_credit_notes_amount": 0,
+  "receipt_number": null,
+  "rendering": {
+    "amount_tax_display": null,
+    "pdf": {
+      "page_size": "letter"
+    },
+    "template": null,
+    "template_version": null
+  },
+  "shipping_cost": null,
+  "shipping_details": null,
+  "starting_balance": 0,
+  "statement_descriptor": null,
+  "status": "paid",
+  "status_transitions": {
+    "finalized_at": 1788368300,
+    "marked_uncollectible_at": null,
+    "paid_at": 1788368300,
+    "voided_at": null
+  },
+  "subtotal": 0,
+  "subtotal_excluding_tax": 0,
+  "test_clock": null,
+  "total": 0,
+  "total_discount_amounts": [],
+  "total_excluding_tax": 0,
+  "total_pretax_credit_amounts": [],
+  "total_taxes": [],
+  "webhooks_delivered_at": 1788368299
+}

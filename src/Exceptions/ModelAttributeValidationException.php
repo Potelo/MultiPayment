@@ -30,4 +30,20 @@ class ModelAttributeValidationException extends MultiPaymentException
     {
         return new static("The `{$attribute}` attribute is invalid for the `{$model}` model. {$message}");
     }
+
+    /**
+     * Chave desconhecida em `fill()`: o model não tem a propriedade correspondente. A mensagem
+     * lista as chaves aceitas.
+     *
+     * @param  string  $model
+     * @param  string  $key  chave recebida, como veio no array
+     * @param  string[]  $accepted  chaves aceitas, em `snake_case`
+     * @return ModelAttributeValidationException
+     */
+    public static function unknownAttribute(string $model, string $key, array $accepted): ModelAttributeValidationException
+    {
+        return new static(
+            "The `{$key}` key is unknown for the `{$model}` model. Accepted keys: " . implode(', ', $accepted) . '.'
+        );
+    }
 }

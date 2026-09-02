@@ -77,6 +77,9 @@ STRIPE_APIKEY=
 #idempotência (opcional; ver a seção Idempotência)
 MULTIPAYMENT_IDEMPOTENCY_TTL=86400
 MULTIPAYMENT_IDEMPOTENCY_CACHE_STORE=
+
+#fill() estrito (opcional, padrão true; ver a seção "fill() estrito")
+MULTIPAYMENT_STRICT_FILL=true
 ```  
 
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
@@ -182,24 +185,27 @@ pacote; o status específico de cada gateway fica em `original`. Os treze estado
 
 | `InvoiceStatus` | Significado | Iugu | Stripe | Helper que responde |
 |---|---|---|---|---|
-| `PENDING` | Aguardando pagamento | `pending`, `draft` | PaymentIntent em `requires_payment_method`, `requires_action`, `requires_confirmation` | `isOpen()` |
+| `PENDING` | Aguardando pagamento | `pending`, `draft` | PaymentIntent em `requires_payment_method`, `requires_action`, `requires_confirmation`; Invoice `draft` ou `open` sem pagamento em curso | `isOpen()` |
 | `AUTHORIZED` | Valor reservado no cartão, aguardando captura ou análise | `in_analysis`, `authorized` | PaymentIntent `requires_capture` | `isOpen()` |
 | `PROCESSING` | Pagamento em processamento no gateway | (não emite) | PaymentIntent `processing` | `isOpen()` |
-| `PAID` | Valor recebido | `paid` | PaymentIntent `succeeded` sem estorno nem contestação | `isSettled()` |
-| `PARTIALLY_PAID` | Parte do valor recebida, restante em aberto | `partially_paid` | (não emite em venda avulsa) | `isSettled()` e `isOpen()` |
-| `EXTERNALLY_PAID` | Quitada fora do gateway, por baixa manual | `externally_paid` | (não emite em venda avulsa) | `isSettled()` |
+| `PAID` | Valor recebido | `paid` | PaymentIntent `succeeded` sem estorno nem contestação; Invoice `paid` quitado sem cobrança | `isSettled()` |
+| `PARTIALLY_PAID` | Parte do valor recebida, restante em aberto | `partially_paid` | Invoice `open` com parte do `total` em `amount_paid` (não emite em venda avulsa) | `isSettled()` e `isOpen()` |
+| `EXTERNALLY_PAID` | Quitada fora do gateway, por baixa manual | `externally_paid` | Invoice `paid` com pagamento registrado fora da Stripe (não emite em venda avulsa) | `isSettled()` |
 | `PARTIALLY_REFUNDED` | Estorno voluntário, parcial | `partially_refunded` | charge com `amount_refunded` menor que o total | `isSettled()` |
 | `REFUNDED` | Estorno voluntário, integral | `refunded` | charge com `refunded = true` | `isTerminal()` |
 | `DISPUTED` | Contestação aberta sobre fatura paga, resolução pendente | `in_protest` | charge `disputed` com dispute em `warning_needs_response`, `warning_under_review`, `needs_response` ou `under_review` | `isContested()` |
 | `CHARGEBACK` | Contestação perdida: valor devolvido ao cliente pelo gateway | `chargeback` | dispute em `lost` | `isContested()` e `isTerminal()` |
-| `CANCELED` | Cancelada antes do pagamento | `canceled` | PaymentIntent `canceled` | `isTerminal()` |
-| `EXPIRED` | Venceu sem pagamento | `expired` | (não emite em venda avulsa) | `isTerminal()` |
+| `CANCELED` | Cancelada antes do pagamento | `canceled` | PaymentIntent `canceled`; Invoice `void` | `isTerminal()` |
+| `EXPIRED` | Venceu sem pagamento | `expired` | Invoice `uncollectible` (não emite em venda avulsa) | `isTerminal()` |
 | `UNKNOWN` | Status que a lib não reconhece | qualquer outro | qualquer outro | nenhum responde verdadeiro |
 
 Dispute ganha (`won`), encerrada sem virar chargeback (`warning_closed`) ou prevenida
 (`prevented`) não altera o status: a fatura volta a ler como `PAID` (ou como estornada, se
 houve estorno). Um status fora do mapa vira `UNKNOWN`, com um aviso no log da aplicação (nível
-`warning`) contendo o valor original e o gateway, e o valor cru continua em `original`.
+`warning`) contendo o valor original e o gateway, e o valor cru continua em `original`. No
+Stripe a coluna mistura as duas origens da fatura: a venda avulsa (PaymentIntent) e a fatura
+de assinatura (Invoice), cuja regra de precedência está em
+[Fatura no Stripe: duas origens](#fatura-no-stripe-duas-origens).
 
 Os helpers do enum respondem às perguntas de negócio sem comparar status um a um:
 
@@ -321,8 +327,13 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
 - **Pix expirado continua pendente e re-cobrável.** Na Iugu, fatura expirada vira `canceled`;
   no Stripe ela volta a aguardar pagamento (`pending`) e pode ser paga com cartão via
   `chargeInvoiceWithCreditCard` ou duplicada com `duplicateInvoice` (nova expiração;
-  a original é cancelada). Só fatura Pix pendente é duplicável: cartão ou fatura em outro
-  estado lança `UnsupportedOperationException` (`INVOICE_DUPLICATION`, `gateway_limitation`).
+  a original é cancelada). Só fatura Pix pendente de venda avulsa é duplicável: cartão, fatura
+  em outro estado ou fatura de assinatura lança `UnsupportedOperationException`
+  (`INVOICE_DUPLICATION`, `gateway_limitation`).
+- **A fatura tem duas origens.** A venda avulsa é um PaymentIntent (`pi_`) e a fatura de
+  assinatura é um objeto Invoice da Stripe (`in_`); `getInvoice()` aceita os dois ids e
+  `Invoice::$originType` diz qual voltou. Ver
+  [Fatura no Stripe: duas origens](#fatura-no-stripe-duas-origens).
 - **`url` da fatura**: no pix é a página hospedada com instruções de pagamento
   (`hosted_instructions_url`); em fatura de cartão é `null` — não assuma `url` preenchida
   como na Iugu (`secure_url`).
@@ -336,6 +347,88 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
   `Idempotency-Key` de toda requisição de escrita da operação, inclusive cliente, cartão,
   cancelamento e as requisições secundárias, com chaves derivadas (ver
   [Idempotência](#idempotência)).
+
+### Fatura no Stripe: duas origens
+
+Na Stripe a `Invoice` do pacote pode vir de dois objetos, e `Invoice::$originType` (enum
+`Potelo\MultiPayment\Enums\InvoiceOriginType`) diz de qual:
+
+| `originType` | Objeto da Stripe | Quando | `original` |
+|---|---|---|---|
+| `PAYMENT_INTENT` | PaymentIntent (`pi_`) | venda avulsa criada pela lib (cartão ou Pix) | `\Stripe\PaymentIntent` |
+| `INVOICE` | Invoice (`in_`) | fatura de assinatura gerada pelo Stripe Billing | `\Stripe\Invoice` |
+
+Na Iugu `originType` é sempre `INVOICE`: toda fatura de lá é o objeto de fatura do gateway.
+
+`getInvoice()` aceita os dois ids e decide pelo prefixo qual objeto ler:
+
+```php
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
+
+$payment = new \Potelo\MultiPayment\MultiPayment('stripe');
+
+$avulsa = $payment->getInvoice('pi_3UBH...');      // originType PAYMENT_INTENT
+$assinatura = $payment->getInvoice('in_1UBH...');  // originType INVOICE
+
+if ($assinatura->originType === InvoiceOriginType::INVOICE) {
+    $assinatura->original->hosted_invoice_url;   // objeto cru da Stripe, quando precisar do detalhe
+}
+```
+
+O que muda na fatura de origem `INVOICE`:
+
+- **Line items** vêm dos itens reais do Invoice (`lines.data`, a primeira página, de até dez
+  itens); na venda avulsa continuam sendo reconstruídos do `metadata` do PaymentIntent.
+- **`url`** é a página hospedada da fatura (`hosted_invoice_url`), com o QR Code do Pix quando
+  for o caso; `pix` continua trazendo o QR Code quando o PaymentIntent tem um.
+- **`expiresAt`** é o `due_date` da fatura, quando ela tem um, ou a expiração do QR Code do Pix.
+- **`paidAt`** é o instante em que a Stripe marcou a fatura como paga.
+- **Uma requisição a mais** quando a fatura já teve tentativa de pagamento: o charge do
+  PaymentIntent fica além do limite de `expand` da Stripe e é lido num GET à parte.
+- **`cancelInvoice()`** anula a fatura (`void`); a Stripe cancela sozinha o PaymentIntent
+  dela. Rascunho (`draft`) não é anulável e lança `GatewayException` orientando a esperar a
+  finalização; fatura `paid` ou já anulada lança `ValidationException`, como o PaymentIntent
+  já pago ou cancelado.
+- **`duplicateInvoice()`** é recusado com `UnsupportedOperationException` (`INVOICE_DUPLICATION`,
+  `gateway_limitation`): a próxima fatura da assinatura é gerada pela Stripe, e um Pix expirado
+  se resolve com nova tentativa de pagamento da mesma fatura.
+- **`refundInvoice()` e `chargeInvoiceWithCreditCard()`** sobre a fatura de assinatura ainda não
+  estão disponíveis (`UnsupportedOperationException`, `SUBSCRIPTIONS`, `not_implemented`); entram
+  em uma versão futura junto com a assinatura no Stripe.
+
+**Precedência de status.** O status do Invoice da Stripe manda no ciclo de vida da fatura; o
+PaymentIntent e o charge só refinam o detalhe de pagamento. Um PaymentIntent `succeeded` não
+torna paga uma fatura que a Stripe ainda considera `open`, e um PaymentIntent `canceled` não
+cancela uma fatura `open`. A tabela completa:
+
+| Invoice Stripe | PaymentIntent e charge | `InvoiceStatus` |
+|---|---|---|
+| `draft` | qualquer | `PENDING` |
+| `open` | ausente, `requires_payment_method`, `requires_action` ou `requires_confirmation` | `PENDING` |
+| `open` | `requires_capture` | `AUTHORIZED` |
+| `open` | `processing` | `PROCESSING` |
+| `open` | `amount_paid` do Invoice maior que zero e menor que `total` | `PARTIALLY_PAID` |
+| `paid` | `succeeded`, charge sem dispute e sem refund | `PAID` |
+| `paid` | `succeeded`, charge com refund parcial | `PARTIALLY_REFUNDED` |
+| `paid` | `succeeded`, charge com refund total | `REFUNDED` |
+| `paid` | charge com dispute aberta | `DISPUTED` |
+| `paid` | charge com dispute perdida (`lost`) | `CHARGEBACK` |
+| `paid` | pagamento registrado fora da Stripe (`paid_out_of_band`) | `EXTERNALLY_PAID` |
+| `paid` | sem PaymentIntent `succeeded`; pagamento do tipo `charge` anexado à fatura | `PAID` |
+| `paid` | sem PaymentIntent e `amount_due` zero (avaliação gratuita, saldo de crédito, valor abaixo do mínimo) | `PAID` |
+| `void` | qualquer | `CANCELED` |
+| `uncollectible` | qualquer | `EXPIRED` |
+| qualquer combinação não listada | | `UNKNOWN`, com aviso no log contendo os três status e o id da fatura |
+
+Duas ressalvas para quem trata status como definitivo:
+
+- **`uncollectible` lê como `EXPIRED`, mas na Stripe não é terminal**: a fatura pode voltar a
+  `paid` ou ir a `void` depois. Uma fatura `EXPIRED` de origem `INVOICE` pode, portanto, ler
+  como `PAID` numa releitura, embora `isTerminal()` responda verdadeiro para `EXPIRED`.
+- **`open` com PaymentIntent `succeeded` fica em `UNKNOWN` de propósito**: a Stripe atualiza o
+  Invoice no mesmo instante em que confirma o pagamento, então essa combinação é uma leitura
+  no meio da transição ou um pagamento fora do padrão que não quitou a fatura. Se aparecer no
+  log, releia a fatura.
 
 ### Opções extras do gateway
 
@@ -364,6 +457,35 @@ uma opção vira uso recorrente, ela deve ser modelada genericamente.
 > aviso `E_USER_DEPRECATED` a cada uso; estão marcados `@deprecated` desde 2026-09-02 e saem na
 > próxima versão maior. A única diferença observável é `toArray()`, que passa a devolver a
 > chave `gateway_options`.
+
+### `fill()` estrito
+
+`Model::fill()` (e, por consequência, `charge($attributes)`, `create($data)` e os arrays
+aninhados de `customer`, `items`, `credit_card`...) lança `ModelAttributeValidationException`
+para chave que não corresponde a nenhuma propriedade do model. A mensagem traz o model, a chave
+e a lista de chaves aceitas:
+
+```php
+$payment->charge(['amount' => 10000, 'trial_days' => 7, 'customer' => [...]]);
+// ModelAttributeValidationException: The `trial_days` key is unknown for the `Invoice` model.
+// Accepted keys: id, status, paid_at, amount, ..., gateway_options.
+```
+
+Duas exceções à regra: chave com prefixo `gateway_` (ou `gateway` em `camelCase`) continua
+sendo ignorada em silêncio, e o conteúdo de `gateway_options` é livre (vai inteiro ao gateway).
+As chaves aceitas de cada model estão em `Model::fillableKeys()`, em `snake_case`. Use sempre
+`snake_case` nos arrays: uma chave escalar em `camelCase` (`taxDocument`) também é aceita, mas
+as chaves que viram objeto ou data (`customer`, `items`, `credit_card`, `expires_at`...) só são
+convertidas na forma em `snake_case`.
+
+Para desligar temporariamente durante uma migração, use a configuração
+`multi-payment.strict_fill` (variável `MULTIPAYMENT_STRICT_FILL`); com `false`, a chave
+desconhecida volta a ser descartada sem erro, como nas versões anteriores.
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `fill()` descartava chave
+> desconhecida em silêncio: um `trial_days` ou um `idempotency_key` fora de `gateway_options`
+> simplesmente não faziam nada. Agora lançam. Se a aplicação monta os arrays a partir de dados
+> externos, valide as chaves antes ou desligue `strict_fill` enquanto ajusta.
 
 ### Idempotência
 
@@ -902,6 +1024,11 @@ Confira `src/MultiPayment/Builders/CustomerBuilder.php` para saber quais método
 $invoiceId = '312ASDHGZXSGRTET312ASDHGZXSGRTET';
 $payment = new \Potelo\MultiPayment\MultiPayment('iugu');
 $foundInvoice = $payment->getInvoice($invoiceId);
+
+// no Stripe o id pode ser de um PaymentIntent (pi_, venda avulsa) ou de um Invoice
+// (in_, fatura de assinatura); originType diz qual voltou (ver "Fatura no Stripe: duas origens")
+$foundInvoice = (new \Potelo\MultiPayment\MultiPayment('stripe'))->getInvoice('in_1UBH...');
+$foundInvoice->originType;   // InvoiceOriginType::INVOICE
 ```
 
 #### Outras operações de fatura
@@ -912,10 +1039,10 @@ $payment = new \Potelo\MultiPayment\MultiPayment('stripe');
 $refund = $payment->refundInvoice($invoiceId);
 $refund = $payment->refundInvoice($invoiceId, 5000);
 
-// cancelamento de fatura pendente
+// cancelamento de fatura pendente (no Stripe, a fatura de assinatura in_ é anulada com void)
 $payment->cancelInvoice($invoiceId);
 
-// duplicar fatura pendente com nova expiração (no Stripe: somente pix; a original é cancelada)
+// duplicar fatura pendente com nova expiração (no Stripe: somente pix de venda avulsa; a original é cancelada)
 $payment->duplicateInvoice($invoiceId, \Carbon\Carbon::now()->addDays(3));
 
 // cobrar uma fatura pendente com cartão (token OU id de cartão salvo)
@@ -1089,7 +1216,7 @@ $payment->setGateway('iugu')->charge($options);
 | `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                   |
 | `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`               |
 | `customer.tax_document`       | **obrigatório** no Stripe para faturas pix                          | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
-| `birth_date`                  |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'01/01/1990'`                        |
+| `customer.birth_date`         |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'1990-01-01'`                        |
 | `customer.phone_number`       |                                                                     | string                         | telefone                                  | `'999999999'`                         |
 | `customer.phone_area`         |                                                                     | string                         | DDD                                       | `'999999999'`                         |
 | `customer.address`            | **obrigatório** para o método de pagamento `bank_slip`              | array                          | array com os dados do endereço do cliente | `['street' => 'Rua do cliente'...]`   |
@@ -1150,6 +1277,7 @@ $invoice->creditCard->cvv = '123';
 $invoice->creditCard->customer = $customer;
 $invoice->save('iugu');
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
+$invoice->originType; // InvoiceOriginType::INVOICE (na Iugu sempre; no Stripe, PAYMENT_INTENT ou INVOICE)
 ```
 #### Refund
 ```php

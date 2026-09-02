@@ -1,0 +1,305 @@
+{
+  "id": "in_1UBHTnPjx0CusuMrjxjg8WhK",
+  "object": "invoice",
+  "account_country": "BR",
+  "account_name": "Escavador",
+  "account_tax_ids": null,
+  "amount_due": 12345,
+  "amount_overpaid": 0,
+  "amount_paid": 0,
+  "amount_remaining": 12345,
+  "amount_shipping": 0,
+  "application": null,
+  "attempt_count": 1,
+  "attempted": true,
+  "auto_advance": false,
+  "automatic_tax": {
+    "disabled_reason": null,
+    "enabled": false,
+    "liability": null,
+    "provider": null,
+    "status": null
+  },
+  "automatically_finalizes_at": null,
+  "billing_reason": "manual",
+  "collection_method": "charge_automatically",
+  "created": 1788368263,
+  "currency": "brl",
+  "custom_fields": null,
+  "customer": "cus_VBen1v8T4Qa6XX",
+  "customer_account": null,
+  "customer_address": null,
+  "customer_email": "fixture@example.com",
+  "customer_name": "Fixture Customer",
+  "customer_phone": null,
+  "customer_shipping": null,
+  "customer_tax_exempt": "none",
+  "customer_tax_ids": [
+    {
+      "type": "br_cpf",
+      "value": "201.769.969-15"
+    }
+  ],
+  "default_payment_method": null,
+  "default_source": null,
+  "default_tax_rates": [],
+  "description": null,
+  "discounts": [],
+  "due_date": null,
+  "effective_at": 1788368265,
+  "ending_balance": 0,
+  "footer": null,
+  "from_invoice": null,
+  "hosted_invoice_url": "https://invoice.stripe.com/i/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQmVuQWVBcUNuMnFYUVNuYUpKWkdmbVlRUmNpcDkzLDE3ODkwOTA2OQ0200FbEr9ZkZ?s=ap",
+  "invoice_pdf": "https://pay.stripe.com/invoice/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQmVuQWVBcUNuMnFYUVNuYUpKWkdmbVlRUmNpcDkzLDE3ODkwOTA2OQ0200FbEr9ZkZ/pdf?s=ap",
+  "issuer": {
+    "type": "self"
+  },
+  "last_finalization_error": null,
+  "latest_revision": null,
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_1UBHToPjx0CusuMrDMrHiN5q",
+        "object": "line_item",
+        "amount": 12345,
+        "currency": "brl",
+        "description": "Assinatura mensal",
+        "discount_amounts": [],
+        "discountable": true,
+        "discounts": [],
+        "invoice": "in_1UBHTnPjx0CusuMrjxjg8WhK",
+        "livemode": false,
+        "metadata": [],
+        "parent": {
+          "invoice_item_details": {
+            "invoice_item": "ii_1UBHToPjx0CusuMrV6jEQhm5",
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "subscription": null
+          },
+          "subscription_item_details": null,
+          "type": "invoice_item_details"
+        },
+        "period": {
+          "end": 1788368264,
+          "start": 1788368264
+        },
+        "pretax_credit_amounts": [],
+        "pricing": {
+          "price_details": {
+            "price": "price_1UBHTYPjx0CusuMrLR1pKSFN",
+            "product": "prod_VBeni0Nk8Fandr"
+          },
+          "type": "price_details",
+          "unit_amount_decimal": "12345"
+        },
+        "quantity": 1,
+        "quantity_decimal": "1",
+        "subtotal": 12345,
+        "taxes": []
+      }
+    ],
+    "has_more": false,
+    "total_count": 1,
+    "url": "/v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK/lines"
+  },
+  "livemode": false,
+  "metadata": [],
+  "next_payment_attempt": null,
+  "number": "HJRZH2D7-0001",
+  "on_behalf_of": null,
+  "parent": null,
+  "payment_settings": {
+    "default_mandate": null,
+    "payment_method_options": null,
+    "payment_method_types": null
+  },
+  "payments": {
+    "object": "list",
+    "data": [
+      {
+        "id": "inpay_1UBHTpPjx0CusuMr5eW50ghI",
+        "object": "invoice_payment",
+        "amount_paid": null,
+        "amount_requested": 12345,
+        "created": 1788368265,
+        "currency": "brl",
+        "invoice": "in_1UBHTnPjx0CusuMrjxjg8WhK",
+        "is_default": true,
+        "livemode": false,
+        "payment": {
+          "payment_intent": {
+            "id": "pi_3UBHTpPjx0CusuMr1JTEiHGi",
+            "object": "payment_intent",
+            "allowed_payment_method_types": null,
+            "amount": 12345,
+            "amount_capturable": 0,
+            "amount_details": {
+              "tip": []
+            },
+            "amount_received": 0,
+            "application": null,
+            "application_fee_amount": null,
+            "automatic_payment_methods": null,
+            "canceled_at": null,
+            "cancellation_reason": null,
+            "capture_method": "automatic",
+            "client_secret": "pi_3UBHTpPjx0CusuMr1JTEiHGi_secret_REDACTED",
+            "confirmation_method": "automatic",
+            "created": 1788368265,
+            "currency": "brl",
+            "customer": "cus_VBen1v8T4Qa6XX",
+            "customer_account": null,
+            "description": "Payment for Invoice",
+            "excluded_payment_method_types": null,
+            "last_payment_error": {
+              "advice_code": "try_again_later",
+              "charge": "ch_3UBHTpPjx0CusuMr1KQeiDo0",
+              "code": "card_declined",
+              "decline_code": "generic_decline",
+              "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+              "message": "Your card was declined.",
+              "network_decline_code": "01",
+              "payment_method": {
+                "id": "pm_1UBHTrPjx0CusuMrw9Pshrt0",
+                "object": "payment_method",
+                "allow_redisplay": "unspecified",
+                "billing_details": {
+                  "address": {
+                    "city": null,
+                    "country": null,
+                    "line1": null,
+                    "line2": null,
+                    "postal_code": null,
+                    "state": null
+                  },
+                  "email": null,
+                  "name": null,
+                  "phone": null,
+                  "tax_id": null
+                },
+                "card": {
+                  "brand": "visa",
+                  "checks": {
+                    "address_line1_check": null,
+                    "address_postal_code_check": null,
+                    "cvc_check": "pass"
+                  },
+                  "country": "US",
+                  "display_brand": "visa",
+                  "exp_month": 9,
+                  "exp_year": 2027,
+                  "fingerprint": "sryrMZCxUxxxIzqq",
+                  "funding": "credit",
+                  "generated_from": null,
+                  "last4": "0341",
+                  "networks": {
+                    "available": [
+                      "visa"
+                    ],
+                    "preferred": null
+                  },
+                  "regulated_status": "unregulated",
+                  "three_d_secure_usage": {
+                    "supported": true
+                  },
+                  "wallet": null
+                },
+                "created": 1788368267,
+                "customer": "cus_VBen1v8T4Qa6XX",
+                "customer_account": null,
+                "livemode": false,
+                "metadata": [],
+                "shared_payment_granted_token": null,
+                "type": "card"
+              },
+              "type": "card_error"
+            },
+            "latest_charge": "ch_3UBHTpPjx0CusuMr1KQeiDo0",
+            "livemode": false,
+            "managed_payments": {
+              "enabled": false
+            },
+            "metadata": [],
+            "next_action": null,
+            "on_behalf_of": null,
+            "payment_details": {
+              "customer_reference": null,
+              "order_reference": "in_1UBHTnPjx0CusuMrjxjg8WhK"
+            },
+            "payment_method": null,
+            "payment_method_configuration_details": null,
+            "payment_method_options": {
+              "card": {
+                "installments": null,
+                "mandate_options": null,
+                "network": null,
+                "request_three_d_secure": "automatic"
+              }
+            },
+            "payment_method_types": [
+              "card"
+            ],
+            "processing": null,
+            "receipt_email": null,
+            "review": null,
+            "setup_future_usage": null,
+            "shared_payment_granted_token": null,
+            "shipping": null,
+            "source": null,
+            "statement_descriptor": null,
+            "statement_descriptor_suffix": null,
+            "status": "requires_payment_method",
+            "transfer_data": null,
+            "transfer_group": null
+          },
+          "type": "payment_intent"
+        },
+        "status": "open",
+        "status_transitions": {
+          "canceled_at": null,
+          "paid_at": null
+        }
+      }
+    ],
+    "has_more": false,
+    "url": "/v1/invoices/payments"
+  },
+  "period_end": 1788368263,
+  "period_start": 1788368263,
+  "post_payment_credit_notes_amount": 0,
+  "pre_payment_credit_notes_amount": 0,
+  "receipt_number": null,
+  "rendering": {
+    "amount_tax_display": null,
+    "pdf": {
+      "page_size": "letter"
+    },
+    "template": null,
+    "template_version": null
+  },
+  "shipping_cost": null,
+  "shipping_details": null,
+  "starting_balance": 0,
+  "statement_descriptor": null,
+  "status": "open",
+  "status_transitions": {
+    "finalized_at": 1788368265,
+    "marked_uncollectible_at": null,
+    "paid_at": null,
+    "voided_at": null
+  },
+  "subtotal": 12345,
+  "subtotal_excluding_tax": 12345,
+  "test_clock": null,
+  "total": 12345,
+  "total_discount_amounts": [],
+  "total_excluding_tax": 12345,
+  "total_pretax_credit_amounts": [],
+  "total_taxes": [],
+  "webhooks_delivered_at": 1788368263
+}

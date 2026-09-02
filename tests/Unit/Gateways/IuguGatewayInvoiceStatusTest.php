@@ -10,6 +10,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -84,6 +85,19 @@ class IuguGatewayInvoiceStatusTest extends TestCase
         $this->assertSame($expected, $invoice->status);
         $this->assertSame($iuguStatus, $invoice->original->status);
         $this->assertSame([], $this->logger->records);
+    }
+
+    /**
+     * Toda fatura da Iugu é lida do objeto de fatura do gateway: `originType` é `INVOICE`.
+     */
+    public function testGetInvoiceMarksTheOriginAsInvoice(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->invoiceResponse()]);
+
+        $invoice = (new IuguGateway($api))->getInvoice($this->invoiceWithId());
+
+        $this->assertSame(InvoiceOriginType::INVOICE, $invoice->originType);
+        $this->assertSame('invoice', $invoice->toArray()['origin_type']);
     }
 
     public function testNoIuguStatusIsFlattenedAnymore(): void

@@ -23,6 +23,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | fill() estrito
+    |--------------------------------------------------------------------------
+    |
+    | Com true (padrão), Model::fill() lança ModelAttributeValidationException para chave
+    | que não corresponde a nenhuma propriedade do model (chaves com prefixo gateway_ e o
+    | conteúdo de gateway_options ficam livres). Com false, a chave desconhecida é ignorada
+    | em silêncio, como nas versões anteriores; use só durante a migração.
+    |
+    */
+    'strict_fill' => env('MULTIPAYMENT_STRICT_FILL', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Idempotência
     |--------------------------------------------------------------------------
     |

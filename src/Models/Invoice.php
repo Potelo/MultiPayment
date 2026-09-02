@@ -6,6 +6,7 @@ use Carbon\Carbon;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Idempotency\IdempotencyKey;
@@ -14,12 +15,13 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 /**
  * Fatura.
  *
- * As três propriedades abaixo são enums: aceitam na escrita a string do valor ou o caso do
+ * As quatro propriedades abaixo são enums: aceitam na escrita a string do valor ou o caso do
  * enum e devolvem sempre o enum (ver `Model::ENUM_CASTS`).
  *
  * @property InvoiceStatus|null $status Status genérico; `UNKNOWN` para status que a lib não reconhece.
  * @property PaymentMethod|null $paymentMethod Método com que a fatura foi (ou será) paga.
  * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela fatura.
+ * @property InvoiceOriginType|null $originType Objeto do gateway de onde a fatura foi lida (`PAYMENT_INTENT` ou `INVOICE`); `original` guarda esse objeto.
  */
 class Invoice extends Model
 {
@@ -57,6 +59,7 @@ class Invoice extends Model
         'status' => InvoiceStatus::class,
         'paymentMethod' => PaymentMethod::class,
         'availablePaymentMethods' => [PaymentMethod::class],
+        'originType' => InvoiceOriginType::class,
     ];
 
     /**
@@ -117,6 +120,14 @@ class Invoice extends Model
      * @var PaymentMethod[]|null
      */
     protected ?array $availablePaymentMethods = null;
+
+    /**
+     * Preenchido pelo driver na leitura. Na Iugu é sempre `INVOICE`; na Stripe é
+     * `PAYMENT_INTENT` na cobrança avulsa e `INVOICE` na fatura de assinatura.
+     *
+     * @var InvoiceOriginType|null
+     */
+    protected ?InvoiceOriginType $originType = null;
 
     /**
      * @var CreditCard|null

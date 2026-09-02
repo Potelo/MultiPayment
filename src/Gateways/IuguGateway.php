@@ -26,6 +26,7 @@ use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
@@ -840,6 +841,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
 
         $invoice->gateway = 'iugu';
+        $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->original = $response;
 
         return $invoice;
@@ -1298,6 +1300,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $iuguInvoice = (object) $iuguInvoice;
         $invoice->id = $iuguInvoice->id ?? null;
         $invoice->gateway = 'iugu';
+        $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status ?? null);
         $invoice->amount = $iuguInvoice->total_cents ?? null;
         $invoice->paidAt = !empty($iuguInvoice->paid_at) ? new Carbon($iuguInvoice->paid_at) : null;
@@ -2666,6 +2669,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             : null;
         $invoice->url = $iuguInvoice->secure_url ?? null;
         $invoice->gateway = 'iugu';
+        $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->original = $iuguInvoice;
 
         return $invoice;

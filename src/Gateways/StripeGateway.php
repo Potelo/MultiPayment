@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Gateways;
 
 use Carbon\Carbon;
 use Stripe\StripeClient;
+use Stripe\Invoice as StripeInvoice;
 use Stripe\Customer as StripeCustomer;
 use Stripe\PaymentIntent as StripePaymentIntent;
 use Stripe\PaymentMethod as StripePaymentMethod;
@@ -30,6 +31,7 @@ use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\DeclineCode;
@@ -74,6 +76,22 @@ class StripeGateway implements GatewayContract
      * Stripe não inclui por padrão) a lista `Invoice::$refunds` seria reconstruída sem ids.
      */
     private const PAYMENT_INTENT_EXPAND = ['latest_charge.balance_transaction', 'latest_charge.refunds'];
+
+    /**
+     * Expand na leitura de um Invoice da Stripe: `payments` só vem expandido, e é nele que está
+     * o PaymentIntent da fatura (`payments.data[].payment.payment_intent`). O `expand` da Stripe
+     * para em quatro níveis, então o `latest_charge` desse PaymentIntent é lido num GET à parte.
+     */
+    private const INVOICE_EXPAND = ['payments.data.payment.payment_intent'];
+
+    /** Prefixo do id de um objeto Invoice da Stripe; o de PaymentIntent é `pi_`. */
+    private const STRIPE_INVOICE_ID_PREFIX = 'in_';
+
+    /** Tipo de InvoicePayment cujo pagamento é um PaymentIntent. */
+    private const INVOICE_PAYMENT_TYPE_PAYMENT_INTENT = 'payment_intent';
+
+    /** Tipo de InvoicePayment registrado quando a fatura é paga fora da Stripe (`paid_out_of_band`). */
+    private const INVOICE_PAYMENT_TYPE_PAYMENT_RECORD = 'payment_record';
 
     /**
      * Mapa de status do objeto Refund da Stripe para os genéricos do pacote. Lista oficial em
@@ -915,9 +933,19 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * Aceita o id de um PaymentIntent (`pi_`, cobrança avulsa) ou de um Invoice da Stripe
+     * (`in_`, fatura de assinatura): o prefixo decide qual objeto é lido e
+     * `Invoice::$originType` diz qual voltou. A leitura de um Invoice custa um GET a mais
+     * quando o PaymentIntent dele já teve tentativa de pagamento, porque o charge fica fora do
+     * limite de níveis do `expand`.
      */
     public function getInvoice(Invoice $invoice): Invoice
     {
+        if (self::isStripeInvoiceId($invoice->id)) {
+            return $this->parseInvoice($this->retrieveStripeInvoice($invoice->id), $invoice);
+        }
+
         $stripePaymentIntent = $this->stripeRequest(function () use ($invoice) {
             return $this->client->paymentIntents->retrieve(
                 $invoice->id,
@@ -926,6 +954,53 @@ class StripeGateway implements GatewayContract
         });
 
         return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Diz se o id é de um objeto Invoice da Stripe (prefixo `in_`).
+     *
+     * @param  string|null  $id
+     * @return bool
+     */
+    private static function isStripeInvoiceId(?string $id): bool
+    {
+        return is_string($id) && str_starts_with($id, self::STRIPE_INVOICE_ID_PREFIX);
+    }
+
+    /**
+     * Lê um objeto Invoice da Stripe com os pagamentos e o PaymentIntent deles expandidos.
+     *
+     * @param  string  $id
+     * @return StripeInvoice
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function retrieveStripeInvoice(string $id): StripeInvoice
+    {
+        return $this->stripeRequest(function () use ($id) {
+            return $this->client->invoices->retrieve($id, ['expand' => self::INVOICE_EXPAND]);
+        });
+    }
+
+    /**
+     * Lança `UnsupportedOperationException` (`SUBSCRIPTIONS`, `not_implemented`) quando a fatura
+     * é um Invoice da Stripe (id `in_`): a lib ainda não implementa escrita sobre a fatura de
+     * assinatura.
+     *
+     * @param  Invoice  $invoice
+     * @param  string  $operation  nome da operação, para a mensagem
+     * @return void
+     * @throws UnsupportedOperationException
+     */
+    private function assertPaymentIntentOrigin(Invoice $invoice, string $operation): void
+    {
+        if (self::isStripeInvoiceId($invoice->id)) {
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::SUBSCRIPTIONS,
+                "A operação {$operation} sobre a fatura de assinatura [{$invoice->id}] (objeto Invoice da Stripe)"
+                . ' ainda não está implementada nesta lib; a leitura por getInvoice() está disponível.'
+            );
+        }
     }
 
     /**
@@ -952,6 +1027,7 @@ class StripeGateway implements GatewayContract
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $this->assertPaymentIntentOrigin($invoice, 'refundInvoice');
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
@@ -1077,6 +1153,7 @@ class StripeGateway implements GatewayContract
         if (empty($invoice->creditCard->token) && empty($invoice->creditCard->id)) {
             throw new ModelAttributeValidationException('Credit card token or id is required');
         }
+        $this->assertPaymentIntentOrigin($invoice, 'chargeInvoiceWithCreditCard');
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         // id = PaymentMethod salvo no customer; token = PaymentMethod criado client-side
@@ -1130,14 +1207,33 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Converte o PaymentIntent da Stripe em uma Invoice do MultiPayment.
+     * Converte o objeto de origem da Stripe em uma Invoice do MultiPayment: PaymentIntent
+     * (cobrança avulsa, origem `PAYMENT_INTENT`) ou Invoice da Stripe (fatura de assinatura,
+     * origem `INVOICE`). `Invoice::$originType` diz qual foi e `original` guarda o objeto.
+     *
+     * @param  \Stripe\PaymentIntent|\Stripe\Invoice  $stripeObject
+     * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function parseInvoice(StripePaymentIntent|StripeInvoice $stripeObject, ?Invoice $invoice = null): Invoice
+    {
+        return $stripeObject instanceof StripeInvoice
+            ? $this->parseFromStripeInvoice($stripeObject, $invoice)
+            : $this->parseFromPaymentIntent($stripeObject, $invoice);
+    }
+
+    /**
+     * Converte o PaymentIntent da Stripe em uma Invoice do MultiPayment (origem
+     * `PAYMENT_INTENT`). Os line items vêm de `metadata`, onde `invoiceToStripeData()` os
+     * serializou; `url` é a página de instruções do Pix, nula em cartão.
      *
      * @param  \Stripe\PaymentIntent  $stripePaymentIntent
      * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws GatewayException|GatewayNotAvailableException
      */
-    private function parseInvoice(StripePaymentIntent $stripePaymentIntent, ?Invoice $invoice = null): Invoice
+    private function parseFromPaymentIntent(StripePaymentIntent $stripePaymentIntent, ?Invoice $invoice = null): Invoice
     {
         $invoice = $invoice ?? new Invoice();
 
@@ -1145,41 +1241,22 @@ class StripeGateway implements GatewayContract
         // não pode alimentar paidAmount/refundedAmount
         $stripeCharge = is_object($stripePaymentIntent->latest_charge) ? $stripePaymentIntent->latest_charge : null;
         $paidCharge = ($stripeCharge && $stripeCharge->status === 'succeeded') ? $stripeCharge : null;
-        $disputeStatus = $paidCharge ? $this->disputeStatus($paidCharge) : null;
 
         $invoice->id = $stripePaymentIntent->id;
         $invoice->gateway = 'stripe';
-        $invoice->status = self::stripeStatusToMultiPayment($stripePaymentIntent, $paidCharge, $disputeStatus);
+        $invoice->originType = InvoiceOriginType::PAYMENT_INTENT;
+        $invoice->status = $this->deriveStatus(null, $stripePaymentIntent, $paidCharge);
         $invoice->amount = $stripePaymentIntent->amount;
         $invoice->paidAmount = $paidCharge?->amount_captured;
         $invoice->refundedAmount = $paidCharge?->amount_refunded;
         $invoice->refunds = $this->parseRefunds($paidCharge, $stripePaymentIntent->id);
         $invoice->paidAt = $paidCharge ? Carbon::createFromTimestamp($paidCharge->created) : null;
-        $balanceTransaction = $paidCharge?->balance_transaction;
-        // a balance transaction do cartão é assíncrona: pode vir nula logo após o confirm
-        // e preenchida num getInvoice posterior
-        $invoice->fee = is_object($balanceTransaction) ? $balanceTransaction->fee : null;
+        $invoice->fee = self::chargeFee($paidCharge);
         $invoice->createdAt = Carbon::createFromTimestamp($stripePaymentIntent->created);
         $invoice->original = $stripePaymentIntent;
 
-        if (!empty($stripePaymentIntent->customer)) {
-            if (empty($invoice->customer)) {
-                $invoice->customer = new Customer();
-            }
-            $invoice->customer->id = is_object($stripePaymentIntent->customer)
-                ? $stripePaymentIntent->customer->id
-                : $stripePaymentIntent->customer;
-        }
-
-        $detailsType = $stripeCharge?->payment_method_details?->type;
-        if (!empty($detailsType)) {
-            $invoice->paymentMethod = self::PAYMENT_METHOD_TYPES[$detailsType] ?? null;
-        } elseif (count($stripePaymentIntent->payment_method_types ?? []) === 1) {
-            $invoice->paymentMethod = self::PAYMENT_METHOD_TYPES[$stripePaymentIntent->payment_method_types[0]] ?? null;
-        }
-        if (!empty($invoice->paymentMethod)) {
-            $invoice->availablePaymentMethods = [$invoice->paymentMethod];
-        }
+        $this->parseInvoiceCustomer($invoice, $stripePaymentIntent->customer ?? null);
+        $this->parsePaymentMethod($invoice, $stripePaymentIntent, $stripeCharge);
 
         // reconstrói os items serializados em metadata pelo invoiceToStripeData
         $metadata = !empty($stripePaymentIntent->metadata) ? $stripePaymentIntent->metadata->toArray() : [];
@@ -1195,39 +1272,292 @@ class StripeGateway implements GatewayContract
             $invoice->items = $items;
         }
 
+        $this->parseCardDetails($invoice, $stripeCharge);
+
+        // sem next_action de pix não há QR utilizável: a página de instruções some junto,
+        // inclusive num model reutilizado (ex.: fatura pix expirada re-cobrada com cartão)
+        $invoice->url = $this->parsePixDisplay($invoice, $stripePaymentIntent);
+
+        return $invoice;
+    }
+
+    /**
+     * Converte um objeto Invoice da Stripe (fatura de assinatura) em uma Invoice do
+     * MultiPayment (origem `INVOICE`). O PaymentIntent da fatura vem de `payments`
+     * (`invoicePaymentIntent()`), e o charge dele alimenta valores, estornos e contestação como
+     * na cobrança avulsa. Os line items vêm de `lines.data` (a primeira página, de até dez
+     * itens); `url` é a página hospedada da fatura; `expiresAt` é o `due_date`, quando a fatura
+     * tem um, ou a expiração do QR Code do Pix.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function parseFromStripeInvoice(StripeInvoice $stripeInvoice, ?Invoice $invoice = null): Invoice
+    {
+        $invoice = $invoice ?? new Invoice();
+
+        $stripePaymentIntent = $this->invoicePaymentIntent($stripeInvoice);
+        $stripeCharge = is_object($stripePaymentIntent?->latest_charge) ? $stripePaymentIntent->latest_charge : null;
+        $paidCharge = ($stripeCharge && $stripeCharge->status === 'succeeded') ? $stripeCharge : null;
+
+        $invoice->id = $stripeInvoice->id;
+        $invoice->gateway = 'stripe';
+        $invoice->originType = InvoiceOriginType::INVOICE;
+        $invoice->status = $this->deriveStatus($stripeInvoice, $stripePaymentIntent, $paidCharge);
+        $invoice->amount = $stripeInvoice->total;
+        // sem charge pago, o valor recebido é o que o Invoice registra (pagamento externo,
+        // fatura parcialmente paga ou quitada sem cobrança); fatura em aberto sem nada pago fica nula
+        $amountPaid = $stripeInvoice->amount_paid ?? 0;
+        $invoice->paidAmount = $paidCharge?->amount_captured
+            ?? ($stripeInvoice->status === 'paid' || $amountPaid > 0 ? $amountPaid : null);
+        $invoice->refundedAmount = $paidCharge?->amount_refunded;
+        $invoice->refunds = $this->parseRefunds($paidCharge, $stripeInvoice->id);
+        $paidAt = $stripeInvoice->status_transitions->paid_at ?? $paidCharge?->created;
+        $invoice->paidAt = !empty($paidAt) ? Carbon::createFromTimestamp($paidAt) : null;
+        $invoice->fee = self::chargeFee($paidCharge);
+        $invoice->createdAt = Carbon::createFromTimestamp($stripeInvoice->created);
+        $invoice->expiresAt = !empty($stripeInvoice->due_date)
+            ? Carbon::createFromTimestamp($stripeInvoice->due_date)
+            : null;
+        $invoice->url = $stripeInvoice->hosted_invoice_url ?? null;
+        $invoice->original = $stripeInvoice;
+
+        $this->parseInvoiceCustomer($invoice, $stripeInvoice->customer ?? null);
+        // paga fora da Stripe, o método oferecido pelo PaymentIntent cancelado não diz como
+        // o dinheiro entrou
+        if ($invoice->status !== InvoiceStatus::EXTERNALLY_PAID) {
+            $this->parsePaymentMethod($invoice, $stripePaymentIntent, $stripeCharge);
+        }
+
+        $items = [];
+        foreach ($stripeInvoice->lines->data ?? [] as $line) {
+            $invoiceItem = new InvoiceItem();
+            $invoiceItem->description = $line->description ?? null;
+            $invoiceItem->quantity = isset($line->quantity) ? (int) $line->quantity : 1;
+            $invoiceItem->price = self::lineItemUnitAmount($line, $invoiceItem->quantity);
+            $items[] = $invoiceItem;
+        }
+        if (!empty($items)) {
+            $invoice->items = $items;
+        }
+
+        $this->parseCardDetails($invoice, $stripeCharge);
+        $this->parsePixDisplay($invoice, $stripePaymentIntent);
+
+        return $invoice;
+    }
+
+    /**
+     * Escolhe o PaymentIntent da fatura entre os pagamentos do Invoice (`payments.data`): o
+     * que está pago, senão o pagamento padrão (`is_default`), senão o primeiro do tipo
+     * PaymentIntent. Devolve nulo quando a fatura não tem PaymentIntent (rascunho, quitada sem
+     * cobrança, paga fora da Stripe). Um PaymentIntent que já tem charge, ou que veio só como
+     * id, é relido com o expand de PaymentIntent, para o charge trazer valores, estornos e a
+     * flag de contestação.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @return \Stripe\PaymentIntent|null
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function invoicePaymentIntent(StripeInvoice $stripeInvoice): ?StripePaymentIntent
+    {
+        $candidates = [];
+        foreach ($stripeInvoice->payments->data ?? [] as $invoicePayment) {
+            if (($invoicePayment->payment->type ?? null) === self::INVOICE_PAYMENT_TYPE_PAYMENT_INTENT) {
+                $candidates[] = $invoicePayment;
+            }
+        }
+
+        $chosen = null;
+        foreach ($candidates as $candidate) {
+            if (($candidate->status ?? null) === 'paid') {
+                $chosen = $candidate;
+                break;
+            }
+        }
+        if (is_null($chosen)) {
+            foreach ($candidates as $candidate) {
+                if (!empty($candidate->is_default)) {
+                    $chosen = $candidate;
+                    break;
+                }
+            }
+        }
+        $chosen = $chosen ?? ($candidates[0] ?? null);
+        if (is_null($chosen)) {
+            return null;
+        }
+
+        $stripePaymentIntent = $chosen->payment->payment_intent ?? null;
+        if ($stripePaymentIntent instanceof StripePaymentIntent && empty($stripePaymentIntent->latest_charge)) {
+            return $stripePaymentIntent;
+        }
+
+        $id = is_object($stripePaymentIntent) ? ($stripePaymentIntent->id ?? '') : (string) $stripePaymentIntent;
+        if ($id === '') {
+            return null;
+        }
+
+        return $this->stripeRequest(function () use ($id) {
+            return $this->client->paymentIntents->retrieve($id, ['expand' => self::PAYMENT_INTENT_EXPAND]);
+        });
+    }
+
+    /**
+     * Tipo do primeiro pagamento do Invoice com status `paid` (`payment_intent`, `charge` ou
+     * `payment_record`), ou nulo quando nenhum está pago.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @return string|null
+     */
+    private static function paidInvoicePaymentType(StripeInvoice $stripeInvoice): ?string
+    {
+        foreach ($stripeInvoice->payments->data ?? [] as $invoicePayment) {
+            if (($invoicePayment->status ?? null) === 'paid') {
+                return $invoicePayment->payment->type ?? null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Valor unitário de um line item do Invoice: `pricing.unit_amount_decimal` quando existe,
+     * senão o `amount` da linha dividido pela quantidade.
+     *
+     * @param  object  $line
+     * @param  int  $quantity
+     * @return int|null
+     */
+    private static function lineItemUnitAmount(object $line, int $quantity): ?int
+    {
+        $unitAmount = $line->pricing->unit_amount_decimal ?? null;
+        if (is_numeric($unitAmount)) {
+            return (int) round((float) $unitAmount);
+        }
+
+        if (!isset($line->amount)) {
+            return null;
+        }
+
+        return $quantity > 1 ? intdiv((int) $line->amount, $quantity) : (int) $line->amount;
+    }
+
+    /**
+     * Taxa da Stripe no charge pago, lida da balance transaction expandida. A balance
+     * transaction do cartão é assíncrona: pode vir nula logo após o confirm e preenchida numa
+     * leitura posterior.
+     *
+     * @param  object|null  $paidCharge
+     * @return int|null
+     */
+    private static function chargeFee(?object $paidCharge): ?int
+    {
+        $balanceTransaction = $paidCharge?->balance_transaction;
+
+        return is_object($balanceTransaction) ? $balanceTransaction->fee : null;
+    }
+
+    /**
+     * Preenche o id do cliente da fatura a partir do `customer` do objeto da Stripe (id ou
+     * objeto expandido); sem cliente no objeto, o model fica como estava.
+     *
+     * @param  Invoice  $invoice
+     * @param  object|string|null  $stripeCustomer
+     * @return void
+     */
+    private function parseInvoiceCustomer(Invoice $invoice, object|string|null $stripeCustomer): void
+    {
+        if (empty($stripeCustomer)) {
+            return;
+        }
+        if (empty($invoice->customer)) {
+            $invoice->customer = new Customer();
+        }
+        $invoice->customer->id = is_object($stripeCustomer) ? $stripeCustomer->id : $stripeCustomer;
+    }
+
+    /**
+     * Preenche `paymentMethod` e `availablePaymentMethods` a partir do tipo do charge
+     * (`payment_method_details.type`) ou, sem charge, do único tipo aceito pelo PaymentIntent.
+     *
+     * @param  Invoice  $invoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @param  object|null  $stripeCharge
+     * @return void
+     */
+    private function parsePaymentMethod(Invoice $invoice, ?StripePaymentIntent $stripePaymentIntent, ?object $stripeCharge): void
+    {
+        $detailsType = $stripeCharge?->payment_method_details?->type;
+        if (!empty($detailsType)) {
+            $invoice->paymentMethod = self::PAYMENT_METHOD_TYPES[$detailsType] ?? null;
+        } elseif (count($stripePaymentIntent?->payment_method_types ?? []) === 1) {
+            $invoice->paymentMethod = self::PAYMENT_METHOD_TYPES[$stripePaymentIntent->payment_method_types[0]] ?? null;
+        }
+        if (!empty($invoice->paymentMethod)) {
+            $invoice->availablePaymentMethods = [$invoice->paymentMethod];
+        }
+    }
+
+    /**
+     * Preenche bandeira e últimos dígitos do cartão a partir de `payment_method_details.card`
+     * do charge, quando existe.
+     *
+     * @param  Invoice  $invoice
+     * @param  object|null  $stripeCharge
+     * @return void
+     */
+    private function parseCardDetails(Invoice $invoice, ?object $stripeCharge): void
+    {
         // `?->` não basta: em cobrança pix o payment_method_details existe e apenas não tem
         // a chave `card`, e o StripeObject loga "Undefined property" via Stripe::getLogger()
         // ao ler propriedade ausente. isset() passa pelo __isset e não polui o log.
         $paymentMethodDetails = $stripeCharge?->payment_method_details;
         $cardDetails = isset($paymentMethodDetails->card) ? $paymentMethodDetails->card : null;
-        if (!empty($cardDetails)) {
-            if (empty($invoice->creditCard)) {
-                $invoice->creditCard = new CreditCard();
-            }
-            $invoice->creditCard->brand = $cardDetails->brand ?? null;
-            $invoice->creditCard->lastDigits = $cardDetails->last4 ?? null;
-            $invoice->creditCard->gateway = 'stripe';
+        if (empty($cardDetails)) {
+            return;
         }
+        if (empty($invoice->creditCard)) {
+            $invoice->creditCard = new CreditCard();
+        }
+        $invoice->creditCard->brand = $cardDetails->brand ?? null;
+        $invoice->creditCard->lastDigits = $cardDetails->last4 ?? null;
+        $invoice->creditCard->gateway = 'stripe';
+    }
 
-        $qrCode = $stripePaymentIntent->next_action?->pix_display_qr_code;
-        if (!empty($qrCode)) {
-            if (empty($invoice->pix)) {
-                $invoice->pix = new Pix();
-            }
-            $invoice->pix->qrCodeText = $qrCode->data ?? null;
-            $invoice->pix->qrCodeImageUrl = $qrCode->image_url_png ?? null;
-            $invoice->url = $qrCode->hosted_instructions_url ?? null;
-            $invoice->expiresAt = !empty($qrCode->expires_at)
-                ? Carbon::createFromTimestamp($qrCode->expires_at)
-                : $invoice->expiresAt;
-        } else {
-            // sem next_action de pix não há QR utilizável — limpa dados velhos de um model
-            // reutilizado (ex.: fatura pix expirada re-cobrada com cartão)
+    /**
+     * Preenche `pix` (QR Code) e `expiresAt` a partir de `next_action.pix_display_qr_code` do
+     * PaymentIntent e devolve a página hospedada de instruções. Sem QR Code, limpa `pix` e
+     * devolve nulo.
+     *
+     * @param  Invoice  $invoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @return string|null
+     */
+    private function parsePixDisplay(Invoice $invoice, ?StripePaymentIntent $stripePaymentIntent): ?string
+    {
+        // isset() passa pelo __isset: um next_action de outro tipo (3DS) não tem a chave e o
+        // StripeObject registraria "Undefined property" no log ao lê-la
+        $nextAction = $stripePaymentIntent?->next_action;
+        $qrCode = isset($nextAction->pix_display_qr_code) ? $nextAction->pix_display_qr_code : null;
+        if (empty($qrCode)) {
             $invoice->pix = null;
-            $invoice->url = null;
+
+            return null;
         }
 
-        return $invoice;
+        if (empty($invoice->pix)) {
+            $invoice->pix = new Pix();
+        }
+        $invoice->pix->qrCodeText = $qrCode->data ?? null;
+        $invoice->pix->qrCodeImageUrl = $qrCode->image_url_png ?? null;
+        $invoice->expiresAt = !empty($qrCode->expires_at)
+            ? Carbon::createFromTimestamp($qrCode->expires_at)
+            : $invoice->expiresAt;
+
+        return $qrCode->hosted_instructions_url ?? null;
     }
 
     /**
@@ -1324,18 +1654,58 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Deriva o status genérico do par PaymentIntent + charge. Estorno não muda o status do
-     * PaymentIntent na Stripe, então ele vem do charge. Contestação, quando existe, vence os
-     * dois: uma fatura disputada não lê como paga nem como estornada. `requires_capture` lê
-     * como `AUTHORIZED` e `processing` como `PROCESSING`; status de PaymentIntent fora do
+     * Deriva o `InvoiceStatus` do trio Invoice da Stripe, PaymentIntent e charge pago; os dois
+     * `parse*` de fatura obtêm o status por aqui.
+     *
+     * Sem Invoice (origem `PAYMENT_INTENT`) o status vem do PaymentIntent e o charge refina
+     * estorno e contestação: estorno não muda o status do PaymentIntent na Stripe;
+     * `requires_capture` lê como `AUTHORIZED`, `processing` como `PROCESSING` e status fora do
      * mapa devolve `UNKNOWN` com aviso no log.
      *
-     * @param  \Stripe\PaymentIntent  $stripePaymentIntent
+     * Com Invoice (origem `INVOICE`) o status do Invoice manda no ciclo de vida e PaymentIntent
+     * e charge só refinam o detalhe de pagamento: `draft` é `PENDING`; `open` é `PENDING`,
+     * `AUTHORIZED`, `PROCESSING` ou `PARTIALLY_PAID` conforme o PaymentIntent e o
+     * `amount_paid`; `paid` é `PAID`, estornada ou contestada conforme o charge,
+     * `EXTERNALLY_PAID` quando o pagamento foi registrado fora da Stripe e `PAID` quando não
+     * houve cobrança (`amount_due` zero); `void` é `CANCELED` e `uncollectible` é `EXPIRED`.
+     * Combinação fora dessa tabela devolve `UNKNOWN` com aviso no log contendo os três status
+     * e o id da fatura.
+     *
+     * Contestação, quando existe, vence estorno e status de pagamento nas duas origens.
+     *
+     * @param  \Stripe\Invoice|null  $stripeInvoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @param  object|null  $paidCharge  charge em `succeeded`, expandido
+     * @return InvoiceStatus
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function deriveStatus(?StripeInvoice $stripeInvoice, ?StripePaymentIntent $stripePaymentIntent, ?object $paidCharge): InvoiceStatus
+    {
+        $disputeStatus = $paidCharge ? $this->disputeStatus($paidCharge) : null;
+
+        if (is_null($stripeInvoice)) {
+            return self::paymentIntentStatus($stripePaymentIntent, $paidCharge, $disputeStatus);
+        }
+
+        return match ($stripeInvoice->status) {
+            'draft' => InvoiceStatus::PENDING,
+            'open' => $this->openInvoiceStatus($stripeInvoice, $stripePaymentIntent),
+            'paid' => $this->paidInvoiceStatus($stripeInvoice, $stripePaymentIntent, $paidCharge, $disputeStatus),
+            'void' => InvoiceStatus::CANCELED,
+            'uncollectible' => InvoiceStatus::EXPIRED,
+            default => self::unknownInvoiceStatus($stripeInvoice, $stripePaymentIntent),
+        };
+    }
+
+    /**
+     * Status de um PaymentIntent sem Invoice (origem `PAYMENT_INTENT`).
+     *
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
      * @param  object|null  $paidCharge
-     * @param  InvoiceStatus|null  $disputeStatus  resultado de disputeStatus() para o charge pago
+     * @param  InvoiceStatus|null  $disputeStatus
      * @return InvoiceStatus
      */
-    private static function stripeStatusToMultiPayment(StripePaymentIntent $stripePaymentIntent, ?object $paidCharge, ?InvoiceStatus $disputeStatus = null): InvoiceStatus
+    private static function paymentIntentStatus(?StripePaymentIntent $stripePaymentIntent, ?object $paidCharge, ?InvoiceStatus $disputeStatus): InvoiceStatus
     {
         if ($disputeStatus !== null) {
             return $disputeStatus;
@@ -1347,7 +1717,7 @@ class StripeGateway implements GatewayContract
                 : InvoiceStatus::PARTIALLY_REFUNDED;
         }
 
-        return match ($stripePaymentIntent->status) {
+        return match ($stripePaymentIntent?->status) {
             'succeeded' => InvoiceStatus::PAID,
             'canceled' => InvoiceStatus::CANCELED,
             'requires_capture' => InvoiceStatus::AUTHORIZED,
@@ -1355,8 +1725,106 @@ class StripeGateway implements GatewayContract
             // pix expirado volta a requires_payment_method (não vira canceled) e segue
             // re-cobrável; reportar PENDING preserva essa funcionalidade
             'requires_action', 'requires_confirmation', 'requires_payment_method' => InvoiceStatus::PENDING,
-            default => InvoiceStatus::unknown((string) $stripePaymentIntent->status, 'stripe'),
+            default => InvoiceStatus::unknown((string) $stripePaymentIntent?->status, 'stripe'),
         };
+    }
+
+    /**
+     * Status de um Invoice da Stripe em `open`: parcialmente paga quando `amount_paid` está
+     * entre zero e o `total`; senão o PaymentIntent decide (ausente ou aguardando o cliente é
+     * `PENDING`, `requires_capture` é `AUTHORIZED`, `processing` é `PROCESSING`). PaymentIntent
+     * em `succeeded` ou `canceled` numa fatura ainda aberta é transição ou pagamento fora do
+     * padrão e fica em `UNKNOWN`.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @return InvoiceStatus
+     */
+    private function openInvoiceStatus(StripeInvoice $stripeInvoice, ?StripePaymentIntent $stripePaymentIntent): InvoiceStatus
+    {
+        $amountPaid = $stripeInvoice->amount_paid ?? 0;
+        if ($amountPaid > 0 && $amountPaid < ($stripeInvoice->total ?? 0)) {
+            return InvoiceStatus::PARTIALLY_PAID;
+        }
+
+        return match ($stripePaymentIntent?->status) {
+            null, 'requires_payment_method', 'requires_action', 'requires_confirmation' => InvoiceStatus::PENDING,
+            'requires_capture' => InvoiceStatus::AUTHORIZED,
+            'processing' => InvoiceStatus::PROCESSING,
+            default => self::unknownInvoiceStatus($stripeInvoice, $stripePaymentIntent),
+        };
+    }
+
+    /**
+     * Status de um Invoice da Stripe em `paid`. Com o PaymentIntent em `succeeded`, o charge
+     * refina: contestação, estorno parcial ou total, senão `PAID`. Sem ele, o pagamento
+     * registrado fora da Stripe (`amount_paid_off_stripe`, ou um InvoicePayment pago do tipo
+     * `payment_record`) lê como `EXTERNALLY_PAID`; um InvoicePayment pago do tipo `charge` lê
+     * como `PAID`; e a fatura sem PaymentIntent com `amount_due` zero (avaliação gratuita,
+     * saldo de crédito, valor abaixo do mínimo) lê como `PAID`. O restante é `UNKNOWN`.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @param  object|null  $paidCharge
+     * @param  InvoiceStatus|null  $disputeStatus
+     * @return InvoiceStatus
+     */
+    private function paidInvoiceStatus(
+        StripeInvoice $stripeInvoice,
+        ?StripePaymentIntent $stripePaymentIntent,
+        ?object $paidCharge,
+        ?InvoiceStatus $disputeStatus
+    ): InvoiceStatus {
+        if ($stripePaymentIntent?->status === 'succeeded') {
+            return self::paymentIntentStatus($stripePaymentIntent, $paidCharge, $disputeStatus);
+        }
+
+        if (($stripeInvoice->amount_paid_off_stripe ?? 0) > 0) {
+            return InvoiceStatus::EXTERNALLY_PAID;
+        }
+
+        $paidPaymentType = self::paidInvoicePaymentType($stripeInvoice);
+        if ($paidPaymentType === self::INVOICE_PAYMENT_TYPE_PAYMENT_RECORD) {
+            return InvoiceStatus::EXTERNALLY_PAID;
+        }
+        if ($paidPaymentType === 'charge') {
+            return InvoiceStatus::PAID;
+        }
+
+        if (is_null($stripePaymentIntent) && (int) ($stripeInvoice->amount_due ?? 0) === 0) {
+            return InvoiceStatus::PAID;
+        }
+
+        return self::unknownInvoiceStatus($stripeInvoice, $stripePaymentIntent);
+    }
+
+    /**
+     * Devolve `UNKNOWN` e registra um aviso no log com o id da fatura e os status do Invoice,
+     * do PaymentIntent e do charge.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @return InvoiceStatus
+     */
+    private static function unknownInvoiceStatus(StripeInvoice $stripeInvoice, ?StripePaymentIntent $stripePaymentIntent): InvoiceStatus
+    {
+        $stripeCharge = is_object($stripePaymentIntent?->latest_charge) ? $stripePaymentIntent->latest_charge : null;
+        $context = [
+            'gateway' => 'stripe',
+            'invoice_id' => $stripeInvoice->id,
+            'invoice_status' => $stripeInvoice->status,
+            'payment_intent_status' => $stripePaymentIntent?->status,
+            'charge_status' => $stripeCharge?->status,
+        ];
+
+        LogHelper::warning(
+            "Combinação de status sem tradução na fatura [{$stripeInvoice->id}] do gateway [stripe]"
+            . " (invoice [{$stripeInvoice->status}], payment_intent [" . ($stripePaymentIntent?->status ?? 'ausente')
+            . '], charge [' . ($stripeCharge?->status ?? 'ausente') . ']), lida como unknown',
+            $context
+        );
+
+        return InvoiceStatus::UNKNOWN;
     }
 
     /**
@@ -1391,7 +1859,9 @@ class StripeGateway implements GatewayContract
      * Restrito a faturas pix pendentes (cartão é síncrono, não há o que duplicar). A chave de
      * idempotência vai na criação da nova fatura; o cancelamento da original usa
      * `{chave}:cancel_original`. Com chave, uma original já cancelada é aceita, porque pode ser
-     * o resultado de uma tentativa anterior com a mesma chave, que a Stripe repete.
+     * o resultado de uma tentativa anterior com a mesma chave, que a Stripe repete. Fatura de
+     * origem `INVOICE` (id `in_`) é recusada antes da rede: a próxima fatura da assinatura é
+     * gerada pela Stripe.
      *
      * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
@@ -1403,6 +1873,15 @@ class StripeGateway implements GatewayContract
     ): Invoice {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+        if (self::isStripeInvoiceId($invoice->id)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_DUPLICATION,
+                "No Stripe a fatura de assinatura [{$invoice->id}] (objeto Invoice) não pode ser duplicada:"
+                . ' a próxima fatura é gerada pela Stripe, e um Pix expirado se resolve com nova tentativa'
+                . ' de pagamento da mesma fatura.'
+            );
         }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice, $gatewayOptions);
         $gatewayOptions = self::withoutIdempotencyKey($gatewayOptions);
@@ -1484,7 +1963,9 @@ class StripeGateway implements GatewayContract
     /**
      * @inheritDoc
      *
-     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do cancelamento.
+     * Na origem `PAYMENT_INTENT` cancela o PaymentIntent; na origem `INVOICE` (id `in_`) anula o
+     * Invoice da Stripe (`void`), e a Stripe cancela sozinha o PaymentIntent padrão dele. A
+     * chave de idempotência vai no cabeçalho `Idempotency-Key` do cancelamento.
      *
      * @throws ModelAttributeValidationException
      */
@@ -1494,6 +1975,10 @@ class StripeGateway implements GatewayContract
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
+
+        if (self::isStripeInvoiceId($invoice->id)) {
+            return $this->voidStripeInvoice($invoice, $idempotencyKey);
+        }
 
         // só estados não-terminais são canceláveis; PaymentIntent pago recusa o cancel
         // com payment_intent_unexpected_state (vira GatewayException)
@@ -1506,6 +1991,37 @@ class StripeGateway implements GatewayContract
         });
 
         return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Anula um Invoice da Stripe. A fatura é lida antes: `draft` lança `GatewayException`
+     * orientando a esperar a finalização; nos demais estados a Stripe decide, e `paid` ou
+     * `void` recusam com `ValidationException`, como o PaymentIntent já pago ou cancelado.
+     *
+     * @param  Invoice  $invoice
+     * @param  string|null  $idempotencyKey
+     * @return Invoice
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function voidStripeInvoice(Invoice $invoice, ?string $idempotencyKey): Invoice
+    {
+        $current = $this->retrieveStripeInvoice($invoice->id);
+        if ($current->status === 'draft') {
+            throw new GatewayException(
+                "A fatura [{$invoice->id}] ainda é um rascunho na Stripe e não pode ser cancelada;"
+                . ' aguarde a finalização dela pela Stripe.'
+            );
+        }
+
+        $stripeInvoice = $this->stripeRequest(function () use ($invoice, $idempotencyKey) {
+            return $this->client->invoices->voidInvoice(
+                $invoice->id,
+                ['expand' => self::INVOICE_EXPAND],
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseInvoice($stripeInvoice, $invoice);
     }
 
     /**

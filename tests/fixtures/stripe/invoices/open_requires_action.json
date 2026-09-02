@@ -1,0 +1,263 @@
+{
+  "id": "in_1UBHTnPjx0CusuMrjxjg8WhK",
+  "object": "invoice",
+  "account_country": "BR",
+  "account_name": "Escavador",
+  "account_tax_ids": null,
+  "amount_due": 12345,
+  "amount_overpaid": 0,
+  "amount_paid": 0,
+  "amount_remaining": 12345,
+  "amount_shipping": 0,
+  "application": null,
+  "attempt_count": 1,
+  "attempted": true,
+  "auto_advance": false,
+  "automatic_tax": {
+    "disabled_reason": null,
+    "enabled": false,
+    "liability": null,
+    "provider": null,
+    "status": null
+  },
+  "automatically_finalizes_at": null,
+  "billing_reason": "manual",
+  "collection_method": "charge_automatically",
+  "created": 1788368263,
+  "currency": "brl",
+  "custom_fields": null,
+  "customer": "cus_VBen1v8T4Qa6XX",
+  "customer_account": null,
+  "customer_address": null,
+  "customer_email": "fixture@example.com",
+  "customer_name": "Fixture Customer",
+  "customer_phone": null,
+  "customer_shipping": null,
+  "customer_tax_exempt": "none",
+  "customer_tax_ids": [
+    {
+      "type": "br_cpf",
+      "value": "201.769.969-15"
+    }
+  ],
+  "default_payment_method": null,
+  "default_source": null,
+  "default_tax_rates": [],
+  "description": null,
+  "discounts": [],
+  "due_date": null,
+  "effective_at": 1788368265,
+  "ending_balance": 0,
+  "footer": null,
+  "from_invoice": null,
+  "hosted_invoice_url": "https://invoice.stripe.com/i/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQmVuQWVBcUNuMnFYUVNuYUpKWkdmbVlRUmNpcDkzLDE3ODkwOTA3Mg02002PvIsoNX?s=ap",
+  "invoice_pdf": "https://pay.stripe.com/invoice/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQmVuQWVBcUNuMnFYUVNuYUpKWkdmbVlRUmNpcDkzLDE3ODkwOTA3Mg02002PvIsoNX/pdf?s=ap",
+  "issuer": {
+    "type": "self"
+  },
+  "last_finalization_error": null,
+  "latest_revision": null,
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_1UBHToPjx0CusuMrDMrHiN5q",
+        "object": "line_item",
+        "amount": 12345,
+        "currency": "brl",
+        "description": "Assinatura mensal",
+        "discount_amounts": [],
+        "discountable": true,
+        "discounts": [],
+        "invoice": "in_1UBHTnPjx0CusuMrjxjg8WhK",
+        "livemode": false,
+        "metadata": [],
+        "parent": {
+          "invoice_item_details": {
+            "invoice_item": "ii_1UBHToPjx0CusuMrV6jEQhm5",
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "subscription": null
+          },
+          "subscription_item_details": null,
+          "type": "invoice_item_details"
+        },
+        "period": {
+          "end": 1788368264,
+          "start": 1788368264
+        },
+        "pretax_credit_amounts": [],
+        "pricing": {
+          "price_details": {
+            "price": "price_1UBHTYPjx0CusuMrLR1pKSFN",
+            "product": "prod_VBeni0Nk8Fandr"
+          },
+          "type": "price_details",
+          "unit_amount_decimal": "12345"
+        },
+        "quantity": 1,
+        "quantity_decimal": "1",
+        "subtotal": 12345,
+        "taxes": []
+      }
+    ],
+    "has_more": false,
+    "total_count": 1,
+    "url": "/v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK/lines"
+  },
+  "livemode": false,
+  "metadata": [],
+  "next_payment_attempt": null,
+  "number": "HJRZH2D7-0001",
+  "on_behalf_of": null,
+  "parent": null,
+  "payment_settings": {
+    "default_mandate": null,
+    "payment_method_options": null,
+    "payment_method_types": null
+  },
+  "payments": {
+    "object": "list",
+    "data": [
+      {
+        "id": "inpay_1UBHTpPjx0CusuMr5eW50ghI",
+        "object": "invoice_payment",
+        "amount_paid": null,
+        "amount_requested": 12345,
+        "created": 1788368265,
+        "currency": "brl",
+        "invoice": "in_1UBHTnPjx0CusuMrjxjg8WhK",
+        "is_default": true,
+        "livemode": false,
+        "payment": {
+          "payment_intent": {
+            "id": "pi_3UBHTpPjx0CusuMr1JTEiHGi",
+            "object": "payment_intent",
+            "allowed_payment_method_types": null,
+            "amount": 12345,
+            "amount_capturable": 0,
+            "amount_details": {
+              "tip": []
+            },
+            "amount_received": 0,
+            "application": null,
+            "application_fee_amount": null,
+            "automatic_payment_methods": null,
+            "canceled_at": null,
+            "cancellation_reason": null,
+            "capture_method": "automatic",
+            "client_secret": "pi_3UBHTpPjx0CusuMr1JTEiHGi_secret_REDACTED",
+            "confirmation_method": "automatic",
+            "created": 1788368265,
+            "currency": "brl",
+            "customer": "cus_VBen1v8T4Qa6XX",
+            "customer_account": null,
+            "description": "Payment for Invoice",
+            "excluded_payment_method_types": null,
+            "last_payment_error": null,
+            "latest_charge": "ch_3UBHTpPjx0CusuMr1KQeiDo0",
+            "livemode": false,
+            "managed_payments": {
+              "enabled": false
+            },
+            "metadata": [],
+            "next_action": {
+              "type": "use_stripe_sdk",
+              "use_stripe_sdk": {
+                "directory_server_encryption": {
+                  "algorithm": "RSA",
+                  "certificate": "-----BEGIN CERTIFICATE-----\nMIIGAzCCA+ugAwIBAgIQNyg9v/wemJMz4m18kdvt6zANBgkqhkiG9w0BAQsFADB2\nMQswCQYDVQQGEwJVUzENMAsGA1UECgwEVklTQTEvMC0GA1UECwwmVmlzYSBJbnRl\ncm5hdGlvbmFsIFNlcnZpY2UgQXNzb2NpYXRpb24xJzAlBgNVBAMMHlZpc2EgZUNv\nbW1lcmNlIElzc3VpbmcgQ0EgLSBHMjAeFw0yNDAyMjcyMjQ0MDNaFw0yNzAyMjYy\nMjQ0MDJaMIGhMRgwFgYDVQQHDA9IaWdobGFuZHMgUmFuY2gxETAPBgNVBAgMCENv\nbG9yYWRvMQswCQYDVQQGEwJVUzENMAsGA1UECgwEVklTQTEvMC0GA1UECwwmVmlz\nYSBJbnRlcm5hdGlvbmFsIFNlcnZpY2UgQXNzb2NpYXRpb24xJTAjBgNVBAMMHDNk\nczIucnNhLmVuY3J5cHRpb24udmlzYS5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IB\nDwAwggEKAoIBAQCSABLI5aAnf8Cypn/sKETE+U3e3YruYzUkqNpEMH0sPMpCAW1V\n33xiklm5R0S3ZFOEzzlmL22tRyjXaB6/WJUa66ajRz2DiY8+7x5CcMJNVlwqS6OG\nTlmvXGOxPXIVz6hxCsAb7mKS7cnpGpkjVD/Oe4u8ZmeUrcPWKdeH+e5BfeWp2Iel\nh89pU4tpJ84PlPTlLjZ3TLa2OutFLsMBExcr4ipWnEcbpkzvAPBRABBVZbkWTA9i\nVM9v5MXIJGzXDsQVJEOgxm/kyQXeO3JtNytYOaQ6sQi+z9gF32plP3hsrUQ2jJ3H\nCnZmOyrHl8tQWxhAIMZ/WHogpvEGufi14eyBAgMBAAGjggFfMIIBWzAMBgNVHRMB\nAf8EAjAAMB8GA1UdIwQYMBaAFL0nYyikrlS3yCO3wTVCF+nGeF+FMGcGCCsGAQUF\nBwEBBFswWTAwBggrBgEFBQcwAoYkaHR0cDovL2Vucm9sbC52aXNhY2EuY29tL2VD\nb21tRzIuY3J0MCUGCCsGAQUFBzABhhlodHRwOi8vb2NzcC52aXNhLmNvbS9vY3Nw\nMEYGA1UdIAQ/MD0wMQYIKwYBBQUHAgEwJTAjBggrBgEFBQcCARYXaHR0cDovL3d3\ndy52aXNhLmNvbS9wa2kwCAYGZ4EDAQEBMBMGA1UdJQQMMAoGCCsGAQUFBwMCMDUG\nA1UdHwQuMCwwKqAooCaGJGh0dHA6Ly9lbnJvbGwudmlzYWNhLmNvbS9lQ29tbUcy\nLmNybDAdBgNVHQ4EFgQU6gD/Z5m2gw4n676qt4jXOWr8ynowDgYDVR0PAQH/BAQD\nAgSwMA0GCSqGSIb3DQEBCwUAA4ICAQBumWXGS/uaaajte2gI3xCpsuewmihQKvKq\nOhaOc+wgdfwIkEAXdJIc33n2j/iaT5Lusi09ezZpBB80C6KQVr5Fs10SX0hlBCvT\n9MGYFwFtYUgi5OenqYsXc8BdmiE0bFiSXZ7XfxWuvYjis4LOubMr48yVyyEynWWb\nSGr7rTJztraOFjsykK16x946YXi/LswEP9RtDiOBNJ9cBVcOP+u8Q+dEzA5A63Ay\nA2Z/5m/pyCIWMSYGMtM0RANUp9gp7cEXaMpwKWfrW6ZanF60IoGlmRHilGU4rvm7\ntd4yJTfwxtkmh4w/IPiqI/OaXj5iG8hCo8a9FTnGahIcij8c1UWzQ3/A7o99AUwy\n1Xi9JnNiXYVM1bfQalK0DKsLqRiS6rzPfwMUxj2+ALnhcrnSdPnZgVxiQB7kvfi3\nHFXHoGhmMHHj8tlURqUQzpJcCz1QOy5c9SCc/M8Xu+eRsCnJrtvvDxriLWfDDM9M\n8/8JsiBP+DF6omCb6J4ryEulcVPnVAAZNlNtaUadPYnCJfB0p67jWkHa5NvQdZGW\naT1tvo9DqjI7zLf9Km0qqkK51gwYDnsy14pYvfeEwL9O9aepFa7x08bM3272xqNK\neGHXFK/zUVxYY5uxukcqYAdhAvx7f6d0J6Nr8jPxo6UNXKiFH9leGPPzx9oNugts\nz6qck4YdAQ==\n-----END CERTIFICATE-----\n",
+                  "directory_server_id": "A000000003",
+                  "root_certificate_authorities": [
+                    "-----BEGIN CERTIFICATE-----\nMIIFqTCCA5GgAwIBAgIPUT6WAAAA20Qn7qzgvuFIMA0GCSqGSIb3DQEBCwUAMG8x\nCzAJBgNVBAYTAlVTMQ0wCwYDVQQKDARWSVNBMS8wLQYDVQQLDCZWaXNhIEludGVy\nbmF0aW9uYWwgU2VydmljZSBBc3NvY2lhdGlvbjEgMB4GA1UEAwwXVmlzYSBQdWJs\naWMgUlNBIFJvb3QgQ0EwHhcNMjEwMzE2MDAwMDAwWhcNNDEwMzE1MDAwMDAwWjBv\nMQswCQYDVQQGEwJVUzENMAsGA1UECgwEVklTQTEvMC0GA1UECwwmVmlzYSBJbnRl\ncm5hdGlvbmFsIFNlcnZpY2UgQXNzb2NpYXRpb24xIDAeBgNVBAMMF1Zpc2EgUHVi\nbGljIFJTQSBSb290IENBMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA\n2WEbXLS3gI6LOY93bP7Kz6EO9L1QXlr8l+fTkJWZldJ6QuwZ1cv4369tfjeJ8O5w\nSJiDcVw7eNdOP73LfAtwHlTnUnb0e9ILTTipc5bkNnAevocrJACsrpiQ8jBI9ttp\ncqKUeJgzW4Ie25ypirKroVD42b4E0iICK2cZ5QfD4BSzUnftp4Bqh8AfpGvG1lre\nCaD53qrsy5SUadY/NaeUGOkqdPvDSNoDIdrbExwnZaSFUmjQT1svKwMqGo2GFrgJ\n4cULEp4NNj5rga8YTTZ7Xo5MblHrLpSPOmJev30KWi/BcbvtCNYNWBTg7UMzP3cK\nMQ1pGLvG2PgvFTZSRvH3QzngJRgrDYYOJ6kj9ave+6yOOFqj80ZCuH0Nugt2mMS3\nc3+Nksaw+6H3cQPsE/Gv5zjfsKleRhEFtE1gyrdUg1DMgu8o/YhKM7FAqkXUn74z\nwoRFgx3Mi5OaGTQbg+NlwJgR4sVHXCV4s9b8PjneLhzWMn353SFARF9dnO7LDBqq\ntT6WltJu1z9x2Ze0UVNZvxKGcyCkLody29O8j9/MGZ8SOSUu4U6NHrebKuuf9Fht\nn6PqQ4ppkhy6sReXeV5NVGfVpDYY5ZAKEWqTYgMULWpQ2Py4BGpFzBe07jXkyulR\npoKvz14iXeA0oq16c94DrFYX0jmrWLeU4a/TCZQLFIsCAwEAAaNCMEAwHQYDVR0O\nBBYEFEtNpg77oBHorQvi8PMKAC+sixb7MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0P\nAQH/BAQDAgEGMA0GCSqGSIb3DQEBCwUAA4ICAQC5BU9qQSZYPcgCp2x0Juq59kMm\nXuBly094DaEnPqvtCgwwAirkv8x8/QSOxiWWiu+nveyuR+j6Gz/fJaV4u+J5QEDy\ncfk605Mw3HIcJOeZvDgk1eyOmQwUP6Z/BdQTNJmZ92Z8dcG5yWCxLBrqPH7ro3Ss\njhYq9duIJU7jfizCJCN4W8tp0D2pWBe1/CYNswP4GMs5jQ5+ZQKN/L5JFdwVTu7X\nPt8b5zfgbmmQpVmUn0oFwm3OI++Z6gEpNmW5bd/2oUIZoG96Qff2fauVMAYiWQvN\nnL3y1gkRguTOSMVUCCiGfdvwu5ygowillvV2nHb7+YibQ9N5Z2spP0o9Zlfzoat2\n7WFpyK47TiUdu/4toarLKGZP+hbA/F4xlnM/8EfZkE1DeTTI0lhN3O8yEsHrtRl1\nOuQZ/IexHO8UGU6jvn4TWo10HYeXzrGckL7oIXfGTrjPzfY62T5HDW/BAEZS+9Tk\nijz25YM0fPPz7IdlEG+k4q4YwZ82j73Y9kDEM5423mrWorq/Bq7I5Y8v0LTY9GWH\nYrpElYf0WdOXAbsfwQiT6qnRio+p82VyqlY8Jt6VVA6CDy/iHKwcj1ELEnDQfVv9\nhedoxmnQ6xe/nK8czclu9hQJRv5Lh9gk9Q8DKK2nmgzZ8SSQ+lr3mSSeY8JOMRlE\n+RKdOQIChWthTJKh7w==\n-----END CERTIFICATE-----\n"
+                  ]
+                },
+                "directory_server_name": "visa",
+                "merchant": "acct_1TzKkTPjx0CusuMr",
+                "one_click_authn": null,
+                "server_transaction_id": "e7752c64-4c90-465e-8118-cfd955765525",
+                "three_d_secure_2_source": "payatt_3UBHTpPjx0CusuMr1aSm67j9",
+                "three_ds_frontend_optimizations": "eyJtZXRob2RfdGltZW91dCI6MTAsInNraXBfbWV0aG9kIjpmYWxzZSwic2FuZGJveF9tZXRob2QiOnRydWUsInNhbmRib3hfY2hhbGxlbmdlIjpmYWxzZSwicmVjb3JkX2ZpbmFsX2NyZXMiOnRydWUsImZ1bGxzY3JlZW5faG9zdGVkX2NoYWxsZW5nZSI6ZmFsc2UsInNob3dfbG9hZGluZ19iYXIiOnRydWUsInNob3dfY2hhbGxlbmdlX2ZyYW1lX2R1cmluZ19maW5nZXJwcmludGluZyI6dHJ1ZSwid2Fybl9vbl9hYmFuZG9uIjp0cnVlfQ==",
+                "three_ds_method_url": "",
+                "type": "stripe_3ds2_fingerprint"
+              }
+            },
+            "on_behalf_of": null,
+            "payment_details": {
+              "customer_reference": null,
+              "order_reference": "in_1UBHTnPjx0CusuMrjxjg8WhK"
+            },
+            "payment_method": "pm_1UBHTuPjx0CusuMr2Gfp5NBs",
+            "payment_method_configuration_details": null,
+            "payment_method_options": {
+              "card": {
+                "installments": null,
+                "mandate_options": null,
+                "network": null,
+                "request_three_d_secure": "automatic"
+              }
+            },
+            "payment_method_types": [
+              "card"
+            ],
+            "processing": null,
+            "receipt_email": null,
+            "review": null,
+            "setup_future_usage": null,
+            "shared_payment_granted_token": null,
+            "shipping": null,
+            "source": null,
+            "statement_descriptor": null,
+            "statement_descriptor_suffix": null,
+            "status": "requires_action",
+            "transfer_data": null,
+            "transfer_group": null
+          },
+          "type": "payment_intent"
+        },
+        "status": "open",
+        "status_transitions": {
+          "canceled_at": null,
+          "paid_at": null
+        }
+      }
+    ],
+    "has_more": false,
+    "url": "/v1/invoices/payments"
+  },
+  "period_end": 1788368263,
+  "period_start": 1788368263,
+  "post_payment_credit_notes_amount": 0,
+  "pre_payment_credit_notes_amount": 0,
+  "receipt_number": null,
+  "rendering": {
+    "amount_tax_display": null,
+    "pdf": {
+      "page_size": "letter"
+    },
+    "template": null,
+    "template_version": null
+  },
+  "shipping_cost": null,
+  "shipping_details": null,
+  "starting_balance": 0,
+  "statement_descriptor": null,
+  "status": "open",
+  "status_transitions": {
+    "finalized_at": 1788368265,
+    "marked_uncollectible_at": null,
+    "paid_at": null,
+    "voided_at": null
+  },
+  "subtotal": 12345,
+  "subtotal_excluding_tax": 12345,
+  "test_clock": null,
+  "total": 12345,
+  "total_discount_amounts": [],
+  "total_excluding_tax": 12345,
+  "total_pretax_credit_amounts": [],
+  "total_taxes": [],
+  "webhooks_delivered_at": 1788368263
+}

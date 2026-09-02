@@ -2,8 +2,13 @@
 
 namespace Potelo\MultiPayment\Tests\Integration;
 
+use Carbon\Carbon;
+use Stripe\StripeClient;
+use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Gateways\StripeGateway;
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
@@ -401,6 +406,111 @@ class StripeGatewayTest extends TestCase
 
         $originalFetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
         $this->assertEquals(InvoiceStatus::CANCELED, $originalFetched->status);
+    }
+
+    /**
+     * Fatura de assinatura (objeto Invoice da Stripe) lida por `getInvoice()` com o id `in_`,
+     * recusada na duplicação e cancelada por `void`. O Invoice é criado direto no SDK porque a
+     * lib ainda não cria fatura nem assinatura no Stripe.
+     *
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldReadAndVoidAStripeInvoiceByItsId($gateway)
+    {
+        $customer = $this->createCustomer($gateway, self::customerWithoutAddress());
+        $stripeInvoiceId = $this->createOpenStripeInvoice($customer->id);
+
+        $invoice = MultiPayment::setGateway($gateway)->getInvoice($stripeInvoiceId);
+
+        $this->assertSame($stripeInvoiceId, $invoice->id);
+        $this->assertSame(InvoiceOriginType::INVOICE, $invoice->originType);
+        $this->assertSame(InvoiceStatus::PENDING, $invoice->status);
+        $this->assertSame(12345, $invoice->amount);
+        $this->assertNull($invoice->paidAmount);
+        $this->assertSame($customer->id, $invoice->customer->id);
+        $this->assertSame('Assinatura mensal', $invoice->items[0]->description);
+        $this->assertSame(12345, $invoice->items[0]->price);
+        $this->assertStringStartsWith('https://invoice.stripe.com/', $invoice->url);
+        $this->assertInstanceOf(\Stripe\Invoice::class, $invoice->original);
+
+        try {
+            MultiPayment::setGateway($gateway)->duplicateInvoice($stripeInvoiceId, Carbon::now()->addDay());
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::INVOICE_DUPLICATION, $e->capability);
+        }
+
+        $canceled = MultiPayment::setGateway($gateway)->cancelInvoice($stripeInvoiceId);
+        $this->assertSame(InvoiceStatus::CANCELED, $canceled->status);
+        $this->assertSame(InvoiceOriginType::INVOICE, $canceled->originType);
+        $this->assertSame('void', $canceled->original->status);
+
+        $this->assertSame(InvoiceStatus::CANCELED, MultiPayment::setGateway($gateway)->getInvoice($stripeInvoiceId)->status);
+    }
+
+    /**
+     * Fatura de assinatura paga: o charge do PaymentIntent, lido num GET à parte, alimenta
+     * valor pago, taxa e cartão.
+     *
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldReadAPaidStripeInvoiceWithItsCharge($gateway)
+    {
+        $customer = $this->createCustomer($gateway, self::customerWithoutAddress());
+        $stripeInvoiceId = $this->createOpenStripeInvoice($customer->id);
+
+        $client = $this->stripeClient();
+        $paymentMethod = $client->paymentMethods->attach('pm_card_visa', ['customer' => $customer->id]);
+        $client->invoices->pay($stripeInvoiceId, ['payment_method' => $paymentMethod->id]);
+
+        $invoice = MultiPayment::setGateway($gateway)->getInvoice($stripeInvoiceId);
+
+        $this->assertSame(InvoiceStatus::PAID, $invoice->status);
+        $this->assertSame(InvoiceOriginType::INVOICE, $invoice->originType);
+        $this->assertSame(12345, $invoice->paidAmount);
+        $this->assertSame(0, $invoice->refundedAmount);
+        $this->assertSame([], $invoice->refunds);
+        $this->assertNotNull($invoice->paidAt);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $invoice->paymentMethod);
+        $this->assertSame('visa', $invoice->creditCard->brand);
+        $this->assertSame('4242', $invoice->creditCard->lastDigits);
+    }
+
+    /**
+     * Cria um Invoice `open` de 12345 centavos na sandbox, direto no SDK.
+     *
+     * @param  string  $customerId
+     * @return string  id do Invoice (`in_`)
+     */
+    private function createOpenStripeInvoice(string $customerId): string
+    {
+        $client = $this->stripeClient();
+        $stripeInvoice = $client->invoices->create([
+            'customer' => $customerId,
+            'collection_method' => 'charge_automatically',
+            'currency' => 'brl',
+            'auto_advance' => false,
+        ]);
+        $client->invoiceItems->create([
+            'customer' => $customerId,
+            'invoice' => $stripeInvoice->id,
+            'amount' => 12345,
+            'currency' => 'brl',
+            'description' => 'Assinatura mensal',
+        ]);
+        $client->invoices->finalizeInvoice($stripeInvoice->id, ['auto_advance' => false]);
+
+        return $stripeInvoice->id;
+    }
+
+    private function stripeClient(): StripeClient
+    {
+        return new StripeClient([
+            'api_key' => Config::get('multi-payment.gateways.stripe.api_key'),
+            'stripe_version' => StripeGateway::STRIPE_API_VERSION,
+        ]);
     }
 
     /**

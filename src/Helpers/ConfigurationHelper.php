@@ -68,4 +68,20 @@ class ConfigurationHelper
     {
         return (int) (Config::get('multi-payment.idempotency.ttl') ?? 86400);
     }
+
+    /**
+     * Diz se `Model::fill()` recusa chave desconhecida (`multi-payment.strict_fill`, padrão
+     * verdadeiro). Sem container do Laravel, ou sem a chave na configuração, vale o padrão.
+     *
+     * @return bool
+     */
+    public static function strictFill(): bool
+    {
+        $app = Facade::getFacadeApplication();
+        if (!$app instanceof Container || !$app->bound('config')) {
+            return true;
+        }
+
+        return (bool) ($app->make('config')->get('multi-payment.strict_fill') ?? true);
+    }
 }

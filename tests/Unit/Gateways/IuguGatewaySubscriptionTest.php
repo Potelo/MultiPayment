@@ -20,6 +20,7 @@ use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
@@ -820,6 +821,25 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertInstanceOf(Invoice::class, $subscription->latestInvoice);
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
         $this->assertSame('https://iugu/inv_1', $subscription->latestInvoice->url);
+    }
+
+    /**
+     * A fatura resumida de `recent_invoices` também vem do objeto de fatura da Iugu:
+     * `originType` é `INVOICE`.
+     */
+    public function testLatestInvoiceMarksTheOriginAsInvoice(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse([
+                'recent_invoices' => [(object) ['id' => 'inv_1', 'status' => 'paid']],
+            ]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertSame(InvoiceOriginType::INVOICE, $subscription->latestInvoice->originType);
     }
 
     /**

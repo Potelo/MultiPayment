@@ -369,6 +369,12 @@ abstract class Model implements \JsonSerializable
      * Fill the model with an array of attributes. Chave em `snake_case` vira a propriedade em
      * `camelCase`; valor de propriedade de enum (ver `ENUM_CASTS`) pode vir como string.
      *
+     * Chave que não corresponde a nenhuma propriedade do model lança
+     * `ModelAttributeValidationException` com a lista das chaves aceitas, exceto chave com
+     * prefixo `gateway_` (ou `gateway` em `camelCase`; o conteúdo de `gateway_options` é livre
+     * e chega inteiro ao gateway).
+     * Com `multi-payment.strict_fill` em falso, a chave desconhecida é ignorada em silêncio.
+     *
      * @param  array  $data
      *
      * @return void
@@ -377,15 +383,55 @@ abstract class Model implements \JsonSerializable
     public function fill(array $data): void
     {
         foreach ($data as $key => $value) {
-            $key = lcfirst(str_replace('_', '', ucwords($key, '_')));
-            if ($key === 'gatewayAdicionalOptions') {
+            $property = lcfirst(str_replace('_', '', ucwords($key, '_')));
+            if ($property === 'gatewayAdicionalOptions') {
                 self::warnGatewayAdicionalOptionsDeprecated();
-                $key = 'gatewayOptions';
+                $property = 'gatewayOptions';
             }
-            if (property_exists($this, $key)) {
-                $this->{$key} = isset(static::ENUM_CASTS[$key]) ? $this->castToEnum($key, $value) : $value;
+            if (!property_exists($this, $property)) {
+                if (!str_starts_with($property, 'gateway') && ConfigurationHelper::strictFill()) {
+                    throw ModelAttributeValidationException::unknownAttribute(
+                        static::getClassName(),
+                        (string) $key,
+                        static::fillableKeys()
+                    );
+                }
+                continue;
             }
+            $this->{$property} = isset(static::ENUM_CASTS[$property]) ? $this->castToEnum($property, $value) : $value;
         }
+    }
+
+    /**
+     * Chaves que `fill()` aceita, em `snake_case`: as propriedades públicas do model e as de
+     * enum (ver `ENUM_CASTS`), na ordem de declaração.
+     *
+     * @return string[]
+     */
+    public static function fillableKeys(): array
+    {
+        $keys = [];
+        $reflect = new \ReflectionClass(static::class);
+        foreach ($reflect->getProperties(\ReflectionProperty::IS_PUBLIC | \ReflectionProperty::IS_PROTECTED) as $prop) {
+            $name = $prop->getName();
+            if ($prop->isStatic() || ($prop->isProtected() && !isset(static::ENUM_CASTS[$name]))) {
+                continue;
+            }
+            $keys[] = self::snakeCase($name);
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Converte o nome de uma propriedade em `camelCase` para a chave em `snake_case`.
+     *
+     * @param  string  $name
+     * @return string
+     */
+    private static function snakeCase(string $name): string
+    {
+        return strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $name));
     }
 
     /**
@@ -405,8 +451,7 @@ abstract class Model implements \JsonSerializable
                 continue;
             }
             if (!empty($this->{$name})) {
-                $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $name));
-                $array[$key] = self::enumToValue($this->{$name});
+                $array[self::snakeCase($name)] = self::enumToValue($this->{$name});
             }
 
         }
