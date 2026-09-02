@@ -17,6 +17,7 @@ use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class IuguGatewaySubscriptionTest extends TestCase
 {
@@ -172,9 +173,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('iugu', $subscription->gateway);
     }
 
-    /**
-     * @dataProvider statusProvider
-     */
+    #[DataProvider('statusProvider')]
     public function testParseMapsIuguFlagsToGenericStatus(array $flags, ?string $expected): void
     {
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse($flags)]);
@@ -886,9 +885,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         (new IuguGateway(new QueuedIuguApiRequest([])))->createSubscription($subscription);
     }
 
-    /**
-     * @dataProvider payableWithProvider
-     */
+    #[DataProvider('payableWithProvider')]
     public function testParseMapsPayableWithBackToGenericMethods($payableWith, array $expected): void
     {
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['payable_with' => $payableWith])]);
@@ -976,9 +973,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertCount(1, $plans);
     }
 
-    /**
-     * @dataProvider methodsThatRequireSubscriptionIdProvider
-     */
+    #[DataProvider('methodsThatRequireSubscriptionIdProvider')]
     public function testMethodsRequireTheSubscriptionId(callable $call): void
     {
         $this->expectException(ModelAttributeValidationException::class);
@@ -1016,9 +1011,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         (new IuguGateway(new QueuedIuguApiRequest([])))->listSubscriptions(new Customer());
     }
 
-    /**
-     * @dataProvider invalidPaginationProvider
-     */
+    #[DataProvider('invalidPaginationProvider')]
     public function testPaginationBoundsAreRejected(int $page, int $limit, string $mensagem): void
     {
         $customer = new Customer();
@@ -1031,9 +1024,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $gateway->listSubscriptions($customer, $page, $limit);
     }
 
-    /**
-     * @dataProvider invalidPaginationProvider
-     */
+    #[DataProvider('invalidPaginationProvider')]
     public function testPlanPaginationBoundsAreRejected(int $page, int $limit, string $mensagem): void
     {
         $gateway = new IuguGateway(new QueuedIuguApiRequest([]));
@@ -1317,9 +1308,8 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     /**
      * Entre faturas do mesmo estado, vence a de maior vencimento, em qualquer ordem de resposta.
-     *
-     * @dataProvider ordemProvider
      */
+    #[DataProvider('ordemProvider')]
     public function testLatestInvoiceDoesNotDependOnTheOrderIuguReturns(array $recentInvoices): void
     {
         $api = new QueuedIuguApiRequest([
@@ -1350,9 +1340,8 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     /**
      * Vencimento igual é desempatado pelo menor id, qualquer que seja o estado das faturas.
-     *
-     * @dataProvider tieProvider
      */
+    #[DataProvider('tieProvider')]
     public function testSameDueDateIsBrokenByTheSmallestId(array $recentInvoices): void
     {
         $api = new QueuedIuguApiRequest([
@@ -1437,9 +1426,8 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     /**
      * Empate de vencimento e de estado é resolvido pelo menor id, em qualquer ordem.
-     *
-     * @dataProvider mesmaSituacaoProvider
      */
+    #[DataProvider('mesmaSituacaoProvider')]
     public function testLatestInvoiceIsStableWhenDueDateAndStateTie(array $recentInvoices): void
     {
         $api = new QueuedIuguApiRequest([
@@ -1685,9 +1673,8 @@ class IuguGatewaySubscriptionTest extends TestCase
     }
     /**
      * Entrada sem vencimento perde para qualquer uma com data, em qualquer ordem.
-     *
-     * @dataProvider semDataProvider
      */
+    #[DataProvider('semDataProvider')]
     public function testEntryWithoutDueDateLosesToOneWithIt(array $recentInvoices): void
     {
         $api = new QueuedIuguApiRequest([

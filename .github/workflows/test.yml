@@ -8,7 +8,15 @@ on:
 
 jobs:
   phpunit-tests:
+    name: PHP ${{ matrix.php }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Os jobs rodam um de cada vez: a suíte Integration bate na sandbox da Iugu,
+      # que tem rate limit por conta, e mais de um job em paralelo estouraria esse limite.
+      max-parallel: 1
+      matrix:
+        php: ['8.3', '8.4']
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,12 +48,12 @@ jobs:
         with:
           context: .
           load: true
-          tags: multi-payment:latest
-          # Define o diretório de cache do composer dentro do build
+          tags: multi-payment:${{ matrix.php }}
           build-args: |
+            PHP_VERSION=${{ matrix.php }}
             COMPOSER_CACHE_DIR=/tmp/composer-cache
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=php-${{ matrix.php }}
+          cache-to: type=gha,mode=max,scope=php-${{ matrix.php }}
 
       - name: Execute tests via PHPUnit
         env:
@@ -61,4 +69,4 @@ jobs:
             --env IUGU_ID \
             --env IUGU_APIKEY \
             --env STRIPE_APIKEY \
-            multi-payment:latest composer test
+            multi-payment:${{ matrix.php }} composer test

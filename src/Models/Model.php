@@ -42,7 +42,7 @@ abstract class Model
      * @return void
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
      */
-    public function save(GatewayContract|string $gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
@@ -154,14 +154,13 @@ abstract class Model
     /**
      * Get the model instance by id in the gateway.
      *
-     * @param  string  $id
      * @param  string|GatewayContract|null  $gateway
      *
      * @return static
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function get(GatewayContract|string $gateway = null): static
+    public function get(GatewayContract|string|null $gateway = null): static
     {
         $method = 'get' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
@@ -179,7 +178,7 @@ abstract class Model
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function delete(GatewayContract|string $gateway = null): void
+    public function delete(GatewayContract|string|null $gateway = null): void
     {
         $method = 'delete' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
@@ -192,7 +191,7 @@ abstract class Model
     /**
      * Refresh the model instance with the latest data from the gateway.
      */
-    public function refresh(GatewayContract|string $gateway = null): static
+    public function refresh(GatewayContract|string|null $gateway = null): static
     {
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         return $this->get($gateway);

@@ -25,8 +25,8 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [Plan](#plan)
 
 ## Requisitos
-  - PHP 8.0+
-  - Laravel 8.0+
+  - PHP 8.3+
+  - Laravel 10.0+
 
 ## Instalação
 

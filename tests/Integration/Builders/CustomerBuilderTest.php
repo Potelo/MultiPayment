@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Tests\Integration\Builders;
 use Carbon\Carbon;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Facades\MultiPayment;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class CustomerBuilderTest extends TestCase
 {
@@ -25,10 +26,9 @@ class CustomerBuilderTest extends TestCase
     /**
      * Should create a credit card.
      *
-     * @dataProvider shouldCreateACustomerDataProvider
-     *
      * @return void
      */
+    #[DataProvider('shouldCreateACustomerDataProvider')]
     public function testShouldCreateACustomer($gateway)
     {
         $data = self::customerWithAddress();
@@ -109,10 +109,9 @@ class CustomerBuilderTest extends TestCase
     /**
      * Should create a customer without address.
      *
-     * @dataProvider shouldCreateACustomerDataProvider
-     *
      * @return void
      */
+    #[DataProvider('shouldCreateACustomerDataProvider')]
     public function testShouldCreateACustomerWithoutAddress($gateway)
     {
         $data = self::customerWithoutAddress();
@@ -157,10 +156,10 @@ class CustomerBuilderTest extends TestCase
     /**
      * Should update a customer.
      *
-     * @dataProvider shouldCreateACustomerDataProvider
      * @param  string  $gateway
      * @return void
      */
+    #[DataProvider('shouldCreateACustomerDataProvider')]
     public function testShouldUpdateACustomer($gateway)
     {
         $data = self::customerWithAddress();

@@ -4,23 +4,16 @@ namespace Potelo\MultiPayment\Tests\Integration\Builders;
 
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Facades\MultiPayment;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class CreditCardBuilderTest extends TestCase
 {
-
-    public function __construct(?string $name = null, array $data = [], $dataName = '')
-    {
-        parent::__construct($name, $data, $dataName);
-        $this->createApplication();
-    }
-
     /**
      * Should create a credit card.
      *
-     * @dataProvider shouldCreateACreditCardDataProvider
-     *
      * @return void
      */
+    #[DataProvider('shouldCreateACreditCardDataProvider')]
     public function testShouldCreateACreditCard($gateway, $data)
     {
 
@@ -77,7 +70,7 @@ class CreditCardBuilderTest extends TestCase
         $this->assertEquals($gateway, $creditCard->gateway);
     }
 
-    public function shouldCreateACreditCardDataProvider(): array
+    public static function shouldCreateACreditCardDataProvider(): array
     {
         return [
             'iugu - with credit card data' => [
@@ -92,7 +85,7 @@ class CreditCardBuilderTest extends TestCase
      *
      * @return array[]
      */
-    public function shouldCreateACreditCardWithHashDataProvider(): array
+    public static function shouldCreateACreditCardWithHashDataProvider(): array
     {
         return [
             'iugu - with hash' => [
@@ -109,13 +102,12 @@ class CreditCardBuilderTest extends TestCase
     /**
      * Should create a credit card using token.
      *
-     * @dataProvider shouldCreateACreditCardWithHashDataProvider
-     *
      * @param $gateway
      * @param $data
      *
      * @return void
      */
+    #[DataProvider('shouldCreateACreditCardWithHashDataProvider')]
     public function testShouldCreateACreditCardWithHash($gateway, $data)
     {
 

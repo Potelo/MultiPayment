@@ -18,6 +18,7 @@ use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class SubscriptionTest extends TestCase
 {
@@ -401,9 +402,7 @@ class SubscriptionTest extends TestCase
         $this->assertSame('inv_1', $subscription->toArray()['latest_invoice']['id']);
     }
 
-    /**
-     * @dataProvider lifecycleProvider
-     */
+    #[DataProvider('lifecycleProvider')]
     public function testModelDelegatesLifecycleToTheGateway(
         string $gatewayMethod,
         array $gatewayArgs,
@@ -596,9 +595,7 @@ class SubscriptionTest extends TestCase
         $plan->save(Mockery::mock(GatewayContract::class));
     }
 
-    /**
-     * @dataProvider listOperationsProvider
-     */
+    #[DataProvider('listOperationsProvider')]
     public function testListOperationsRejectAGatewayWithoutTheContract(string $metodo, array $args, string $contract): void
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment(Mockery::mock(GatewayContract::class));

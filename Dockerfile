@@ -1,4 +1,6 @@
-FROM php:8.3.0-cli
+# Versão do PHP da imagem; a CI sobrescreve via build-arg para cada entrada da matriz.
+ARG PHP_VERSION=8.3
+FROM php:${PHP_VERSION}-cli
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

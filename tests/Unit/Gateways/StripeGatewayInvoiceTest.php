@@ -16,6 +16,7 @@ use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class StripeGatewayInvoiceTest extends TestCase
 {
@@ -583,9 +584,7 @@ class StripeGatewayInvoiceTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider paymentIntentStatusDataProvider
-     */
+    #[DataProvider('paymentIntentStatusDataProvider')]
     public function testStatusMapping(string $stripeStatus, string $expected): void
     {
         $response = $this->paidCardPaymentIntentResponse(status: $stripeStatus);

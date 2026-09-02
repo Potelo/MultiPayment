@@ -7,16 +7,17 @@ use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Facades\MultiPayment;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
 
 class MultiPaymentTest extends TestCase
 {
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * A consulta depende de uma fatura com Pix Automático criada no próprio
      * teste, mas a sandbox da Iugu ainda rejeita essa criação.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldGetAutomaticPixInvoice(): void
     {
         $this->markTestSkipped(
@@ -58,11 +59,10 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * A retentativa exige uma fatura expirada após falha de débito de uma
      * recorrência autorizada, estado que não pode ser criado na sandbox.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldRescheduleAutomaticPixPayment(): void
     {
         $this->markTestSkipped(
@@ -71,11 +71,10 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * O cancelamento exige uma recorrência autorizada criada durante o teste,
      * mas a sandbox não oferece suporte à criação de Pix Automático.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldCancelAutomaticPixRecurrence(): void
     {
         $this->markTestSkipped(
@@ -84,11 +83,10 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * O cancelamento de agendamento exige um débito agendado e seu end-to-end
      * ID, que não podem ser produzidos pela sandbox no fluxo do teste.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldCancelAutomaticPixScheduledPayment(): void
     {
         $this->markTestSkipped(
@@ -97,11 +95,10 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * A consulta exige que uma recorrência seja criada e cancelada no próprio
      * teste; a sandbox bloqueia a etapa inicial desse fluxo.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldGetAutomaticPixCancellation(): void
     {
         $this->markTestSkipped(
@@ -110,11 +107,10 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * A listagem exige uma recorrência com cancelamentos criados durante o
      * teste; a sandbox bloqueia a criação dessa recorrência.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldListAutomaticPixCancellations(): void
     {
         $this->markTestSkipped(
@@ -286,14 +282,13 @@ class MultiPaymentTest extends TestCase
     /**
      * Test if thorws an exception when not find the invoice
      *
-     * @dataProvider shouldNotGetInvoiceDataProvider
-     *
      * @param $gateway
      * @param $id
      *
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
+    #[DataProvider('shouldNotGetInvoiceDataProvider')]
     public function testShouldNotGetInvoice($gateway, $id)
     {
         $this->expectException(\Potelo\MultiPayment\Exceptions\GatewayException::class);
@@ -304,7 +299,7 @@ class MultiPaymentTest extends TestCase
     /**
      * @return array
      */
-    public function shouldNotGetInvoiceDataProvider(): array
+    public static function shouldNotGetInvoiceDataProvider(): array
     {
         return [
             'iugu' => ['iugu', '4DAF50DDAA1E461CBA9ECF813111FC0B'],
@@ -314,8 +309,6 @@ class MultiPaymentTest extends TestCase
     /**
      * Test if can refund the invoice
      *
-     * @dataProvider shouldRefundInvoiceDataProvider
-     *
      * @param  string  $gateway
      * @param  array  $data
      *
@@ -324,6 +317,7 @@ class MultiPaymentTest extends TestCase
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
+    #[DataProvider('shouldRefundInvoiceDataProvider')]
     public function testShouldRefundInvoice(string $gateway, array $data, string $status, ?int $refundedAmount)
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
@@ -368,7 +362,7 @@ class MultiPaymentTest extends TestCase
     /**
      * @return array
      */
-    public function shouldRefundInvoiceDataProvider(): array
+    public static function shouldRefundInvoiceDataProvider(): array
     {
         return [
             'iugu - credit card - full refund' => [
@@ -389,8 +383,6 @@ class MultiPaymentTest extends TestCase
     /**
      * Test if can refund the invoice
      *
-     * @dataProvider shouldChargeInvoiceWithCreditCard
-     *
      * @param  string  $gateway
      * @param  array  $data
      * @param  string  $status
@@ -403,6 +395,7 @@ class MultiPaymentTest extends TestCase
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      * @throws \Potelo\MultiPayment\Exceptions\MultiPaymentException
      */
+    #[DataProvider('shouldChargeInvoiceWithCreditCard')]
     public function testShouldChargeInvoiceWithCreditCard(string $gateway, array $data, string $status, string $creditCardDataMethod)
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
@@ -446,7 +439,7 @@ class MultiPaymentTest extends TestCase
     /**
      * @return array
      */
-    public function shouldChargeInvoiceWithCreditCard(): array
+    public static function shouldChargeInvoiceWithCreditCard(): array
     {
         return [
             'iugu - credit card object' => [

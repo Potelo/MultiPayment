@@ -80,7 +80,7 @@ class Plan extends Model
      * @throws GatewayException|\Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
      */
-    public function save(GatewayContract|string $gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
     {
         if (!empty($this->id)) {
             throw new GatewayException(

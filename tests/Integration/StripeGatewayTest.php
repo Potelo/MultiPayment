@@ -7,6 +7,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * Cenários específicos do gateway Stripe na sandbox real. O fluxo de cartão é token-only:
@@ -30,10 +31,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve cobrar uma fatura de cartão com PaymentMethod de teste e refletir em getInvoice.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldChargeCreditCardInvoice($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -73,10 +73,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Recusa de cartão deve virar ChargingException com resposta bruta e razão normalizada.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldRaiseChargingExceptionOnDeclinedCard($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -105,10 +104,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve salvar, buscar, definir como padrão e excluir um cartão tokenizado.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldManageCreditCardLifecycle($gateway)
     {
         $customer = $this->createCustomer($gateway, self::customerWithoutAddress());
@@ -142,10 +140,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve criar fatura pix server-side com QR code e refletir o pagamento mágico da sandbox.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldCreatePixInvoiceAndReceiveMagicPayment($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -182,10 +179,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve cancelar uma fatura pix pendente.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldCancelPendingPixInvoice($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -204,10 +200,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Fatura pix expirada volta a pendente e deve aceitar cobrança com cartão.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldChargeExpiredPixInvoiceWithCreditCard($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -258,10 +253,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve estornar integralmente uma fatura de cartão paga.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldRefundCreditCardInvoiceTotally($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -282,10 +276,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve estornar parcialmente uma fatura pix paga.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldRefundPixInvoicePartially($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -309,10 +302,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Deve duplicar uma fatura pix pendente com nova expiração, cancelando a original.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldDuplicatePendingPixInvoice($gateway)
     {
         $customerData = self::customerWithoutAddress();
@@ -347,10 +339,9 @@ class StripeGatewayTest extends TestCase
     /**
      * Boleto está fora do escopo do gateway Stripe e deve falhar com mensagem específica.
      *
-     * @dataProvider stripeGatewayDataProvider
-     *
      * @return void
      */
+    #[DataProvider('stripeGatewayDataProvider')]
     public function testShouldRejectBankSlipInvoice($gateway)
     {
         $customerData = self::customerWithoutAddress();

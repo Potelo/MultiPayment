@@ -7,17 +7,18 @@ use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
 
 class InvoiceBuilderTest extends TestCase
 {
 
     /**
-     * @group iugu-sandbox-limitation
-     *
      * A sandbox da Iugu rejeita a criação de faturas com Pix Automático. O
      * cenário permanece completo para ser reativado quando o recurso estiver
      * disponível no ambiente de testes.
      */
+    #[Group('iugu-sandbox-limitation')]
     public function testShouldCreateAutomaticPixInvoice(): void
     {
         $this->markTestSkipped(
@@ -119,8 +120,6 @@ class InvoiceBuilderTest extends TestCase
     /**
      * Create invoice test.
      *
-     * @dataProvider shouldCreateInvoiceDataProvider
-     *
      * @param  string  $gateway
      * @param  array  $data
      *
@@ -128,6 +127,7 @@ class InvoiceBuilderTest extends TestCase
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
+    #[DataProvider('shouldCreateInvoiceDataProvider')]
     public function testShouldCreateInvoice(string $gateway, array $data): void
     {
         $invoice = $this->createInvoice($gateway, $data);
@@ -259,7 +259,7 @@ class InvoiceBuilderTest extends TestCase
     /**
      * @return array[]
      */
-    public function shouldCreateInvoiceDataProvider(): array
+    public static function shouldCreateInvoiceDataProvider(): array
     {
         return [
             'iugu - without payment method' => [
@@ -351,20 +351,19 @@ class InvoiceBuilderTest extends TestCase
     /**
      * Fail to create invoice test.
      *
-     * @dataProvider shouldNotCreateInvoiceDataProvider
-     *
      * @param  string  $gateway
      * @param  array  $data
      *
      * @return void
      */
+    #[DataProvider('shouldNotCreateInvoiceDataProvider')]
     public function testShouldNotCreateInvoice(string $gateway, array $data): void
     {
         $this->expectException(ChargingException::class);
         $this->createInvoice($gateway, $data);
     }
 
-    public function shouldNotCreateInvoiceDataProvider(): array
+    public static function shouldNotCreateInvoiceDataProvider(): array
     {
         return [
             'iugu - credit card - charge fail' => [

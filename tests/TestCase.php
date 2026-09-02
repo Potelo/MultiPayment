@@ -8,23 +8,18 @@ use Potelo\MultiPayment\Providers\MultiPaymentServiceProvider;
 
 class TestCase extends \Orchestra\Testbench\TestCase
 {
-    public function __construct(?string $name = null, array $data = [], $dataName = '')
-    {
-        parent::__construct($name, $data, $dataName);
-        \Iugu::setLogErrors(false);
-    }
-
     protected function setUp(): void
     {
         parent::setUp();
+        \Iugu::setLogErrors(false);
 
-        if (in_array('iugu-sandbox-limitation', $this->getGroups(), true)) {
+        if (in_array('iugu-sandbox-limitation', $this->groups(), true)) {
             return;
         }
 
         // pausa para respeitar o rate limit da sandbox da Iugu — a da Stripe não tem esse limite;
         // o gateway do teste vem do dataProvider (primeiro argumento, posicional ou chave 'gateway')
-        $providedData = $this->getProvidedData();
+        $providedData = $this->providedData();
         if (($providedData[0] ?? $providedData['gateway'] ?? null) !== 'stripe') {
             sleep(12);
         }
