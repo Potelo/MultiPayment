@@ -13,6 +13,7 @@ use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 class IuguGatewayInvoiceStatusTest extends TestCase
@@ -231,7 +232,7 @@ class IuguGatewayInvoiceStatusTest extends TestCase
     {
         $subscription = $this->readSubscriptionWithLatestInvoiceStatus($iuguStatus, '2026-08-01');
 
-        $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
     }
 
     private function mapStatus(string $iuguStatus): InvoiceStatus

@@ -29,6 +29,7 @@ use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Helpers\LogHelper;
@@ -71,6 +72,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private const STATUS_IN_PROTEST = 'in_protest';
     private const STATUS_CHARGEBACK = 'chargeback';
     private const STATUS_AUTHORIZED = 'authorized';
+
+    /**
+     * Variável de `custom_variables` da assinatura em que a lib grava a data do cancelamento.
+     * A Iugu só suspende, então é essa marca que distingue `CANCELED` de `SUSPENDED`. O
+     * prefixo `mp_` é reservado à lib.
+     */
+    private const CANCELED_AT_VARIABLE = 'mp_canceled_at';
 
     /** Faixa de `interval` aceita pela Iugu na criação de plano. */
     private const PLAN_INTERVAL_MIN = 1;
@@ -1889,14 +1897,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function suspendSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
-        if (empty($subscription->id)) {
-            throw ModelAttributeValidationException::required('Subscription', 'id');
-        }
-
-        $response = $this->iuguIdempotentRequest(
-            'POST',
-            $this->subscriptionUrl($subscription->id) . '/suspend',
-            [],
+        $response = $this->iuguSubscriptionAction(
+            $subscription,
+            'suspend',
             'suspending subscription',
             $this->idempotencyKeyFor($idempotencyKey, $subscription)
         );
@@ -1907,27 +1910,43 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
-     * A chave de idempotência passa pela `IdempotencyStore`.
+     * Reativa também uma assinatura cancelada por `cancelSubscription()`, que na Iugu é uma
+     * assinatura suspensa com a marca `mp_canceled_at`: a marca é removida de
+     * `custom_variables` numa segunda requisição (`PUT` com `_destroy`, chave derivada
+     * `{chave}:uncancel`), para a assinatura voltar a ler como `ACTIVE`. A chave de
+     * idempotência passa pela `IdempotencyStore`.
      */
     public function resumeSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
-        if (empty($subscription->id)) {
-            throw ModelAttributeValidationException::required('Subscription', 'id');
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $response = $this->iuguSubscriptionAction($subscription, 'activate', 'resuming subscription', $idempotencyKey);
+        $resumed = $this->parseIuguSubscription($response, $subscription);
+
+        if (is_null($resumed->canceledAt)) {
+            return $resumed;
         }
 
         $response = $this->iuguIdempotentRequest(
-            'POST',
-            $this->subscriptionUrl($subscription->id) . '/activate',
-            [],
-            'resuming subscription',
-            $this->idempotencyKeyFor($idempotencyKey, $subscription)
+            'PUT',
+            $this->subscriptionUrl($subscription->id),
+            ['custom_variables' => [['name' => self::CANCELED_AT_VARIABLE, '_destroy' => true]]],
+            'clearing the subscription cancellation',
+            self::derivedIdempotencyKey($idempotencyKey, 'uncancel')
         );
 
-        return $this->parseIuguSubscription($response, $subscription);
+        return $this->parseIuguSubscription($response, $resumed);
     }
 
     /**
      * @inheritDoc
+     *
+     * Na Iugu o cancelamento é uma suspensão com marca: a assinatura é suspensa e recebe a
+     * data do cancelamento em `custom_variables` (`mp_canceled_at`), numa segunda requisição
+     * (`PUT`, chave derivada `{chave}:cancel`); é essa marca que faz a leitura devolver
+     * `CANCELED`. Assinatura que já tem a marca é só suspensa de novo, e a data original fica.
+     * `resumeSubscription()` desfaz as duas coisas. A chave de idempotência passa pela
+     * `IdempotencyStore`.
      */
     public function cancelSubscription(
         Subscription $subscription,
@@ -1937,8 +1956,57 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         if ($atPeriodEnd) {
             $this->assertSupports(Capability::CANCEL_AT_PERIOD_END, 'Suspenda a assinatura na data desejada.');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
-        return $this->suspendSubscription($subscription, $idempotencyKey);
+        $response = $this->iuguSubscriptionAction($subscription, 'suspend', 'suspending subscription', $idempotencyKey);
+        $suspended = $this->parseIuguSubscription($response, $subscription);
+
+        if (!is_null($suspended->canceledAt)) {
+            return $suspended;
+        }
+
+        $response = $this->iuguIdempotentRequest(
+            'PUT',
+            $this->subscriptionUrl($subscription->id),
+            ['custom_variables' => [[
+                'name' => self::CANCELED_AT_VARIABLE,
+                'value' => Carbon::now()->toIso8601String(),
+            ]]],
+            'marking the subscription as canceled',
+            self::derivedIdempotencyKey($idempotencyKey, 'cancel')
+        );
+
+        return $this->parseIuguSubscription($response, $suspended);
+    }
+
+    /**
+     * Faz o `POST` de uma ação da assinatura (`suspend`, `activate`) e devolve a resposta crua.
+     *
+     * @param  Subscription  $subscription
+     * @param  string  $action
+     * @param  string  $operation
+     * @param  string|null  $idempotencyKey  chave já resolvida; passa pela `IdempotencyStore`
+     *
+     * @return object|array
+     * @throws ModelAttributeValidationException
+     */
+    private function iuguSubscriptionAction(
+        Subscription $subscription,
+        string $action,
+        string $operation,
+        ?string $idempotencyKey
+    ): object|array {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        return $this->iuguIdempotentRequest(
+            'POST',
+            $this->subscriptionUrl($subscription->id) . '/' . $action,
+            [],
+            $operation,
+            $idempotencyKey
+        );
     }
 
     /**
@@ -2441,21 +2509,82 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             );
         }
 
-        if (!empty($iuguSubscription->custom_variables)) {
-            $metadata = [];
-            foreach ((array) $iuguSubscription->custom_variables as $variable) {
-                $variable = (object) $variable;
-                if (isset($variable->name)) {
-                    $metadata[$variable->name] = $variable->value ?? null;
-                }
-            }
-            $subscription->metadata = $metadata;
+        // lista vazia também conta: é o que a Iugu devolve depois de remover a última variável
+        if (isset($iuguSubscription->custom_variables)) {
+            $subscription->metadata = $this->iuguCustomVariables($iuguSubscription);
+            $subscription->canceledAt = $this->iuguCanceledAt($iuguSubscription);
         }
 
         $subscription->gateway = 'iugu';
         $subscription->original = $iuguSubscription;
 
         return $subscription;
+    }
+
+    /**
+     * Lê `custom_variables` da assinatura como um mapa nome para valor.
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return array<string, mixed>
+     */
+    private function iuguCustomVariables(object $iuguSubscription): array
+    {
+        $variables = [];
+
+        foreach ((array) ($iuguSubscription->custom_variables ?? []) as $variable) {
+            $variable = (object) $variable;
+            if (isset($variable->name)) {
+                $variables[$variable->name] = $variable->value ?? null;
+            }
+        }
+
+        return $variables;
+    }
+
+    /**
+     * Data do cancelamento gravada pela lib em `custom_variables` (`mp_canceled_at`). Nulo
+     * quando a marca não existe ou não é uma data legível; neste último caso registra um aviso
+     * no log e a marca é tratada como ausente.
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return Carbon|null
+     */
+    private function iuguCanceledAt(object $iuguSubscription): ?Carbon
+    {
+        $value = $this->iuguCustomVariable($iuguSubscription, self::CANCELED_AT_VARIABLE);
+
+        if (is_null($value)) {
+            return null;
+        }
+
+        try {
+            return new Carbon($value);
+        } catch (\Throwable) {
+            LogHelper::warning(
+                'Marca de cancelamento [' . self::CANCELED_AT_VARIABLE . "] ilegível [{$value}] na assinatura ["
+                . ($iuguSubscription->id ?? '?') . '] da Iugu, tratada como ausente',
+                ['subscription' => $iuguSubscription->id ?? null, 'value' => $value, 'gateway' => 'iugu']
+            );
+
+            return null;
+        }
+    }
+
+    /**
+     * Valor de uma variável de `custom_variables` da assinatura; nulo quando ausente ou vazia.
+     *
+     * @param  object  $iuguSubscription
+     * @param  string  $name
+     *
+     * @return string|null
+     */
+    private function iuguCustomVariable(object $iuguSubscription, string $name): ?string
+    {
+        $value = $this->iuguCustomVariables($iuguSubscription)[$name] ?? null;
+
+        return is_scalar($value) && (string) $value !== '' ? (string) $value : null;
     }
 
     /**
@@ -2498,34 +2627,59 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * Converte as flags de estado da assinatura da Iugu no status do MultiPayment.
      *
-     * A Iugu não tem estado de inadimplência: assinatura com fatura vencida em aberto continua
-     * `active` com `expires_at` no passado. PAST_DUE é derivado dessa combinação.
+     * A Iugu descreve a assinatura por flags, sem campo de status; a regra, na ordem:
+     * `suspended` com a marca `mp_canceled_at` legível em `custom_variables` é `CANCELED`;
+     * `suspended` sem a marca é `SUSPENDED`; `in_trial` é `TRIALING`; `expires_at` no passado com alguma
+     * fatura de `recent_invoices` em aberto é `PAST_DUE` (a Iugu não tem inadimplência: a
+     * assinatura segue `active` com a data vencida); `active` é `ACTIVE`; sem `active`,
+     * `expires_at` no passado é `EXPIRED` (o ciclo terminou sem renovação e sem fatura a
+     * receber) e `expires_at` futuro ou ausente é `PENDING` (criada e ainda não ativada).
+     * Resposta sem a flag `active` devolve nulo e o status anterior do model é mantido.
      *
      * @param  object  $iuguSubscription
      *
-     * @return string|null
+     * @return SubscriptionStatus|null
      */
-    private function iuguToMultiPaymentSubscriptionStatus(object $iuguSubscription): ?string
+    private function iuguToMultiPaymentSubscriptionStatus(object $iuguSubscription): ?SubscriptionStatus
     {
         if (!empty($iuguSubscription->suspended)) {
-            return Subscription::STATUS_SUSPENDED;
+            return is_null($this->iuguCanceledAt($iuguSubscription))
+                ? SubscriptionStatus::SUSPENDED
+                : SubscriptionStatus::CANCELED;
         }
 
         if (!empty($iuguSubscription->in_trial)) {
-            return Subscription::STATUS_TRIALING;
+            return SubscriptionStatus::TRIALING;
         }
 
         if ($this->iuguSubscriptionIsPastDue($iuguSubscription)) {
-            return Subscription::STATUS_PAST_DUE;
+            return SubscriptionStatus::PAST_DUE;
         }
 
-        if (isset($iuguSubscription->active)) {
-            return $iuguSubscription->active
-                ? Subscription::STATUS_ACTIVE
-                : Subscription::STATUS_PENDING;
+        if (!isset($iuguSubscription->active)) {
+            return null;
         }
 
-        return null;
+        if ($iuguSubscription->active) {
+            return SubscriptionStatus::ACTIVE;
+        }
+
+        return $this->iuguSubscriptionExpiresAtHasPassed($iuguSubscription)
+            ? SubscriptionStatus::EXPIRED
+            : SubscriptionStatus::PENDING;
+    }
+
+    /**
+     * Diz se a data da próxima cobrança da assinatura já passou (fim do dia de `expires_at`).
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return bool
+     */
+    private function iuguSubscriptionExpiresAtHasPassed(object $iuguSubscription): bool
+    {
+        return !empty($iuguSubscription->expires_at)
+            && (new Carbon($iuguSubscription->expires_at))->endOfDay()->isPast();
     }
 
     /**
@@ -2558,11 +2712,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     private function iuguSubscriptionIsPastDue(object $iuguSubscription): bool
     {
-        if (empty($iuguSubscription->expires_at)) {
-            return false;
-        }
-
-        if (!(new Carbon($iuguSubscription->expires_at))->endOfDay()->isPast()) {
+        if (!$this->iuguSubscriptionExpiresAtHasPassed($iuguSubscription)) {
             return false;
         }
 

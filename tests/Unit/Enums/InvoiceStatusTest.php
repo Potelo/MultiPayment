@@ -39,27 +39,27 @@ class InvoiceStatusTest extends TestCase
     }
 
     /**
-     * Tabela verdade completa dos quatro helpers, um caso por linha.
+     * Tabela verdade completa dos cinco helpers, um caso por linha.
      *
-     * @return array<string, array{InvoiceStatus, bool, bool, bool, bool}>
+     * @return array<string, array{InvoiceStatus, bool, bool, bool, bool, bool}>
      */
     public static function helperTruthTableProvider(): array
     {
-        // [status, isSettled, isContested, isTerminal, isOpen]
+        // [status, isSettled, isContested, isTerminal, isOpen, isPayable]
         return [
-            'pending' => [InvoiceStatus::PENDING, false, false, false, true],
-            'authorized' => [InvoiceStatus::AUTHORIZED, false, false, false, true],
-            'processing' => [InvoiceStatus::PROCESSING, false, false, false, true],
-            'paid' => [InvoiceStatus::PAID, true, false, false, false],
-            'partially_paid' => [InvoiceStatus::PARTIALLY_PAID, true, false, false, true],
-            'externally_paid' => [InvoiceStatus::EXTERNALLY_PAID, true, false, false, false],
-            'partially_refunded' => [InvoiceStatus::PARTIALLY_REFUNDED, true, false, false, false],
-            'refunded' => [InvoiceStatus::REFUNDED, false, false, true, false],
-            'disputed' => [InvoiceStatus::DISPUTED, false, true, false, false],
-            'chargeback' => [InvoiceStatus::CHARGEBACK, false, true, true, false],
-            'canceled' => [InvoiceStatus::CANCELED, false, false, true, false],
-            'expired' => [InvoiceStatus::EXPIRED, false, false, true, false],
-            'unknown' => [InvoiceStatus::UNKNOWN, false, false, false, false],
+            'pending' => [InvoiceStatus::PENDING, false, false, false, true, true],
+            'authorized' => [InvoiceStatus::AUTHORIZED, false, false, false, true, true],
+            'processing' => [InvoiceStatus::PROCESSING, false, false, false, true, false],
+            'paid' => [InvoiceStatus::PAID, true, false, false, false, false],
+            'partially_paid' => [InvoiceStatus::PARTIALLY_PAID, true, false, false, true, true],
+            'externally_paid' => [InvoiceStatus::EXTERNALLY_PAID, true, false, false, false, false],
+            'partially_refunded' => [InvoiceStatus::PARTIALLY_REFUNDED, true, false, false, false, false],
+            'refunded' => [InvoiceStatus::REFUNDED, false, false, true, false, false],
+            'disputed' => [InvoiceStatus::DISPUTED, false, true, false, false, false],
+            'chargeback' => [InvoiceStatus::CHARGEBACK, false, true, true, false, false],
+            'canceled' => [InvoiceStatus::CANCELED, false, false, true, false, false],
+            'expired' => [InvoiceStatus::EXPIRED, false, false, false, false, true],
+            'unknown' => [InvoiceStatus::UNKNOWN, false, false, false, false, false],
         ];
     }
 
@@ -69,12 +69,25 @@ class InvoiceStatusTest extends TestCase
         bool $settled,
         bool $contested,
         bool $terminal,
-        bool $open
+        bool $open,
+        bool $payable
     ): void {
         $this->assertSame($settled, $status->isSettled(), 'isSettled');
         $this->assertSame($contested, $status->isContested(), 'isContested');
         $this->assertSame($terminal, $status->isTerminal(), 'isTerminal');
         $this->assertSame($open, $status->isOpen(), 'isOpen');
+        $this->assertSame($payable, $status->isPayable(), 'isPayable');
+        $this->assertFalse($terminal && $payable, 'nenhum status é terminal e pagável ao mesmo tempo');
+    }
+
+    /**
+     * `EXPIRED` responde verdadeiro a `isPayable()` e falso a `isTerminal()` e a `isOpen()`.
+     */
+    public function testExpiredIsPayableAndNotTerminal(): void
+    {
+        $this->assertFalse(InvoiceStatus::EXPIRED->isTerminal());
+        $this->assertTrue(InvoiceStatus::EXPIRED->isPayable());
+        $this->assertFalse(InvoiceStatus::EXPIRED->isOpen());
     }
 
     public function testFromValueReturnsTheMatchingCaseWithoutLogging(): void

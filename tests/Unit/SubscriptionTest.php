@@ -24,6 +24,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 
 class SubscriptionTest extends TestCase
 {
@@ -103,9 +104,10 @@ class SubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->items = [new SubscriptionItem()];
 
-        $subscription->fill(['status' => Subscription::STATUS_ACTIVE]);
+        $subscription->fill(['status' => SubscriptionStatus::ACTIVE]);
 
         $this->assertCount(1, $subscription->items);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
     }
 
     public function testToArrayFlattensItemsDiscountsAndCustomer(): void

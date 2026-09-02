@@ -44,7 +44,7 @@ enum InvoiceStatus: string implements AcceptsUnknownValue
     /** Cancelada antes do pagamento. Terminal. */
     case CANCELED = 'canceled';
 
-    /** Venceu sem pagamento. Terminal. */
+    /** Venceu sem pagamento. Continua pagável (ver `isPayable()`). */
     case EXPIRED = 'expired';
 
     /**
@@ -83,21 +83,21 @@ enum InvoiceStatus: string implements AcceptsUnknownValue
 
     /**
      * Diz se a fatura chegou a um estado final, do qual o gateway não a tira: `REFUNDED`,
-     * `CHARGEBACK`, `CANCELED` e `EXPIRED`.
+     * `CHARGEBACK` e `CANCELED`. `EXPIRED` fica de fora (ver `isPayable()`).
      *
      * @return bool
      */
     public function isTerminal(): bool
     {
         return match ($this) {
-            self::REFUNDED, self::CHARGEBACK, self::CANCELED, self::EXPIRED => true,
+            self::REFUNDED, self::CHARGEBACK, self::CANCELED => true,
             default => false,
         };
     }
 
     /**
-     * Diz se a fatura ainda pode receber pagamento: `PENDING`, `AUTHORIZED`, `PROCESSING` e
-     * `PARTIALLY_PAID`.
+     * Diz se a fatura está em aberto, com o pagamento ainda por resolver: `PENDING`,
+     * `AUTHORIZED`, `PROCESSING` e `PARTIALLY_PAID`.
      *
      * @return bool
      */
@@ -105,6 +105,21 @@ enum InvoiceStatus: string implements AcceptsUnknownValue
     {
         return match ($this) {
             self::PENDING, self::AUTHORIZED, self::PROCESSING, self::PARTIALLY_PAID => true,
+            default => false,
+        };
+    }
+
+    /**
+     * Diz se a fatura aceita um pagamento agora: `PENDING`, `AUTHORIZED`, `PARTIALLY_PAID` e
+     * `EXPIRED` (a vencida segue pagável nos dois gateways). `PROCESSING` fica de fora: já há um
+     * pagamento em curso (ver `isOpen()`).
+     *
+     * @return bool
+     */
+    public function isPayable(): bool
+    {
+        return match ($this) {
+            self::PENDING, self::AUTHORIZED, self::PARTIALLY_PAID, self::EXPIRED => true,
             default => false,
         };
     }

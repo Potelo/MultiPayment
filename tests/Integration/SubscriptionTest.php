@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 
 /**
  * Cobre o que só a sandbox prova: a serialização do SDK, os endpoints de plano e assinatura e
@@ -177,7 +178,7 @@ class SubscriptionTest extends TestCase
             $nextBillingAt->format('Y-m-d'),
             $subscription->nextBillingAt->format('Y-m-d')
         );
-        $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
 
         $lida = new Subscription();
         $lida->id = $subscription->id;
@@ -186,13 +187,29 @@ class SubscriptionTest extends TestCase
         $this->assertSame($subscription->planId, $lida->planId);
 
         $suspensa = $lida->suspend(self::GATEWAY);
-        $this->assertSame(Subscription::STATUS_SUSPENDED, $suspensa->status);
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $suspensa->status);
 
         $reativada = $suspensa->resume(self::GATEWAY);
-        $this->assertSame(Subscription::STATUS_ACTIVE, $reativada->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $reativada->status);
 
         $cancelada = $reativada->cancel(false, self::GATEWAY);
-        $this->assertSame(Subscription::STATUS_SUSPENDED, $cancelada->status);
+        $this->assertSame(SubscriptionStatus::CANCELED, $cancelada->status);
+        $this->assertNotNull($cancelada->canceledAt);
+        $this->assertLessThan(5, abs(now()->diffInMinutes($cancelada->canceledAt)));
+        $this->assertSame(
+            $cancelada->canceledAt->toIso8601String(),
+            $cancelada->metadata['mp_canceled_at'] ?? null
+        );
+
+        $relida = new Subscription();
+        $relida->id = $subscription->id;
+        $relida = $relida->get(self::GATEWAY);
+        $this->assertSame(SubscriptionStatus::CANCELED, $relida->status);
+
+        $descancelada = $relida->resume(self::GATEWAY);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $descancelada->status);
+        $this->assertNull($descancelada->canceledAt);
+        $this->assertArrayNotHasKey('mp_canceled_at', $descancelada->metadata ?? []);
 
         $doCliente = MultiPayment::setGateway(self::GATEWAY)
             ->listSubscriptions($subscription->customer->id);
@@ -214,10 +231,10 @@ class SubscriptionTest extends TestCase
         $this->assertNull($subscription->nextBillingAt);
 
         $suspensa = $subscription->suspend(self::GATEWAY);
-        $this->assertSame(Subscription::STATUS_SUSPENDED, $suspensa->status);
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $suspensa->status);
 
         $reativada = $suspensa->resume(self::GATEWAY);
-        $this->assertSame(Subscription::STATUS_SUSPENDED, $reativada->status);
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $reativada->status);
     }
 
     /**
@@ -315,7 +332,7 @@ class SubscriptionTest extends TestCase
 
         $this->assertSame($planoNovo->identifier, $trocada->planId);
         $this->assertSame(30000, $trocada->amount);
-        $this->assertSame(Subscription::STATUS_ACTIVE, $trocada->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $trocada->status);
 
         $this->assertNotNull($trocada->latestInvoice);
         $this->faturasCriadas[] = $trocada->latestInvoice->id;

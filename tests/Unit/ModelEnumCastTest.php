@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -74,6 +75,43 @@ class ModelEnumCastTest extends TestCase
         $this->assertCount(1, $this->logger->records);
         $this->assertSame('warning', $this->logger->records[0]['level']);
         $this->assertSame(['status' => 'status_inventado', 'gateway' => 'iugu'], $this->logger->records[0]['context']);
+    }
+
+    public function testSubscriptionStatusAcceptsTheOldStringAndReadsAsTheEnum(): void
+    {
+        $subscription = new Subscription();
+        $subscription->status = Subscription::STATUS_PAST_DUE;
+
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
+        $this->assertTrue($subscription->status->isRecoverable());
+        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status->value);
+        $this->assertSame('past_due', $subscription->toArray()['status']);
+        $this->assertSame('past_due', json_decode(json_encode($subscription), true)['status']);
+        $this->assertTrue(isset($subscription->status));
+        $this->assertContains('status', Subscription::fillableKeys());
+
+        $subscription->fill(['status' => 'trialing']);
+        $this->assertSame(SubscriptionStatus::TRIALING, $subscription->status);
+
+        $subscription->status = SubscriptionStatus::CANCELED;
+        $this->assertSame(SubscriptionStatus::CANCELED, $subscription->status);
+
+        $subscription->status = null;
+        $this->assertNull($subscription->status);
+        $this->assertFalse(isset($subscription->status));
+    }
+
+    public function testUnknownSubscriptionStatusStringBecomesUnknownWithAWarningNamingTheGateway(): void
+    {
+        $subscription = new Subscription();
+        $subscription->gateway = 'stripe';
+        $subscription->fill(['status' => 'status_inventado']);
+
+        $this->assertSame(SubscriptionStatus::UNKNOWN, $subscription->status);
+        $this->assertCount(1, $this->logger->records);
+        $this->assertSame('warning', $this->logger->records[0]['level']);
+        $this->assertStringContainsString('assinatura', $this->logger->records[0]['message']);
+        $this->assertSame(['status' => 'status_inventado', 'gateway' => 'stripe'], $this->logger->records[0]['context']);
     }
 
     public function testFillConvertsStatusPaymentMethodAndAvailablePaymentMethods(): void

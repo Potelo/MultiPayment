@@ -42,3 +42,14 @@ Montadas sobre `open_requires_payment_method.json`, porque a sandbox não produz
 
 `needs_response.json` é o GET de `/v1/disputes?charge=` do charge disputado;
 `lost.json` é o mesmo com o status trocado.
+
+## `subscriptions/`
+
+Montadas a partir do objeto Subscription documentado para a API `2026-07-29.dahlia` (a
+sessão de sandbox não criou assinaturas): `active.json` é a base, com um item de preço
+recorrente mensal, e as demais trocam `status` e os campos que acompanham cada estado
+(`trial_start`/`trial_end` em `trialing` e `paused`, `canceled_at`/`ended_at` em `canceled`,
+`ended_at` em `incomplete_expired`). `active_pause_collection.json` é a base com
+`pause_collection` preenchido. Servem ao mapa de status
+(`Gateways\Stripe\SubscriptionStatuses`); quando o driver ler assinatura, regravar a partir da
+sandbox.

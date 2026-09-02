@@ -185,18 +185,18 @@ pacote; o status específico de cada gateway fica em `original`. Os treze estado
 
 | `InvoiceStatus` | Significado | Iugu | Stripe | Helper que responde |
 |---|---|---|---|---|
-| `PENDING` | Aguardando pagamento | `pending`, `draft` | PaymentIntent em `requires_payment_method`, `requires_action`, `requires_confirmation`; Invoice `draft` ou `open` sem pagamento em curso | `isOpen()` |
-| `AUTHORIZED` | Valor reservado no cartão, aguardando captura ou análise | `in_analysis`, `authorized` | PaymentIntent `requires_capture` | `isOpen()` |
+| `PENDING` | Aguardando pagamento | `pending`, `draft` | PaymentIntent em `requires_payment_method`, `requires_action`, `requires_confirmation`; Invoice `draft` ou `open` sem pagamento em curso | `isOpen()` e `isPayable()` |
+| `AUTHORIZED` | Valor reservado no cartão, aguardando captura ou análise | `in_analysis`, `authorized` | PaymentIntent `requires_capture` | `isOpen()` e `isPayable()` |
 | `PROCESSING` | Pagamento em processamento no gateway | (não emite) | PaymentIntent `processing` | `isOpen()` |
 | `PAID` | Valor recebido | `paid` | PaymentIntent `succeeded` sem estorno nem contestação; Invoice `paid` quitado sem cobrança | `isSettled()` |
-| `PARTIALLY_PAID` | Parte do valor recebida, restante em aberto | `partially_paid` | Invoice `open` com parte do `total` em `amount_paid` (não emite em venda avulsa) | `isSettled()` e `isOpen()` |
+| `PARTIALLY_PAID` | Parte do valor recebida, restante em aberto | `partially_paid` | Invoice `open` com parte do `total` em `amount_paid` (não emite em venda avulsa) | `isSettled()`, `isOpen()` e `isPayable()` |
 | `EXTERNALLY_PAID` | Quitada fora do gateway, por baixa manual | `externally_paid` | Invoice `paid` com pagamento registrado fora da Stripe (não emite em venda avulsa) | `isSettled()` |
 | `PARTIALLY_REFUNDED` | Estorno voluntário, parcial | `partially_refunded` | charge com `amount_refunded` menor que o total | `isSettled()` |
 | `REFUNDED` | Estorno voluntário, integral | `refunded` | charge com `refunded = true` | `isTerminal()` |
 | `DISPUTED` | Contestação aberta sobre fatura paga, resolução pendente | `in_protest` | charge `disputed` com dispute em `warning_needs_response`, `warning_under_review`, `needs_response` ou `under_review` | `isContested()` |
 | `CHARGEBACK` | Contestação perdida: valor devolvido ao cliente pelo gateway | `chargeback` | dispute em `lost` | `isContested()` e `isTerminal()` |
 | `CANCELED` | Cancelada antes do pagamento | `canceled` | PaymentIntent `canceled`; Invoice `void` | `isTerminal()` |
-| `EXPIRED` | Venceu sem pagamento | `expired` | Invoice `uncollectible` (não emite em venda avulsa) | `isTerminal()` |
+| `EXPIRED` | Venceu sem pagamento; continua pagável | `expired` | Invoice `uncollectible` (não emite em venda avulsa) | `isPayable()` |
 | `UNKNOWN` | Status que a lib não reconhece | qualquer outro | qualquer outro | nenhum responde verdadeiro |
 
 Dispute ganha (`won`), encerrada sem virar chargeback (`warning_closed`) ou prevenida
@@ -213,9 +213,10 @@ Os helpers do enum respondem às perguntas de negócio sem comparar status um a 
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 
 $invoice->status->isSettled();    // recebi dinheiro? PAID, PARTIALLY_PAID, EXTERNALLY_PAID, PARTIALLY_REFUNDED
-$invoice->status->isOpen();       // ainda pode receber pagamento? PENDING, AUTHORIZED, PROCESSING, PARTIALLY_PAID
+$invoice->status->isOpen();       // pagamento ainda por resolver? PENDING, AUTHORIZED, PROCESSING, PARTIALLY_PAID
+$invoice->status->isPayable();    // aceita um pagamento agora? PENDING, AUTHORIZED, PARTIALLY_PAID, EXPIRED
 $invoice->status->isContested();  // tem briga? DISPUTED, CHARGEBACK
-$invoice->status->isTerminal();   // acabou? REFUNDED, CHARGEBACK, CANCELED, EXPIRED
+$invoice->status->isTerminal();   // acabou? REFUNDED, CHARGEBACK, CANCELED
 
 match ($invoice->status) {
     InvoiceStatus::DISPUTED => $this->openDisputeTicket($invoice),
@@ -226,9 +227,20 @@ match ($invoice->status) {
 ```
 
 `PARTIALLY_PAID` responde verdadeiro a `isSettled()` e a `isOpen()` ao mesmo tempo: parte do
-dinheiro entrou e o restante segue cobrável. Os helpers estáticos `Invoice::isSettled()` e
-`Invoice::isContested()` continuam existindo, delegam ao enum e estão obsoletos (emitem
-`E_USER_DEPRECATED`).
+dinheiro entrou e o restante segue cobrável. `EXPIRED` responde verdadeiro só a `isPayable()`:
+a fatura vencida continua pagável nos dois gateways (na Iugu ela segue devida até ser paga ou
+cancelada, e na Stripe `uncollectible` pode voltar a `paid`), então ela fica fora de
+`isTerminal()` e fora de `isOpen()`, que descreve a fatura com pagamento em curso. `PROCESSING`
+responde só a `isOpen()`: há um pagamento em curso, e a fatura fica fora de `isPayable()`. Quem
+decide se para de cobrar deve olhar `isTerminal()`; quem decide se oferece um novo Pix ou boleto
+deve olhar `isPayable()`.
+Os helpers estáticos `Invoice::isSettled()` e `Invoice::isContested()` continuam existindo,
+delegam ao enum e estão obsoletos (emitem `E_USER_DEPRECATED`).
+
+> **Mudança de comportamento (versão 5.0.0).** `InvoiceStatus::EXPIRED->isTerminal()` passou a
+> responder falso. Quem usava `isTerminal()` para parar de cobrar parava cedo demais na Iugu,
+> onde a fatura vencida segue pagável. Se a aplicação tratava a fatura vencida como encerrada,
+> trate `EXPIRED` explicitamente, ou use `isPayable()` para decidir se ainda cabe pagamento.
 
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, fatura Iugu em `in_protest` lia como
 > `paid` e fatura em `chargeback` lia como `refunded`; no Stripe, charge contestado lia como
@@ -243,20 +255,75 @@ dinheiro entrou e o restante segue cobrável. Os helpers estáticos `Invoice::is
 > `UNKNOWN` com log. Se a aplicação precisava do comportamento antigo, use `isSettled()` para
 > "pago", `isOpen()` para "ainda cobrável" e trate `DISPUTED` e `CHARGEBACK` explicitamente.
 
+### Status da assinatura
+
+`Subscription::$status` é o enum `Potelo\MultiPayment\Enums\SubscriptionStatus`, no mesmo
+desenho do status da fatura; as flags ou o status específico do gateway ficam em `original`.
+Os nove estados:
+
+| `SubscriptionStatus` | Significado | Iugu | Stripe | Helper que responde |
+|---|---|---|---|---|
+| `PENDING` | Criada e ainda sem cobrança confirmada | `active` falso com `expires_at` futuro ou ausente | `incomplete` | `isRecoverable()` |
+| `TRIALING` | Em período de teste | `in_trial` | `trialing` | `isActive()` |
+| `ACTIVE` | Em dia | `active` | `active` | `isActive()` |
+| `PAST_DUE` | Cobrança vencida sem pagamento | derivado: `expires_at` no passado com alguma fatura de `recent_invoices` em aberto | `past_due`, `unpaid` | `isRecoverable()` |
+| `PAUSED` | Cobrança pausada pelo gateway | (não emite) | `paused`; qualquer status não encerrado com `pause_collection` preenchido | `isRecoverable()` |
+| `SUSPENDED` | Cobrança interrompida pela aplicação | `suspended` | (não emite; `suspend()` usa `pause_collection`, que lê como `PAUSED`) | `isRecoverable()` |
+| `CANCELED` | Encerrada | `suspended` com a marca `mp_canceled_at` em `custom_variables`, gravada por `cancel()` | `canceled` | `isEnded()` |
+| `EXPIRED` | Ciclo terminou sem renovação | `active` falso com `expires_at` no passado e nenhuma fatura em aberto | `incomplete_expired` | `isEnded()` |
+| `UNKNOWN` | Status que a lib não reconhece | (não emite: a Iugu não tem campo de status) | qualquer outro | nenhum responde verdadeiro |
+
+A precedência na Iugu é a ordem em que o driver testa as flags: `suspended` (com ou sem a
+marca) vence `in_trial`, que vence a derivação de `past_due`, que vence `active`. A regra de
+`EXPIRED` na Iugu segue o painel do gateway (assinatura "Expirada") e o webhook
+`subscription.expired`. O driver Stripe ainda não lê
+assinatura (planejado para uma versão futura); o mapa acima é o que ele vai aplicar. Um status
+fora do mapa vira `UNKNOWN`, com um aviso no log da aplicação (nível `warning`) contendo o valor
+original e o gateway.
+
+```php
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
+
+if ($subscription->status->isActive()) {            // TRIALING, ACTIVE
+    $account->grantAccess();
+} elseif ($subscription->status->isRecoverable()) { // PENDING, PAST_DUE, PAUSED, SUSPENDED
+    $dunning->start($subscription);
+} elseif ($subscription->status->isEnded()) {       // CANCELED, EXPIRED
+    $account->revokeAccess();
+}
+
+$subscription->status === SubscriptionStatus::PAST_DUE;
+$subscription->status->value;                       // 'past_due', para gravar no banco
+```
+
+Cada estado responde verdadeiro a exatamente um dos três helpers (`UNKNOWN` a nenhum), então
+os três `if` acima cobrem tudo que a lib produz.
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `Subscription::$status` era uma
+> string e `cancel()` na Iugu devolvia `suspended`, o mesmo estado de `suspend()`. Agora a
+> propriedade devolve `SubscriptionStatus` (compará-la com `Subscription::STATUS_*` é sempre
+> falso; use o caso do enum ou `->value`), e `cancel()` na Iugu devolve `CANCELED`: além de
+> suspender, o driver grava a data em `custom_variables` (`mp_canceled_at`), numa segunda
+> requisição, e é essa marca que distingue os dois estados na leitura. `resume()` remove a
+> marca. Assinaturas canceladas antes desta versão continuam lendo como `SUSPENDED`, porque não
+> têm a marca.
+
 ### Migração das constantes para enum
 
-Status da fatura, método de pagamento e intervalo do plano são enums do namespace
-`Potelo\MultiPayment\Enums`: `InvoiceStatus`, `PaymentMethod` (`CREDIT_CARD`, `BANK_SLIP`,
-`PIX`, `AUTOMATIC_PIX`) e `PlanInterval` (`DAY`, `WEEK`, `MONTH`, `YEAR`). As propriedades
-`Invoice::$status`, `Invoice::$paymentMethod`, `Invoice::$availablePaymentMethods`,
-`Subscription::$paymentMethod`, `Subscription::$availablePaymentMethods` e `Plan::$interval`
-devolvem o enum na leitura e aceitam, na escrita, tanto o caso do enum quanto a string do valor
-(as constantes antigas). O mesmo vale para `fill()` e para os builders.
+Status da fatura, status da assinatura, método de pagamento e intervalo do plano são enums do
+namespace `Potelo\MultiPayment\Enums`: `InvoiceStatus`, `SubscriptionStatus`, `PaymentMethod`
+(`CREDIT_CARD`, `BANK_SLIP`, `PIX`, `AUTOMATIC_PIX`) e `PlanInterval` (`DAY`, `WEEK`, `MONTH`,
+`YEAR`). As propriedades `Invoice::$status`, `Invoice::$paymentMethod`,
+`Invoice::$availablePaymentMethods`, `Subscription::$status`, `Subscription::$paymentMethod`,
+`Subscription::$availablePaymentMethods` e `Plan::$interval` devolvem o enum na leitura e
+aceitam, na escrita, tanto o caso do enum quanto a string do valor (as constantes antigas). O
+mesmo vale para `fill()` e para os builders.
 
-As constantes antigas (`Invoice::STATUS_*`, `Invoice::PAYMENT_METHOD_*`, `Plan::INTERVAL_*`)
-continuam existindo, com os mesmos valores de string dos enums, e estão marcadas como
-`@deprecated`. O que muda é a **comparação**: a propriedade agora devolve um enum, então
-compará-la diretamente com a string antiga é sempre falso.
+As constantes antigas (`Invoice::STATUS_*`, `Subscription::STATUS_*`,
+`Invoice::PAYMENT_METHOD_*`, `Plan::INTERVAL_*`) continuam existindo, com os mesmos valores de
+string dos enums, e estão marcadas como `@deprecated`. O que muda é a **comparação**: a
+propriedade agora devolve um enum, então compará-la diretamente com a string antiga é sempre
+falso.
 
 ```php
 use Potelo\MultiPayment\Enums\InvoiceStatus;
@@ -286,7 +353,8 @@ Onde a string vai para fora do PHP (banco, JSON, log, comparação com valor vin
 use `->value`. `toArray()` já emite o valor de string, e `json_encode($invoice)` também.
 
 Valor de string fora do enum tem dois tratamentos: em `status`, vira `InvoiceStatus::UNKNOWN`
-com aviso no log; em `paymentMethod`, `availablePaymentMethods` e `interval`, lança
+ou `SubscriptionStatus::UNKNOWN` com aviso no log; em `paymentMethod`,
+`availablePaymentMethods` e `interval`, lança
 `ModelAttributeValidationException` na escrita, com a lista de valores aceitos. Em
 `availablePaymentMethods` só entram `CREDIT_CARD`, `BANK_SLIP` e `PIX`; `AUTOMATIC_PIX` é
 recusado na validação, porque a fatura com Pix Automático é criada com `PIX` e o objeto
@@ -422,9 +490,10 @@ cancela uma fatura `open`. A tabela completa:
 
 Duas ressalvas para quem trata status como definitivo:
 
-- **`uncollectible` lê como `EXPIRED`, mas na Stripe não é terminal**: a fatura pode voltar a
+- **`uncollectible` lê como `EXPIRED` e continua reversível na Stripe**: a fatura pode voltar a
   `paid` ou ir a `void` depois. Uma fatura `EXPIRED` de origem `INVOICE` pode, portanto, ler
-  como `PAID` numa releitura, embora `isTerminal()` responda verdadeiro para `EXPIRED`.
+  como `PAID` numa releitura; `isTerminal()` responde falso e `isPayable()` verdadeiro para
+  `EXPIRED` por isso.
 - **`open` com PaymentIntent `succeeded` fica em `UNKNOWN` de propósito**: a Stripe atualiza o
   Invoice no mesmo instante em que confirma o pagamento, então essa combinação é uma leitura
   no meio da transição ou um pagamento fora do padrão que não quitou a fatura. Se aparecer no
@@ -914,7 +983,7 @@ $subscription = (new \Potelo\MultiPayment\MultiPayment('iugu'))
     ->setAvailablePaymentMethods(['pix'])
     ->create();
 
-echo $subscription->status; // na Iugu: trialing, active, suspended, pending ou past_due
+$subscription->status; // SubscriptionStatus; na Iugu: TRIALING, ACTIVE, SUSPENDED, PENDING, PAST_DUE, CANCELED ou EXPIRED
 ```
 
 Operações sobre a assinatura:
@@ -922,7 +991,7 @@ Operações sobre a assinatura:
 ```php
 $subscription->suspend();
 $subscription->resume();
-$subscription->cancel();                        // na Iugu, cancelar é suspender
+$subscription->cancel();                        // CANCELED; na Iugu, suspende e grava a marca de cancelamento
 $subscription->changePlan('plano_anual');       // aplica a troca e gera cobrança imediata
 $subscription->changePlan('plano_anual', charge: false);
 $preview = $subscription->previewPlanChange('plano_anual'); // simula, não aplica
@@ -940,9 +1009,20 @@ $planos = (new \Potelo\MultiPayment\MultiPayment('iugu'))->listPlans();
 
 Particularidades da Iugu:
 
-- **Cancelar é suspender.** `cancel(atPeriodEnd: true)` lança `UnsupportedOperationException`
+- **Cancelar é suspender com uma marca.** A Iugu só suspende, então `cancel()` faz duas
+  requisições: `POST /suspend` e um `PUT` que grava `mp_canceled_at` (data e hora, ISO 8601)
+  em `custom_variables`. A assinatura lê como `CANCELED` enquanto estiver suspensa com a marca,
+  `canceledAt` é preenchido a partir dela, e ela também aparece em `metadata`. `resume()` de
+  uma assinatura cancelada reativa e remove a marca (`PUT` com `_destroy`), voltando a
+  `ACTIVE`. Chamar `cancel()` de novo numa assinatura já cancelada só repete a suspensão e
+  mantém a data original. Se a segunda requisição de `cancel()` ou de `resume()` falhar, a
+  exceção sobe com a assinatura no estado intermediário (suspensa sem marca, ou ativa com a
+  marca); repita a chamada, de preferência com a mesma chave de idempotência, que a Iugu aceita
+  `suspend` e `activate` repetidos. O prefixo `mp_` em `custom_variables` é reservado à lib: não
+  use chaves com esse prefixo em `metadata`; uma marca `mp_canceled_at` que não seja uma data lê
+  como ausente, com aviso no log. `cancel(atPeriodEnd: true)` lança `UnsupportedOperationException`
   (`CANCEL_AT_PERIOD_END`, `gateway_limitation`); para encerrar ao fim do período, suspenda na
-  data.
+  data (a emulação está planejada para uma versão futura).
 - **Desconto é sempre valor fixo.** `percentOff` e `cycles` maior que `1` lançam
   `UnsupportedOperationException` (`NATIVE_COUPONS`, `gateway_limitation`); `cycles` aceita `1`
   (uma fatura) ou `null` (até ser removido).
@@ -975,13 +1055,13 @@ Particularidades da Iugu:
   subitens na mesma chamada, então o pacote lê a assinatura, envia a remoção sozinha e só depois
   a atualização — até três requisições. Entre a remoção e a atualização a assinatura fica sem os
   itens removidos, e se a segunda falhar eles não voltam sozinhos.
-- **`paymentMethod`, `cancelAtPeriodEnd` e `canceledAt` não são mapeados** na Iugu, nas duas
-  direções.
+- **`paymentMethod` e `cancelAtPeriodEnd` não são mapeados** na Iugu, nas duas direções.
+  `canceledAt` vem da marca `mp_canceled_at` gravada por `cancel()`.
 - **Reativar exige data de cobrança.** Assinatura criada sem `nextBillingAt` fica sem data no
   gateway e, por isso, não volta com `resume()`: a Iugu responde sem erro e sem mudar nada, e o
-  `status` devolvido segue `suspended`.
+  `status` devolvido segue `SUSPENDED`.
 - **`active` e `suspended` são flags independentes.** Assinatura suspensa pode continuar com
-  `active: true` na Iugu; o pacote dá precedência a `suspended` e reporta `suspended`.
+  `active: true` na Iugu; o pacote dá precedência a `suspended` e reporta `SUSPENDED`.
 - **A simulação de troca não traz linhas.** `previewPlanChange()` preenche só `amount` e
   `effectiveAt`; `items` fica `null` e o resto (`discount`, `cycles`, `old_plan`, `new_plan`)
   está em `original`.
@@ -994,8 +1074,8 @@ Particularidades da Iugu:
   mudar preço ou intervalo, crie outro plano e troque as assinaturas com `changePlan()`.
 - **Fatura vencida lê como `EXPIRED` e continua sendo dívida.** A Iugu chama de `expired` a
   fatura que venceu sem pagamento; ela conta como fatura em aberto na derivação de `past_due`
-  da assinatura, embora `InvoiceStatus::EXPIRED->isOpen()` seja falso (na Iugu a fatura vencida
-  ainda pode ser paga; em outros gateways, vencida é terminal).
+  da assinatura, e `InvoiceStatus::EXPIRED->isPayable()` responde verdadeiro (`isOpen()`
+  responde falso, porque não há pagamento em curso).
 - **A assinatura lida traz o cliente resumido.** `Subscription::get()` preenche `customer` com
   id, nome e e-mail — documento, endereço e telefone não vêm da Iugu. Eles sobrevivem se o
   `customer` local já tiver o mesmo id; se o id for outro, ou o local não tiver id, o pacote

@@ -261,10 +261,27 @@ class IuguGatewayIdempotencyTest extends TestCase
                 [self::subscriptionResponse()],
                 'POST', '/subscriptions/sub_1/activate',
             ],
-            'cancelSubscription (POST /suspend)' => [
+            'cancelSubscription (POST /suspend, mais o PUT da marca de cancelamento)' => [
                 fn (IuguGateway $g, string $key) => $g->cancelSubscription(self::subscriptionWithId(), false, $key),
-                [self::subscriptionResponse(['suspended' => true])],
+                [
+                    self::subscriptionResponse(['suspended' => true]),
+                    self::subscriptionResponse([
+                        'suspended' => true,
+                        'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-02T10:00:00-03:00']],
+                    ]),
+                ],
                 'POST', '/subscriptions/sub_1/suspend',
+            ],
+            'cancelSubscription (PUT da marca de cancelamento, chave derivada)' => [
+                fn (IuguGateway $g, string $key) => $g->cancelSubscription(self::subscriptionWithId(), false, $key),
+                [
+                    self::subscriptionResponse(['suspended' => true]),
+                    self::subscriptionResponse([
+                        'suspended' => true,
+                        'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-02T10:00:00-03:00']],
+                    ]),
+                ],
+                'PUT', '/subscriptions/sub_1',
             ],
             'changeSubscriptionPlan com cobrança (POST /change_plan, com a releitura repetida)' => [
                 fn (IuguGateway $g, string $key) => $g->changeSubscriptionPlan(self::subscriptionWithId(), 'plano_anual', true, $key),

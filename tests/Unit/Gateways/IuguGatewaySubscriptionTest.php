@@ -24,6 +24,7 @@ use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 
 class IuguGatewaySubscriptionTest extends TestCase
 {
@@ -40,6 +41,7 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     protected function tearDown(): void
     {
+        Carbon::setTestNow();
         Facade::clearResolvedInstances();
         Facade::setFacadeApplication(null);
 
@@ -179,9 +181,14 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('iugu', $subscription->gateway);
     }
 
+    /**
+     * Derivação do status a partir das flags da Iugu, um caso por estado genérico que o driver
+     * produz, com a data de hoje fixada em 2026-09-15 (a resposta padrão vence em 2026-10-01).
+     */
     #[DataProvider('statusProvider')]
-    public function testParseMapsIuguFlagsToGenericStatus(array $flags, ?string $expected): void
+    public function testParseMapsIuguFlagsToGenericStatus(array $flags, ?SubscriptionStatus $expected): void
     {
+        Carbon::setTestNow('2026-09-15 12:00:00');
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse($flags)]);
 
         $subscription = new Subscription();
@@ -193,17 +200,108 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     public static function statusProvider(): array
     {
+        $canceledMark = [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-10T10:00:00-03:00']];
+        $openInvoice = [(object) ['id' => 'inv_1', 'status' => 'pending', 'due_date' => '2026-09-01']];
+
         return [
-            'suspensa' => [['suspended' => true, 'active' => false], Subscription::STATUS_SUSPENDED],
+            'suspensa' => [['suspended' => true, 'active' => false], SubscriptionStatus::SUSPENDED],
             'suspensa tem precedencia sobre trial' => [
                 ['suspended' => true, 'in_trial' => true],
-                Subscription::STATUS_SUSPENDED,
+                SubscriptionStatus::SUSPENDED,
             ],
-            'em trial' => [['in_trial' => true], Subscription::STATUS_TRIALING],
-            'ativa' => [['active' => true], Subscription::STATUS_ACTIVE],
-            'inativa' => [['active' => false], Subscription::STATUS_PENDING],
+            'suspensa com a marca de cancelamento' => [
+                ['suspended' => true, 'active' => false, 'custom_variables' => $canceledMark],
+                SubscriptionStatus::CANCELED,
+            ],
+            'ativa com a marca de cancelamento continua ativa' => [
+                ['suspended' => false, 'active' => true, 'custom_variables' => $canceledMark],
+                SubscriptionStatus::ACTIVE,
+            ],
+            'suspensa com a marca vazia' => [
+                ['suspended' => true, 'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '']]],
+                SubscriptionStatus::SUSPENDED,
+            ],
+            'em trial' => [['in_trial' => true], SubscriptionStatus::TRIALING],
+            'ativa' => [['active' => true], SubscriptionStatus::ACTIVE],
+            'ativa com cobranca vencida e fatura em aberto' => [
+                ['active' => true, 'expires_at' => '2026-09-01', 'recent_invoices' => $openInvoice],
+                SubscriptionStatus::PAST_DUE,
+            ],
+            'ativa com cobranca vencida e sem fatura em aberto' => [
+                ['active' => true, 'expires_at' => '2026-09-01', 'recent_invoices' => []],
+                SubscriptionStatus::ACTIVE,
+            ],
+            'inativa com cobranca futura' => [['active' => false], SubscriptionStatus::PENDING],
+            'inativa sem data de cobranca' => [['active' => false, 'expires_at' => null], SubscriptionStatus::PENDING],
+            'inativa com cobranca vencida no dia' => [
+                ['active' => false, 'expires_at' => '2026-09-15'],
+                SubscriptionStatus::PENDING,
+            ],
+            'inativa com cobranca vencida e sem fatura em aberto' => [
+                ['active' => false, 'expires_at' => '2026-09-01', 'recent_invoices' => []],
+                SubscriptionStatus::EXPIRED,
+            ],
+            'inativa com cobranca vencida e fatura em aberto' => [
+                ['active' => false, 'expires_at' => '2026-09-01', 'recent_invoices' => $openInvoice],
+                SubscriptionStatus::PAST_DUE,
+            ],
             'sem flag nenhuma' => [['active' => null, 'suspended' => null, 'in_trial' => null], null],
         ];
+    }
+
+    public function testParseReadsTheCancellationMarkIntoCanceledAtAndKeepsItInMetadata(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse([
+            'suspended' => true,
+            'custom_variables' => [
+                (object) ['name' => 'origem', 'value' => 'teste'],
+                (object) ['name' => 'mp_canceled_at', 'value' => '2026-09-10T10:00:00-03:00'],
+            ],
+        ])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertSame(SubscriptionStatus::CANCELED, $subscription->status);
+        $this->assertSame('2026-09-10T10:00:00-03:00', $subscription->canceledAt->toIso8601String());
+        $this->assertSame(['origem' => 'teste', 'mp_canceled_at' => '2026-09-10T10:00:00-03:00'], $subscription->metadata);
+        $this->assertNull($subscription->cancelAtPeriodEnd);
+    }
+
+    /**
+     * `custom_variables` vazia na resposta zera `canceledAt` e `metadata`: é o que a Iugu
+     * devolve depois de remover a última variável.
+     */
+    public function testParseClearsCanceledAtAndMetadataWhenTheResponseHasNoVariablesLeft(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['custom_variables' => []])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->canceledAt = Carbon::parse('2026-09-10T10:00:00-03:00');
+        $subscription->metadata = ['mp_canceled_at' => '2026-09-10T10:00:00-03:00'];
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertNull($subscription->canceledAt);
+        $this->assertSame([], $subscription->metadata);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
+    }
+
+    public function testParseKeepsCanceledAtAndMetadataWhenTheResponseOmitsCustomVariables(): void
+    {
+        $response = $this->subscriptionResponse(['suspended' => true]);
+        unset($response->custom_variables);
+        $api = new QueuedIuguApiRequest([$response]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->canceledAt = Carbon::parse('2026-09-10T10:00:00-03:00');
+        $subscription->metadata = ['origem' => 'teste'];
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertSame('2026-09-10T10:00:00-03:00', $subscription->canceledAt->toIso8601String());
+        $this->assertSame(['origem' => 'teste'], $subscription->metadata);
     }
 
     public function testParseFillsTrialEndsAtWhileInTrial(): void
@@ -308,23 +406,239 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $suspended = $gateway->suspendSubscription($subscription);
         $this->assertStringEndsWith('/subscriptions/sub_1/suspend', $api->calls[0]['url']);
-        $this->assertSame(Subscription::STATUS_SUSPENDED, $suspended->status);
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $suspended->status);
 
         $resumed = $gateway->resumeSubscription($subscription);
         $this->assertStringEndsWith('/subscriptions/sub_1/activate', $api->calls[1]['url']);
-        $this->assertSame(Subscription::STATUS_ACTIVE, $resumed->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $resumed->status);
     }
 
-    public function testCancelWithoutPeriodEndSuspendsTheSubscription(): void
+    /**
+     * Cancelar na Iugu é suspender e gravar `mp_canceled_at` em `custom_variables`, nesta
+     * ordem; a leitura da resposta do `PUT` devolve `CANCELED` com `canceledAt` preenchido.
+     */
+    public function testCancelWithoutPeriodEndSuspendsAndMarksTheSubscriptionAsCanceled(): void
     {
-        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['suspended' => true])]);
+        Carbon::setTestNow(Carbon::parse('2026-09-02T10:00:00-03:00'));
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['suspended' => true]),
+            $this->subscriptionResponse([
+                'suspended' => true,
+                'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-02T10:00:00-03:00']],
+            ]),
+        ]);
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        (new IuguGateway($api))->cancelSubscription($subscription);
+        $canceled = (new IuguGateway($api))->cancelSubscription($subscription);
 
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('POST', $api->calls[0]['method']);
         $this->assertStringEndsWith('/subscriptions/sub_1/suspend', $api->calls[0]['url']);
+        $this->assertSame('PUT', $api->calls[1]['method']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[1]['url']);
+        $this->assertSame(
+            ['custom_variables' => [['name' => 'mp_canceled_at', 'value' => Carbon::now()->toIso8601String()]]],
+            $api->calls[1]['data'],
+            'a marca de cancelamento leva o instante da chamada em ISO 8601'
+        );
+
+        $this->assertSame($subscription, $canceled);
+        $this->assertSame(SubscriptionStatus::CANCELED, $canceled->status);
+        $this->assertSame('2026-09-02T10:00:00-03:00', $canceled->canceledAt->toIso8601String());
+    }
+
+    /**
+     * Segundo `cancel()` numa assinatura já marcada só repete a suspensão: a data original da
+     * marca fica, e o `PUT` não sai.
+     */
+    public function testCancelOfAnAlreadyCanceledSubscriptionKeepsTheOriginalDate(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse([
+                'suspended' => true,
+                'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-01T10:00:00-03:00']],
+            ]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $canceled = (new IuguGateway($api))->cancelSubscription($subscription);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertStringEndsWith('/subscriptions/sub_1/suspend', $api->calls[0]['url']);
+        $this->assertSame(SubscriptionStatus::CANCELED, $canceled->status);
+        $this->assertSame('2026-09-01T10:00:00-03:00', $canceled->canceledAt->toIso8601String());
+    }
+
+    /**
+     * Falha no `PUT` da marca deixa o model com a resposta da suspensão: `SUSPENDED`, sem
+     * `canceledAt`, e a exceção sobe.
+     */
+    public function testCancelLeavesTheSubscriptionSuspendedWhenTheMarkFails(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['suspended' => true]),
+            new \IuguObjectNotFound('not found'),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        try {
+            (new IuguGateway($api))->cancelSubscription($subscription);
+            $this->fail('esperava NotFoundException');
+        } catch (\Potelo\MultiPayment\Exceptions\NotFoundException) {
+        }
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $subscription->status);
+        $this->assertNull($subscription->canceledAt);
+    }
+
+    /**
+     * Marca `mp_canceled_at` que não é uma data lê como ausente: a assinatura suspensa fica
+     * `SUSPENDED`, `canceledAt` nulo, e um aviso vai para o log.
+     */
+    public function testAnUnreadableCancellationMarkIsIgnoredWithAWarning(): void
+    {
+        $app = \Illuminate\Support\Facades\Facade::getFacadeApplication();
+        $app->instance('log', $logger = new RecordingLogger());
+
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse([
+            'suspended' => true,
+            'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => 'sim']],
+        ])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $subscription->status);
+        $this->assertNull($subscription->canceledAt);
+        $this->assertSame(['mp_canceled_at' => 'sim'], $subscription->metadata);
+        $this->assertCount(2, $logger->records, 'um aviso por leitura da marca (status e canceledAt)');
+        $this->assertSame('warning', $logger->records[0]['level']);
+        $this->assertStringContainsString('mp_canceled_at', $logger->records[0]['message']);
+        $this->assertSame(['subscription' => 'sub_1', 'value' => 'sim', 'gateway' => 'iugu'], $logger->records[0]['context']);
+    }
+
+    public function testCancelDoesNotMarkTheSubscriptionWhenTheSuspensionFails(): void
+    {
+        $api = new QueuedIuguApiRequest([new \IuguObjectNotFound('not found')]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        try {
+            (new IuguGateway($api))->cancelSubscription($subscription);
+            $this->fail('esperava NotFoundException');
+        } catch (\Potelo\MultiPayment\Exceptions\NotFoundException) {
+        }
+
+        $this->assertCount(1, $api->calls);
+        $this->assertNull($subscription->canceledAt);
+    }
+
+    /**
+     * Reativar uma assinatura cancelada remove a marca `mp_canceled_at` (`PUT` com `_destroy`)
+     * depois do `activate`, e o status volta a `ACTIVE`.
+     */
+    public function testResumeClearsTheCancellationMark(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse([
+                'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-02T10:00:00-03:00']],
+            ]),
+            $this->subscriptionResponse(['custom_variables' => []]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $resumed = (new IuguGateway($api))->resumeSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertStringEndsWith('/subscriptions/sub_1/activate', $api->calls[0]['url']);
+        $this->assertSame('PUT', $api->calls[1]['method']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[1]['url']);
+        $this->assertSame(
+            ['custom_variables' => [['name' => 'mp_canceled_at', '_destroy' => true]]],
+            $api->calls[1]['data']
+        );
+        $this->assertSame(SubscriptionStatus::ACTIVE, $resumed->status);
+        $this->assertNull($resumed->canceledAt);
+    }
+
+    /**
+     * Com chave, o `PUT` que remove a marca recebe `{chave}:uncancel`, e o retry inteiro sai
+     * da store sem nova requisição.
+     */
+    public function testResumeStoresTheActivationAndTheUnmarkUnderTheirOwnKeys(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse([
+                'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-02T10:00:00-03:00']],
+            ]),
+            $this->subscriptionResponse(['custom_variables' => []]),
+        ]);
+        $store = new \Potelo\MultiPayment\Idempotency\InMemoryIdempotencyStore();
+        $gateway = new IuguGateway($api, $store);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $gateway->resumeSubscription($subscription, 'chave-1');
+        $this->assertTrue($store->has('iugu:chave-1'));
+        $this->assertTrue($store->has('iugu:chave-1:uncancel'));
+        $this->assertSame([], $api->calls[1]['headers']);
+
+        $again = new Subscription();
+        $again->id = 'sub_1';
+        $retried = $gateway->resumeSubscription($again, 'chave-1');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $retried->status);
+        $this->assertNull($retried->canceledAt);
+    }
+
+    /**
+     * Quando a resposta do `activate` não traz `custom_variables`, a marca conhecida pelo
+     * model decide o `PUT` de remoção.
+     */
+    public function testResumeUsesTheMarkKnownByTheModelWhenTheResponseOmitsCustomVariables(): void
+    {
+        $activate = $this->subscriptionResponse();
+        unset($activate->custom_variables);
+        $api = new QueuedIuguApiRequest([$activate, $this->subscriptionResponse(['custom_variables' => []])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->canceledAt = Carbon::parse('2026-09-02T10:00:00-03:00');
+
+        $resumed = (new IuguGateway($api))->resumeSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('PUT', $api->calls[1]['method']);
+        $this->assertNull($resumed->canceledAt);
+    }
+
+    public function testResumeOfASuspendedSubscriptionDoesNotTouchCustomVariables(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['custom_variables' => [
+            (object) ['name' => 'origem', 'value' => 'teste'],
+        ]])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $resumed = (new IuguGateway($api))->resumeSubscription($subscription);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $resumed->status);
+        $this->assertSame(['origem' => 'teste'], $resumed->metadata);
     }
 
     public function testCancelAtPeriodEndIsRejected(): void
@@ -817,7 +1131,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
         $this->assertInstanceOf(Invoice::class, $subscription->latestInvoice);
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
         $this->assertSame('https://iugu/inv_1', $subscription->latestInvoice->url);
@@ -858,7 +1172,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
         $this->assertSame(InvoiceStatus::EXPIRED, $subscription->latestInvoice->status);
     }
 
@@ -875,7 +1189,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
 
         $this->assertSame(
-            Subscription::STATUS_ACTIVE,
+            SubscriptionStatus::ACTIVE,
             (new IuguGateway($api))->getSubscription($subscription)->status
         );
     }
@@ -893,7 +1207,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
 
         $this->assertSame(
-            Subscription::STATUS_ACTIVE,
+            SubscriptionStatus::ACTIVE,
             (new IuguGateway($api))->getSubscription($subscription)->status
         );
     }
@@ -912,7 +1226,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
 
         $this->assertSame(
-            Subscription::STATUS_SUSPENDED,
+            SubscriptionStatus::SUSPENDED,
             (new IuguGateway($api))->getSubscription($subscription)->status
         );
     }
@@ -934,7 +1248,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
-        $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
         $this->assertSame(InvoiceStatus::UNKNOWN, $subscription->latestInvoice->status);
         $this->assertSame('status_novo_da_iugu', $subscription->latestInvoice->original->status);
@@ -1275,17 +1589,35 @@ class IuguGatewaySubscriptionTest extends TestCase
         ];
     }
 
-    public function testCancelReturnsTheSuspendedSubscription(): void
+    /**
+     * Com chave de idempotência, o `PUT` da marca de cancelamento recebe a chave derivada
+     * `{chave}:cancel`, e o retry inteiro sai da store sem nova requisição.
+     */
+    public function testCancelStoresTheSuspensionAndTheMarkUnderTheirOwnKeys(): void
     {
-        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['suspended' => true])]);
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['suspended' => true]),
+            $this->subscriptionResponse([
+                'suspended' => true,
+                'custom_variables' => [(object) ['name' => 'mp_canceled_at', 'value' => '2026-09-02T10:00:00-03:00']],
+            ]),
+        ]);
+        $store = new \Potelo\MultiPayment\Idempotency\InMemoryIdempotencyStore();
+        $gateway = new IuguGateway($api, $store);
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $canceled = (new IuguGateway($api))->cancelSubscription($subscription);
+        $gateway->cancelSubscription($subscription, false, 'chave-1');
+        $this->assertTrue($store->has('iugu:chave-1'));
+        $this->assertTrue($store->has('iugu:chave-1:cancel'));
 
-        $this->assertCount(1, $api->calls);
-        $this->assertSame(Subscription::STATUS_SUSPENDED, $canceled->status);
+        $again = new Subscription();
+        $again->id = 'sub_1';
+        $retried = $gateway->cancelSubscription($again, false, 'chave-1');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame(SubscriptionStatus::CANCELED, $retried->status);
     }
 
     public function testListSubscriptionsAcceptsAPlainArrayResponse(): void
@@ -1516,11 +1848,11 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
         $subscription = $gateway->getSubscription($subscription);
-        $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
 
         $subscription = $gateway->updateSubscription($subscription);
 
-        $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
     }
 
@@ -1555,7 +1887,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame('inv_recente', $subscription->latestInvoice->id);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
     public static function ordemProvider(): array
@@ -1587,7 +1919,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame('inv_a_paga', $subscription->latestInvoice->id);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
     public static function tieProvider(): array
@@ -1722,7 +2054,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertNull($subscription->latestInvoice);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
     /**
@@ -1742,7 +2074,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
 
         $this->assertSame(
-            Subscription::STATUS_ACTIVE,
+            SubscriptionStatus::ACTIVE,
             (new IuguGateway($api))->getSubscription($subscription)->status
         );
     }
@@ -1763,7 +2095,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
 
         $this->assertSame(
-            Subscription::STATUS_ACTIVE,
+            SubscriptionStatus::ACTIVE,
             (new IuguGateway($api))->getSubscription($subscription)->status
         );
     }
@@ -1807,7 +2139,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame('inv_cancelada', $subscription->latestInvoice->id);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
     /**
@@ -1830,7 +2162,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
         $this->assertSame('inv_paga', $subscription->latestInvoice->id);
         $this->assertSame(InvoiceStatus::PAID, $subscription->latestInvoice->status);
     }
@@ -1877,7 +2209,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame(InvoiceStatus::PARTIALLY_PAID, $subscription->latestInvoice->status);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
     /**
@@ -1900,7 +2232,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
     /**
      * Entrada sem vencimento perde para qualquer uma com data, em qualquer ordem.
@@ -1945,7 +2277,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
-        $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
         $this->assertNull($subscription->latestInvoice->status);
     }
 
@@ -1965,7 +2297,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
-        $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
+        $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
     /**

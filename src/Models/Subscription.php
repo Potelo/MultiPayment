@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Models;
 use Carbon\Carbon;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -16,23 +17,38 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 /**
  * Assinatura recorrente de um cliente a um plano.
  *
- * As duas propriedades abaixo são enums: aceitam na escrita a string do valor ou o caso do
+ * As três propriedades abaixo são enums: aceitam na escrita a string do valor ou o caso do
  * enum e devolvem sempre o enum (ver `Model::ENUM_CASTS`).
  *
+ * @property SubscriptionStatus|null $status Status genérico; `UNKNOWN` para status que a lib não reconhece.
  * @property PaymentMethod|null $paymentMethod Método de pagamento da assinatura.
  * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela assinatura.
  */
 class Subscription extends Model
 {
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::TRIALING`. */
     public const STATUS_TRIALING = 'trialing';
+
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::ACTIVE`. */
     public const STATUS_ACTIVE = 'active';
+
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::SUSPENDED`. */
     public const STATUS_SUSPENDED = 'suspended';
+
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::PENDING`. */
     public const STATUS_PENDING = 'pending';
+
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::PAST_DUE`. */
     public const STATUS_PAST_DUE = 'past_due';
+
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::EXPIRED`. */
     public const STATUS_EXPIRED = 'expired';
+
+    /** @deprecated desde 2026-09-02, use `SubscriptionStatus::CANCELED`. */
     public const STATUS_CANCELED = 'canceled';
 
     protected const ENUM_CASTS = [
+        'status' => SubscriptionStatus::class,
         'paymentMethod' => PaymentMethod::class,
         'availablePaymentMethods' => [PaymentMethod::class],
     ];
@@ -68,9 +84,9 @@ class Subscription extends Model
     public ?string $id = null;
 
     /**
-     * @var string|null
+     * @var SubscriptionStatus|null
      */
-    public ?string $status = null;
+    protected ?SubscriptionStatus $status = null;
 
     /**
      * @var Customer|null
@@ -124,11 +140,17 @@ class Subscription extends Model
     public ?Carbon $nextBillingAt = null;
 
     /**
+     * Diz se há cancelamento agendado para o fim do período corrente. Preenchido na leitura
+     * por gateway que oferece o recurso; na Iugu fica nulo.
+     *
      * @var bool|null
      */
     public ?bool $cancelAtPeriodEnd = null;
 
     /**
+     * Momento em que a assinatura foi cancelada. Na Iugu vem da marca `mp_canceled_at` que
+     * `cancel()` grava em `custom_variables`.
+     *
      * @var Carbon|null
      */
     public ?Carbon $canceledAt = null;
@@ -422,7 +444,8 @@ class Subscription extends Model
     }
 
     /**
-     * Volta a cobrar uma assinatura suspensa.
+     * Volta a cobrar uma assinatura suspensa; na Iugu, também uma cancelada por `cancel()` (a
+     * marca de cancelamento é removida).
      *
      * @param  GatewayContract|string|null  $gateway
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
