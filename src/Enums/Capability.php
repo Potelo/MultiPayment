@@ -48,12 +48,15 @@ enum Capability: string
     /** Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). */
     case INVOICE_DUPLICATION = 'invoice_duplication';
 
-    /** Chave de idempotência (`gateway_options['idempotency_key']`) honrada na criação de fatura e no estorno. */
+    /**
+     * Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo
+     * gateway ou pela deduplicação da lib (`IdempotencyStore`).
+     */
     case IDEMPOTENCY = 'idempotency';
 
     /**
-     * Chave de idempotência honrada em toda operação de escrita, inclusive cliente, cartão,
-     * cancelamento e troca de plano.
+     * Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem
+     * depender da deduplicação da lib.
      */
     case IDEMPOTENCY_ALL_ENDPOINTS = 'idempotency_all_endpoints';
 

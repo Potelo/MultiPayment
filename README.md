@@ -12,6 +12,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Migração das constantes para enum](#migração-das-constantes-para-enum)
   - [Particularidades do Stripe](#particularidades-do-stripe)
   - [Opções extras do gateway](#opções-extras-do-gateway)
+  - [Idempotência](#idempotência)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [InvoiceBuilder](#invoicebuilder)
@@ -42,6 +43,16 @@ Instale esse pacote pelo composer:
 composer require potelo/multi-payment "dev-main"  
 ```  
 
+O SDK da Iugu vem do fork `Potelo/iugu-php`, que não está no Packagist, e o Composer não herda
+a lista de repositórios de uma dependência. Declare o fork no `composer.json` da aplicação
+antes de instalar:
+
+```json
+"repositories": [
+    {"type": "git", "url": "https://github.com/Potelo/iugu-php.git"}
+]
+```
+
 ## Configuração
 Após instalar o pacote rode o comando abaixo para publicar as configurações no projeto Laravel
 ```  
@@ -62,6 +73,10 @@ IUGU_APIKEY=
 
 #stripe
 STRIPE_APIKEY=
+
+#idempotência (opcional; ver a seção Idempotência)
+MULTIPAYMENT_IDEMPOTENCY_TTL=86400
+MULTIPAYMENT_IDEMPOTENCY_CACHE_STORE=
 ```  
 
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
@@ -133,8 +148,8 @@ o teste `GatewayCapabilitiesTest` falha quando o README fica defasado em relaç�
 | `PARTIAL_REFUND_PIX` | Estorno de parte do valor numa fatura paga com Pix. | limitação do gateway | sim |
 | `REFUND_BANK_SLIP` | Estorno pela API de uma fatura paga com boleto. | limitação do gateway | limitação do gateway |
 | `INVOICE_DUPLICATION` | Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). | sim | sim |
-| `IDEMPOTENCY` | Chave de idempotência (`gateway_options['idempotency_key']`) honrada na criação de fatura e no estorno. | não implementado | sim |
-| `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada em toda operação de escrita, inclusive cliente, cartão, cancelamento e troca de plano. | limitação do gateway | não implementado |
+| `IDEMPOTENCY` | Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo gateway ou pela deduplicação da lib (`IdempotencyStore`). | sim | sim |
+| `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem depender da deduplicação da lib. | limitação do gateway | sim |
 | `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | não implementado |
 | `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | não implementado |
 | `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | não implementado |
@@ -151,8 +166,10 @@ Restrições dentro de uma célula "sim":
   [Particularidades do Stripe](#particularidades-do-stripe)).
 - **`INSTALLMENTS` na Iugu** é informado em `gateway_options['months']`; a lib não modela parcelas
   nem lê os campos da fatura parcelada.
-- **`IDEMPOTENCY` no Stripe** cobre criação de fatura e estorno; nas demais operações de escrita a
-  chave não é repassada (`IDEMPOTENCY_ALL_ENDPOINTS`).
+- **`IDEMPOTENCY` na Iugu** é honrada pelo gateway só na criação de fatura, cliente e assinatura e
+  na cobrança com cartão; nas demais operações de escrita a deduplicação é da lib, pela
+  `IdempotencyStore`, que exige o cache do Laravel configurado (ver [Idempotência](#idempotência)).
+  Por isso a Iugu não tem `IDEMPOTENCY_ALL_ENDPOINTS`.
 - **`PARTIAL_REFUND_PIX` e `REFUND_BANK_SLIP`** chegam como `RefundNotSupportedException`, que
   herda de `UnsupportedOperationException` (ver [Estorno](#estorno)).
 - **`MANAGES_RECURRENCE`** é informativa: diz quem agenda a cobrança do Pix Automático (ver
@@ -315,8 +332,10 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
   quando ela é verdadeira, o pacote consulta `/v1/disputes` do charge para decidir entre
   `disputed` e `chargeback` (ver [Status da fatura](#status-da-fatura)). Fatura sem contestação
   não paga esse GET.
-- **Idempotência**: envie `gateway_options['idempotency_key']` (ou `$invoice->gatewayOptions`)
-  na criação de faturas e estornos para repassar o cabeçalho `Idempotency-Key` da Stripe.
+- **Idempotência em toda escrita.** A chave informada em `idempotencyKey` vai no cabeçalho
+  `Idempotency-Key` de toda requisição de escrita da operação, inclusive cliente, cartão,
+  cancelamento e as requisições secundárias, com chaves derivadas (ver
+  [Idempotência](#idempotência)).
 
 ### Opções extras do gateway
 
@@ -346,6 +365,142 @@ uma opção vira uso recorrente, ela deve ser modelada genericamente.
 > próxima versão maior. A única diferença observável é `toArray()`, que passa a devolver a
 > chave `gateway_options`.
 
+### Idempotência
+
+Toda operação de escrita aceita uma chave de idempotência como último argumento
+(`?string $idempotencyKey = null`), na fachada, nos models e nos drivers; nos builders ela entra
+por `withIdempotencyKey()`. Duas chamadas com a mesma chave produzem um único efeito no gateway:
+a segunda devolve o resultado da primeira em vez de criar outra fatura, outro estorno ou outra
+troca de plano.
+
+```php
+use Potelo\MultiPayment\Facades\MultiPayment;
+
+$invoice = MultiPayment::newInvoice()
+    ->addAvailablePaymentMethod(PaymentMethod::PIX)
+    ->setCustomer($customer)
+    ->addItem('Mensalidade', 10000, 1)
+    ->withIdempotencyKey($order->uuid)          // uma chave por intenção de escrita
+    ->create();
+
+MultiPayment::refundInvoice($invoice->id, 5000, idempotencyKey: "refund-{$order->uuid}");
+MultiPayment::cancelInvoice($invoice->id, idempotencyKey: "cancel-{$order->uuid}");
+$subscription->changePlan('plano_anual', idempotencyKey: "upgrade-{$order->uuid}");
+$customer->save('iugu', idempotencyKey: "customer-{$user->id}");
+```
+
+**A lib nunca gera uma chave por conta própria.** Sem `idempotencyKey`, a requisição vai sem
+deduplicação e um retry cria um segundo registro; é a aplicação que sabe qual pedido, assinatura
+ou estorno a chamada representa, então é ela que escolhe a chave (um UUID gravado junto do
+pedido, por exemplo). Gerar a chave por baixo esconderia esse risco. Regras da chave: a mesma
+chave sempre com o mesmo payload; chave nova para cada nova intenção; retry com a mesma chave
+só depois de uma falha em que a resposta não chegou ou o processo caiu.
+
+Duas regras de payload que valem para a chave: a Stripe compara o payload e recusa a mesma
+chave com conteúdo diferente (`IdempotencyConflictException`), então um campo derivado do
+instante da chamada, como um `expiresAt` calculado de `now()`, precisa ser gravado junto da
+chave e reenviado igual; a Iugu não compara e responde com o recurso original mesmo que o
+payload tenha mudado.
+
+Retry seguro:
+
+```php
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
+
+$key = $order->idempotency_key ??= (string) Str::uuid();   // gravada antes da primeira tentativa
+
+try {
+    $invoice = $payment->newInvoice()->/* ... */->withIdempotencyKey($key)->create();
+} catch (GatewayNotAvailableException $e) {
+    // timeout ou 5xx: repetir mais tarde com a MESMA chave não cobra duas vezes
+    ChargeOrder::dispatch($order)->delay(now()->addMinutes(5));
+} catch (IdempotencyConflictException $e) {
+    // a primeira tentativa ainda está em andamento, ou a chave foi reusada com outro payload:
+    // consultar o resultado dela em vez de repetir
+}
+```
+
+Quem honra a chave depende da operação e do gateway. A Stripe aceita `Idempotency-Key` em
+todo POST e, na repetição, devolve a mesma resposta; a Iugu só aceita o cabeçalho em quatro
+endpoints e, na repetição, responde 409 apontando o recurso original (`resource_id`): para
+fatura e cobrança com cartão a lib lê essa fatura e a devolve, então a segunda chamada tem o
+mesmo resultado da primeira; para cliente e assinatura a Iugu não informa o id
+(`resource_id: processing`) e a segunda chamada lança `IdempotencyConflictException`, cabendo à
+aplicação consultar o registro que gravou na primeira. Nos demais endpoints da Iugu a lib
+deduplica por conta própria com a `IdempotencyStore` (abaixo):
+
+| Operação | Iugu | Stripe |
+|---|---|---|
+| Criar fatura (`create()`, `charge()`), com Pix, boleto ou cartão | gateway (`POST /invoices` ou `POST /charge`) | gateway |
+| Cobrar fatura com cartão (`chargeInvoiceWithCreditCard`) | gateway (`POST /charge`) | gateway |
+| Criar cliente | gateway | gateway |
+| Criar assinatura | gateway | (não implementado) |
+| Atualizar cliente, definir cartão padrão | store da lib | gateway |
+| Salvar cartão, excluir cartão | store da lib | gateway |
+| Estornar, cancelar, duplicar fatura | store da lib | gateway |
+| Suspender, retomar, cancelar, atualizar assinatura, trocar de plano | store da lib | (não implementado) |
+| Criar plano | store da lib | (não implementado) |
+| Reagendar e cancelar Pix Automático | store da lib | (não implementado) |
+
+Quando uma operação faz mais de uma requisição de escrita (salvar o cartão antes de cobrar,
+criar o tax id ao atualizar o cliente, remover subitens antes de atualizar a assinatura), a
+requisição principal leva a chave informada e as secundárias levam chaves derivadas dela
+(`{chave}:card`, `{chave}:tax_id`, `{chave}:remove`...): a Stripe recusa a mesma chave em dois
+endpoints, e a derivação é determinística, então um retry reproduz as mesmas chaves. O cliente
+criado junto com a fatura ou a assinatura (`Invoice::save()` sem `customer.id`) recebe
+`{chave}:customer`, então o retry de `charge()` com cliente novo não cria um segundo cliente
+(na Iugu, onde a repetição da chave em cliente responde 409, o retry de `charge()` com cliente
+novo lança `IdempotencyConflictException`; consulte a fatura pelo registro da aplicação ou
+crie o cliente antes com a própria chave).
+
+Com chave, as guardas locais que dependem do estado do recurso deixam de recusar um retry: um
+estorno sobre fatura já estornada (ou acima do restante) é enviado mesmo assim e a Stripe
+repete o refund original quando a chave é a dele (senão a recusa da guarda é a que sobe); a
+duplicação de uma fatura já cancelada e a exclusão de um cartão já desvinculado seguem o mesmo
+caminho. Na Iugu, o estorno com chave passa inteiro (leitura, guardas e `POST`) pela store, e
+o retry devolve o `Refund` da primeira execução.
+
+**A `IdempotencyStore`.** Nas operações da Iugu marcadas "store da lib", a requisição de escrita
+passa por `Potelo\MultiPayment\Contracts\IdempotencyStore`: a primeira execução com a chave é
+guardada por 24 horas (`multi-payment.idempotency.ttl`), e as seguintes devolvem a resposta
+guardada sem chamar a Iugu. A mesma chave reaparecendo em outra operação (um cancelamento e
+depois um estorno com a chave do cancelamento) lança `IdempotencyConflictException` em vez de
+devolver a resposta errada. Duas execuções concorrentes com a mesma chave são serializadas por
+lock, e a segunda recebe `IdempotencyConflictException`, como a Iugu responde 409. Uma execução
+que lança não é guardada (o retry executa de novo). O service provider registra a
+`CacheIdempotencyStore`, sobre o cache do Laravel, que exige um store com suporte a lock
+(`redis`, `memcached`, `database`, `file`, `array` ou `dynamodb`); sem cache configurado, a
+primeira operação com chave num endpoint da store lança `ConfigurationException`. Operações
+sem chave nunca tocam a store, e os quatro endpoints nativos da Iugu tampouco.
+
+```php
+// config/multi-payment.php
+'idempotency' => [
+    'ttl' => env('MULTIPAYMENT_IDEMPOTENCY_TTL', 86400),           // segundos
+    'cache_store' => env('MULTIPAYMENT_IDEMPOTENCY_CACHE_STORE'),  // nulo: o cache padrão da aplicação
+    'prefix' => 'multi-payment:idempotency:',
+],
+
+// outra store: bind próprio no service provider da aplicação
+$this->app->bind(IdempotencyStore::class, fn () => new MinhaStore());
+
+// testes da aplicação: store em memória, sem cache
+$this->app->instance(IdempotencyStore::class, new InMemoryIdempotencyStore());
+```
+
+Limite da store: ela só protege de um retry feito **depois** de uma resposta recebida. Se a
+Iugu executou a escrita e a resposta se perdeu (timeout), nada foi guardado e o retry com a
+mesma chave executa de novo; só o gateway conseguiria deduplicar esse caso, e nesses endpoints
+a Iugu não deduplica. Para a troca de plano com cobrança e o estorno, confira o estado da
+assinatura ou da fatura antes de repetir depois de um timeout.
+
+> **Nome antigo.** Até a 4.1.0 a chave ia em `gateway_options['idempotency_key']` e só o
+> Stripe a repassava, na criação de fatura e no estorno. A chave nesse lugar continua sendo
+> usada, com aviso `E_USER_DEPRECATED`, quando o argumento não é informado (o argumento tem
+> precedência), e deixa de ir no corpo da requisição da Iugu, que a ecoava como campo da
+> fatura. Sai na próxima versão maior.
+
 ## Tratamento de erros
 
 Toda exceção do pacote herda de `MultiPaymentException`. Nenhuma exceção dos SDKs da Iugu ou da
@@ -358,7 +513,7 @@ A árvore, com a indentação marcando a herança:
 
 ```
 MultiPaymentException
-    ConfigurationException              gateway não configurado ou classe inválida
+    ConfigurationException              gateway não configurado, classe inválida ou IdempotencyStore sem cache
     ModelAttributeValidationException   atributo obrigatório ausente ou inválido, antes da requisição
     UnsupportedOperationException       operação fora das capabilities do gateway, antes da requisição
         RefundNotSupportedException     estorno recusado pela lib antes da requisição
@@ -370,7 +525,7 @@ MultiPaymentException
         ValidationException             400 ou 422: fieldErrors por campo
         NotFoundException               404: recurso inexistente no gateway
         RateLimitException              429: retryAfter em segundos quando o gateway informa
-        IdempotencyConflictException    409 na Iugu, idempotency_error na Stripe
+        IdempotencyConflictException    409 na Iugu, idempotency_error na Stripe, lock da IdempotencyStore ocupado
 ```
 
 | Exceção | Quando | O que fazer |
@@ -379,14 +534,14 @@ MultiPaymentException
 | `ChargingException` | Nome antigo de `CardDeclinedException`, deprecado. É a classe que os drivers lançam, então `catch` por qualquer um dos dois nomes captura a mesma exceção | Migrar o `catch` para `CardDeclinedException` |
 | `ValidationException` | O gateway recusou o payload (400 ou 422 na Iugu, `invalid_request_error` na Stripe); `fieldErrors` traz as mensagens por campo (`base` para erro sem campo) | Corrigir a chamada; repetir igual falha de novo |
 | `NotFoundException` | Recurso inexistente no gateway (404 na Iugu, `resource_missing` na Stripe): id errado, de outra conta ou removido | Conferir o id; não repetir |
-| `RateLimitException` | O gateway limitou a taxa de requisições (429); nada foi executado. `retryAfter` traz os segundos do cabeçalho `Retry-After` quando o gateway o envia (o SDK da Iugu não expõe cabeçalhos, então na Iugu fica nulo) | Esperar e repetir |
-| `IdempotencyConflictException` | Chave de idempotência reutilizada com outro payload, ou a primeira requisição com a chave ainda em andamento (409 na Iugu, `idempotency_error` na Stripe) | Consultar o resultado da primeira requisição ou usar chave nova; nunca repetir com a mesma chave e outro conteúdo |
+| `RateLimitException` | O gateway limitou a taxa de requisições (429); nada foi executado. `retryAfter` traz os segundos do cabeçalho `Retry-After` quando o gateway o envia; nulo quando não envia | Esperar e repetir |
+| `IdempotencyConflictException` | Chave de idempotência reutilizada (409 na Iugu em cliente e assinatura; `idempotency_error` na Stripe quando o payload mudou), a primeira requisição com a chave ainda em andamento, ou lock ocupado na `IdempotencyStore` da lib. `resourceId` traz o id do recurso original quando o gateway o informa | Consultar o resultado da primeira requisição (`resourceId` ou o registro da aplicação) ou usar chave nova; nunca repetir com a mesma chave e outro conteúdo |
 | `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
 | `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
 | `UnsupportedOperationException` | Operação fora das capabilities do gateway, antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented` ou `gateway_limitation`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` antes (ver [Capabilities](#capabilities)) |
 | `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway (boleto, Pix parcial, já estornada, valor acima do restante, prazo vencido); herda de `UnsupportedOperationException` e refina `reason` | Ver [Estorno](#estorno) |
 | `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição | Corrigir a chamada |
-| `ConfigurationException` | Gateway não configurado ou classe inválida | Corrigir a configuração |
+| `ConfigurationException` | Gateway não configurado ou classe inválida; `IdempotencyStore` sem registro no container ou sobre um cache sem lock | Corrigir a configuração |
 | `GatewayException` | Qualquer outra resposta de erro do gateway, e a classe pai das quatro de resposta acima; `getErrors()` traz o corpo de erro | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
 
 Um `catch` por camada. As subclasses vêm antes de `GatewayException`, senão ela captura tudo:
@@ -487,6 +642,13 @@ o deixava nulo, traz o valor de `declineCode`. Compare com `declineCode`.
 > ser `CardDeclinedException` (lançada pelo nome antigo `ChargingException`, que herda dela),
 > com a mensagem em português; salvar um cartão recusado pela Stripe (`newCreditCard()->create()`)
 > também lança `CardDeclinedException`, onde antes vinha `GatewayException`.
+>
+> Também na 5.0.0, toda operação de escrita ganhou o último argumento `idempotencyKey` (e os
+> builders, `withIdempotencyKey()`), inclusive nos contracts dos gateways; quem implementa
+> `GatewayContract` fora do pacote precisa acrescentar o parâmetro. Na Iugu, `retryAfter` de
+> `RateLimitException` passou a vir preenchido quando o cabeçalho `Retry-After` chega, e todas
+> as chamadas ao gateway passaram a usar o requester injetável do driver (o fork
+> `Potelo/iugu-php` 1.1.0), o que não muda a API pública.
 
 ## Utilizando
 
@@ -759,6 +921,10 @@ $payment->duplicateInvoice($invoiceId, \Carbon\Carbon::now()->addDays(3));
 // cobrar uma fatura pendente com cartão (token OU id de cartão salvo)
 $payment->chargeInvoiceWithCreditCard($invoiceId, 'pm_...');
 $payment->chargeInvoiceWithCreditCard($invoiceId, null, $creditCardId);
+
+// toda operação de escrita aceita a chave de idempotência como último argumento (seção "Idempotência")
+$payment->refundInvoice($invoiceId, 5000, idempotencyKey: $uuid);
+$payment->cancelInvoice($invoiceId, idempotencyKey: $uuid);
 ```
 
 #### Estorno

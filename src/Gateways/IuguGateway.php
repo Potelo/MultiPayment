@@ -3,11 +3,9 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Iugu;
-use Iugu_Customer;
+use APIResource;
 use Carbon\Carbon;
 use Iugu_APIRequest;
-use Iugu_PaymentToken;
-use Iugu_PaymentMethod;
 use IuguObjectNotFound;
 use Potelo\MultiPayment\Models\Pix;
 use Illuminate\Support\Facades\Config;
@@ -33,10 +31,13 @@ use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Helpers\LogHelper;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\IdempotencyStore;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
 use Potelo\MultiPayment\Gateways\Iugu\DeclineCodes as IuguDeclineCodes;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
@@ -54,6 +55,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 {
     use ChecksCapabilities;
+    use ResolvesIdempotencyKey;
 
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
@@ -76,15 +78,26 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /** Prazo, em dias após o pagamento, em que a Iugu ainda aceita estorno pela API. */
     private const REFUND_WINDOW_DAYS = 90;
 
+    /** Prefixo das chaves deste driver na `IdempotencyStore`. */
+    private const IDEMPOTENCY_STORE_PREFIX = 'iugu:';
+
     private Iugu_APIRequest $apiRequest;
 
+    private ?IdempotencyStore $idempotencyStore;
+
     /**
-     * Set iugu api key.
+     * Configura a chave de API da Iugu e o requester HTTP. Sem requester, usa o compartilhado
+     * do SDK (`APIResource::API()`); sem store, a `IdempotencyStore` registrada no container é
+     * resolvida na primeira operação que precisar dela.
+     *
+     * @param  Iugu_APIRequest|null  $apiRequest
+     * @param  IdempotencyStore|null  $idempotencyStore
      */
-    public function __construct(?Iugu_APIRequest $apiRequest = null)
+    public function __construct(?Iugu_APIRequest $apiRequest = null, ?IdempotencyStore $idempotencyStore = null)
     {
         Iugu::setApiKey(Config::get('multi-payment.gateways.iugu.api_key'));
-        $this->apiRequest = $apiRequest ?? new Iugu_APIRequest();
+        $this->apiRequest = $apiRequest ?? APIResource::API();
+        $this->idempotencyStore = $idempotencyStore;
     }
 
     /**
@@ -102,6 +115,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             Capability::INSTALLMENTS,
             Capability::PARTIAL_REFUND_CARD,
             Capability::INVOICE_DUPLICATION,
+            Capability::IDEMPOTENCY,
             Capability::SUBSCRIPTIONS,
             Capability::PLANS,
         ];
@@ -114,18 +128,24 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     {
         return [
             Capability::DELAYED_CAPTURE,
-            Capability::IDEMPOTENCY,
             Capability::SUBSCRIPTION_CREDITS,
         ];
     }
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /invoices` ou de
+     * `POST /charge` (fatura com cartão); o cartão salvo antes da cobrança usa a chave derivada
+     * `{chave}:card` pela `IdempotencyStore`. Na reutilização da chave, a Iugu responde 409 com
+     * o id da fatura original, que o driver lê e devolve.
+     *
      * @throws ModelAttributeValidationException|ChargingException|UnsupportedOperationException
      */
-    public function createInvoice(Invoice $invoice): Invoice
+    public function createInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         $this->assertSupportsAll($invoice->requiredCapabilities());
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         $iuguInvoiceData = [];
 
@@ -174,43 +194,65 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             );
         }
 
-        if (!empty($invoice->gatewayOptions)) {
-            foreach ($invoice->gatewayOptions as $option => $value) {
-                $iuguInvoiceData[$option] = $value;
-            }
+        foreach (self::withoutIdempotencyKey($invoice->gatewayOptions) as $option => $value) {
+            $iuguInvoiceData[$option] = $value;
         }
 
         if (in_array(PaymentMethod::CREDIT_CARD, $payableWith, true) && !empty($invoice->creditCard)) {
             if (empty($invoice->creditCard->id)) {
-                $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
+                if (empty($invoice->creditCard->customer)) {
+                    $invoice->creditCard->customer = $invoice->customer;
+                }
+                $invoice->creditCard = $this->createCreditCard(
+                    $invoice->creditCard,
+                    self::derivedIdempotencyKey($idempotencyKey, 'card')
+                );
             }
             $iuguInvoiceData['customer_payment_method_id'] = $invoice->creditCard->id;
-            $iuguInvoice = $this->chargeIuguInvoice($iuguInvoiceData);
+            $iuguInvoice = $this->chargeIuguInvoice($iuguInvoiceData, $idempotencyKey);
         } else {
-            try {
-                $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\Exception $e) {
-                throw $this->translateIuguException($e, 'creating invoice');
-            }
-            if ($iuguInvoice->errors) {
-                throw $this->iuguResponseException('Error creating invoice', $iuguInvoice->errors);
-            }
+            $iuguInvoice = $this->iuguIdempotentRequest(
+                'POST',
+                Iugu::getBaseURI() . '/invoices',
+                $iuguInvoiceData,
+                'creating invoice',
+                $idempotencyKey,
+                true,
+                fn (string $originalId) => $this->fetchIuguInvoice($originalId, 'getting invoice')
+            );
         }
 
         return $this->parseInvoice($iuguInvoice, $invoice);
     }
 
     /**
-     * Tokeniza os dados crus do cartão na Iugu e devolve o token gerado.
+     * Lê uma fatura da Iugu pelo id.
+     *
+     * @param  string  $id
+     * @param  string  $operation  descrição da operação, em inglês, para a mensagem
+     * @return object|array
+     * @throws MultiPaymentException
+     */
+    private function fetchIuguInvoice(string $id, string $operation): object|array
+    {
+        return $this->iuguRequest('GET', Iugu::getBaseURI() . '/invoices/' . rawurlencode($id), [], $operation);
+    }
+
+    /**
+     * Tokeniza os dados crus do cartão na Iugu (`POST /payment_token`, deduplicado pela
+     * `IdempotencyStore` quando há chave) e devolve o token gerado.
      *
      * @param  CreditCard  $creditCard
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      * @return string
      * @throws GatewayException|GatewayNotAvailableException|AuthenticationException
      */
-    private function createIuguPaymentToken(CreditCard $creditCard): string
+    private function createIuguPaymentToken(CreditCard $creditCard, ?string $idempotencyKey): string
     {
-        try {
-            $iuguToken = Iugu_PaymentToken::create([
+        $iuguToken = $this->iuguIdempotentRequest(
+            'POST',
+            Iugu::getBaseURI() . '/payment_token',
+            [
                 'account_id' => Config::get('multi-payment.gateways.iugu.id'),
                 'method' => 'credit_card',
                 'test' => Config::get('multi-payment.environment') != 'production',
@@ -222,13 +264,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                     'month' => $creditCard->month,
                     'year' => $creditCard->year,
                 ],
-            ]);
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'creating payment token');
-        }
+            ],
+            'creating payment token',
+            $idempotencyKey
+        );
 
-        if (!empty($iuguToken->errors) || empty($iuguToken->id)) {
-            throw $this->iuguResponseException('Error creating payment token', $iuguToken->errors);
+        if (empty($iuguToken->id)) {
+            throw $this->iuguResponseException('Error creating payment token', null);
         }
 
         return $iuguToken->id;
@@ -309,8 +351,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * Escolhe a exceção do pacote pelo status HTTP da falha: 401 e 403 `AuthenticationException`,
      * 5xx `GatewayNotAvailableException`, 400 e 422 `ValidationException` (com os erros por
      * campo, nos dois formatos que a Iugu usa: objeto por campo ou string), 404
-     * `NotFoundException`, 409 `IdempotencyConflictException`, 429 `RateLimitException` (sem
-     * `retryAfter`: o SDK não expõe cabeçalhos) e o restante `GatewayException`.
+     * `NotFoundException`, 409 `IdempotencyConflictException`, 429 `RateLimitException` (com
+     * `retryAfter` lido do cabeçalho `Retry-After` quando a Iugu o envia) e o restante
+     * `GatewayException`.
      *
      * @param  string  $message
      * @param  string  $detail  texto da resposta, para a mensagem de autenticação
@@ -343,47 +386,86 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 $httpStatus
             ),
             404 => new NotFoundException($message, $errors, $previous, $httpStatus),
-            409 => new IdempotencyConflictException($message, $errors, $previous, $httpStatus),
-            429 => new RateLimitException($message, $errors, $previous, $httpStatus),
+            409 => IdempotencyConflictException::withResourceId(
+                $message,
+                $errors,
+                $previous,
+                $httpStatus,
+                self::iuguConflictResourceId($errors ?? $detail)
+            ),
+            429 => RateLimitException::withRetryAfter($message, $errors, $previous, $httpStatus, $this->lastIuguRetryAfter()),
             default => new GatewayException($message, $errors, $previous, $httpStatus),
         };
     }
 
     /**
-     * Status HTTP da última resposta que o SDK da Iugu conseguiu decodificar. O SDK só o expõe
-     * na variável global `$iugu_last_api_response_code`, gravada em toda resposta JSON
-     * (inclusive as de erro); quando a resposta não é JSON o status vai em `getCode()` da
-     * exceção e esta leitura não é usada.
+     * Status HTTP da última resposta recebida pelo requester deste driver (JSON ou não), que o
+     * SDK grava em `Iugu_APIRequest::$lastResponseCode`. Nulo antes da primeira requisição e
+     * quando não houve resposta.
      *
      * @return int|null
      */
     private function lastIuguHttpStatus(): ?int
     {
-        $code = $GLOBALS['iugu_last_api_response_code'] ?? null;
+        $code = $this->apiRequest->lastResponseCode;
 
         return is_int($code) && $code > 0 ? $code : null;
     }
 
     /**
-     * @inheritDoc
+     * Segundos do cabeçalho `Retry-After` da última resposta, lidos de
+     * `Iugu_APIRequest::$lastResponseHeaders`. Nulo quando ausente ou quando não é um inteiro.
+     *
+     * @return int|null
      */
-    public function createCustomer(Customer $customer): Customer
+    private function lastIuguRetryAfter(): ?int
     {
-        $iuguCustomerData = $this->customerToIuguData($customer);
+        $value = $this->apiRequest->lastResponseHeaders['retry-after'] ?? null;
+        $value = is_array($value) ? reset($value) : $value;
 
-        try {
-            $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'creating customer');
+        return is_numeric($value) ? (int) $value : null;
+    }
+
+    /**
+     * Id do recurso original numa resposta 409 de chave de idempotência reutilizada. A Iugu
+     * responde "Essa chave de idempotência já esta em uso: idempotency_key: ..., resource_id: X",
+     * com o id da fatura em fatura e cobrança e `processing` em cliente e assinatura, que aqui
+     * vira nulo.
+     *
+     * @param  mixed  $errors  corpo de `errors` ou texto da resposta
+     * @return string|null
+     */
+    private static function iuguConflictResourceId(mixed $errors): ?string
+    {
+        $text = is_string($errors) ? $errors : json_encode($errors, JSON_UNESCAPED_UNICODE);
+        if (!is_string($text) || !preg_match('/resource_id:\s*([A-Za-z0-9_-]+)/', $text, $match)) {
+            return null;
         }
 
-        if ($iuguCustomer->errors) {
-            throw $this->iuguResponseException('Error creating customer', $iuguCustomer->errors);
-        }
+        return strtolower($match[1]) === 'processing' ? null : $match[1];
+    }
 
-        $customer->id = $iuguCustomer->id;
+    /**
+     * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /customers`. Na
+     * reutilização da chave a Iugu responde 409 sem o id do cliente original
+     * (`resource_id: processing`), que chega como `IdempotencyConflictException`.
+     */
+    public function createCustomer(Customer $customer, ?string $idempotencyKey = null): Customer
+    {
+        $iuguCustomer = $this->iuguIdempotentRequest(
+            'POST',
+            Iugu::getBaseURI() . '/customers',
+            $this->customerToIuguData($customer),
+            'creating customer',
+            $this->idempotencyKeyFor($idempotencyKey, $customer),
+            true
+        );
+
+        $customer->id = $iuguCustomer->id ?? null;
         $customer->gateway = 'iugu';
-        $customer->createdAt = new Carbon($iuguCustomer->created_at);
+        $customer->createdAt = !empty($iuguCustomer->created_at) ? new Carbon($iuguCustomer->created_at) : null;
         $customer->original = $iuguCustomer;
 
         return $customer;
@@ -451,26 +533,31 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Create a new Credit Card
+     * @inheritDoc
      *
-     * @param  CreditCard  $creditCard
+     * Salva o cartão no cliente (`POST /customers/{id}/payment_methods`), tokenizando antes os
+     * dados crus quando não há token. A Iugu não aceita `Idempotency-Key` nesses endpoints, então
+     * a chave passa pela `IdempotencyStore`: a informada no `POST` do cartão e `{chave}:token`
+     * na tokenização.
      *
-     * @return CreditCard
      * @throws GatewayException|ModelAttributeValidationException
      * @throws GatewayNotAvailableException
      */
-    public function createCreditCard(CreditCard $creditCard): CreditCard
+    public function createCreditCard(CreditCard $creditCard, ?string $idempotencyKey = null): CreditCard
     {
         if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $creditCard);
         if (empty($creditCard->token)) {
-            $creditCard->token = $this->createIuguPaymentToken($creditCard);
+            $creditCard->token = $this->createIuguPaymentToken(
+                $creditCard,
+                self::derivedIdempotencyKey($idempotencyKey, 'token')
+            );
         }
 
         $options = [
             'token' => $creditCard->token,
-            'customer_id' => $creditCard->customer->id,
             'description' => $creditCard->description ?? 'CREDIT CARD',
         ];
 
@@ -478,14 +565,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $options['set_as_default'] = $creditCard->default;
         }
 
-        try {
-            $iuguCreditCard = Iugu_PaymentMethod::create($options);
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'creating credit card');
-        }
-        if ($iuguCreditCard->errors) {
-            throw $this->iuguResponseException('Error creating creditCard: ', $iuguCreditCard->errors);
-        }
+        $iuguCreditCard = $this->iuguIdempotentRequest(
+            'POST',
+            Iugu::getBaseURI() . '/customers/' . rawurlencode($creditCard->customer->id) . '/payment_methods',
+            $options,
+            'creating credit card',
+            $idempotencyKey
+        );
 
         return $this->parseIuguCard($iuguCreditCard, $creditCard);
     }
@@ -495,10 +581,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function getInvoice(Invoice $invoice): Invoice
     {
-        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode((string) $invoice->id);
-        $iuguInvoice = $this->iuguRequest('GET', $url, [], 'getting invoice');
-
-        return $this->parseInvoice($iuguInvoice, $invoice);
+        return $this->parseInvoice($this->fetchIuguInvoice((string) $invoice->id, 'getting invoice'), $invoice);
     }
 
     /**
@@ -551,14 +634,41 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * que a Iugu devolve líquido do já estornado) e status `SUCCEEDED`, porque a Iugu só
      * responde 200 com o estorno feito.
      *
+     * A Iugu não aceita `Idempotency-Key` no estorno, então com chave a operação inteira
+     * (leitura prévia, guardas e `POST /refund`) passa pela `IdempotencyStore`: a chamada
+     * seguinte com a mesma chave devolve o `Refund` da primeira sem reler a fatura, que a essa
+     * altura já estaria estornada e faria a guarda recusar o retry.
+     *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice): Refund
+    public function refundInvoice(Invoice $invoice, ?string $idempotencyKey = null): Refund
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
+        if (is_null($idempotencyKey)) {
+            return $this->performIuguRefund($invoice);
+        }
+
+        return $this->rememberIuguOperation(
+            $idempotencyKey,
+            'POST ' . Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/refund',
+            fn () => $this->performIuguRefund($invoice)
+        );
+    }
+
+    /**
+     * Lê a fatura quando o model não traz o que as guardas precisam, aplica as guardas e faz o
+     * `POST /refund`, devolvendo o `Refund` montado pela lib.
+     *
+     * @param  Invoice  $invoice
+     * @return Refund
+     * @throws RefundNotSupportedException
+     */
+    private function performIuguRefund(Invoice $invoice): Refund
+    {
         // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
         $requestedAmount = $invoice->refundedAmount ?: null;
 
@@ -653,50 +763,63 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o cabeçalho
+     * neste endpoint).
      */
-    public function cancelInvoice(Invoice $invoice): Invoice
+    public function cancelInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
-        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/cancel';
+        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode((string) $invoice->id) . '/cancel';
 
-        try {
-            $response = $this->apiRequest->request('PUT', $url);
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'cancelling invoice');
-        }
-
-        if (!empty($response->errors)) {
-            throw $this->iuguResponseException('Error cancelling invoice', (array) $response->errors);
-        }
+        $response = $this->iuguIdempotentRequest(
+            'PUT',
+            $url,
+            [],
+            'cancelling invoice',
+            $this->idempotencyKeyFor($idempotencyKey, $invoice)
+        );
 
         return $this->parseInvoice($response, $invoice);
     }
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o cabeçalho
+     * neste endpoint).
      */
-    public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
-    {
+    public function duplicateInvoice(
+        Invoice $invoice,
+        Carbon $expiresAt,
+        array $gatewayOptions = [],
+        ?string $idempotencyKey = null
+    ): Invoice {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice, $gatewayOptions);
 
-        $params = array_merge($gatewayOptions, [
+        $params = array_merge(self::withoutIdempotencyKey($gatewayOptions), [
             'due_date' => $expiresAt->format('Y-m-d'),
         ]);
 
-        // request cru em vez de Iugu_Invoice::duplicate(): o SDK engole a exceção e devolve false
-        $iuguInvoice = $this->iuguRequest(
+        $iuguInvoice = $this->iuguIdempotentRequest(
             'POST',
             Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/duplicate',
             $params,
-            'duplicating invoice'
+            'duplicating invoice',
+            $idempotencyKey
         );
 
         return $this->parseInvoice($iuguInvoice);
     }
 
-    /** @inheritDoc */
-    public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice
+    /**
+     * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`.
+     */
+    public function rescheduleAutomaticPixPayment(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
@@ -704,7 +827,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id)
             . '/reschedule_automatic_pix_payment';
-        $response = $this->iuguRequest('POST', $url, [], 'rescheduling automatic pix payment');
+        $response = $this->iuguIdempotentRequest(
+            'POST',
+            $url,
+            [],
+            'rescheduling automatic pix payment',
+            $this->idempotencyKeyFor($idempotencyKey, $invoice)
+        );
 
         if (!empty($response->id) && !empty($response->status) && isset($response->total_cents)) {
             return $this->parseInvoice($response, $invoice);
@@ -716,9 +845,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         return $invoice;
     }
 
-    /** @inheritDoc */
+    /**
+     * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`.
+     */
     public function cancelAutomaticPixRecurrence(
-        AutomaticPix $automaticPix
+        AutomaticPix $automaticPix,
+        ?string $idempotencyKey = null
     ): AutomaticPixCancellation {
         if (empty($automaticPix->id)) {
             throw ModelAttributeValidationException::required('AutomaticPix', 'id');
@@ -726,7 +860,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrences/'
             . rawurlencode($automaticPix->id) . '/cancel';
-        $response = $this->iuguRequest('PUT', $url, [], 'cancelling automatic pix recurrence');
+        $response = $this->iuguIdempotentRequest(
+            'PUT',
+            $url,
+            [],
+            'cancelling automatic pix recurrence',
+            $this->idempotencyKeyFor($idempotencyKey, $automaticPix)
+        );
 
         $cancellation = $this->parseAutomaticPixCancellation($response);
         $cancellation->recurrenceId = $automaticPix->id;
@@ -735,9 +875,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         return $cancellation;
     }
 
-    /** @inheritDoc */
+    /**
+     * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`.
+     */
     public function cancelAutomaticPixScheduledPayment(
-        AutomaticPixCharge $charge
+        AutomaticPixCharge $charge,
+        ?string $idempotencyKey = null
     ): AutomaticPixCancellation {
         if (empty($charge->id)) {
             throw ModelAttributeValidationException::required('AutomaticPixCharge', 'id');
@@ -751,11 +896,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             'end_to_end_id' => $charge->endToEndId,
         ], '', '&', PHP_QUERY_RFC3986);
         $url = Iugu::getBaseURI() . '/automatic_pix/receiver_recurrence_payments/cancel?' . $query;
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'POST',
             $url,
             [],
-            'cancelling automatic pix scheduled payment'
+            'cancelling automatic pix scheduled payment',
+            $this->idempotencyKeyFor($idempotencyKey, $charge)
         );
 
         $cancellation = $this->parseAutomaticPixCancellation($response);
@@ -933,16 +1079,26 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Perform a raw Iugu request while preserving the package exception contract.
+     * Executa uma requisição à Iugu pelo requester do driver e traduz a falha (exceção do SDK,
+     * corpo com `errors` ou `success` falso) para a hierarquia do pacote.
+     *
+     * @param  string  $method
+     * @param  string  $url
+     * @param  array  $data
+     * @param  string  $operation  descrição da operação, em inglês, para a mensagem
+     * @param  array  $headers  cabeçalhos extras, no formato 'Nome: valor'
+     * @return object|array
+     * @throws MultiPaymentException
      */
     private function iuguRequest(
         string $method,
         string $url,
         array $data,
-        string $operation
+        string $operation,
+        array $headers = []
     ): object|array {
         try {
-            $response = $this->apiRequest->request($method, $url, $data);
+            $response = $this->apiRequest->request($method, $url, $data, $headers);
         } catch (\Exception $e) {
             throw $this->translateIuguException($e, $operation);
         }
@@ -956,6 +1112,99 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
 
         return $response;
+    }
+
+    /**
+     * Executa uma requisição de escrita com chave de idempotência. Nos endpoints em que a Iugu
+     * aceita o cabeçalho (`$nativeSupport`: criar fatura, cliente, assinatura e cobrança direta)
+     * a chave vai em `Idempotency-Key`; nos demais, a requisição passa pela `IdempotencyStore`,
+     * que devolve a resposta guardada nas chamadas seguintes com a mesma chave. Sem chave, é
+     * uma requisição comum.
+     *
+     * Na reutilização de uma chave, a Iugu responde 409 com o id do recurso original em
+     * `resource_id` (fatura e cobrança); com `$fetchOriginal`, o driver lê esse recurso e o
+     * devolve no lugar da exceção, para a segunda chamada ter o mesmo resultado da primeira.
+     *
+     * @param  string  $method
+     * @param  string  $url
+     * @param  array  $data
+     * @param  string  $operation  descrição da operação, em inglês, para a mensagem
+     * @param  string|null  $idempotencyKey
+     * @param  bool  $nativeSupport  a Iugu aceita `Idempotency-Key` neste endpoint
+     * @param  \Closure|null  $fetchOriginal  recebe o `resource_id` do 409 e devolve o recurso original
+     * @return object|array
+     * @throws MultiPaymentException
+     */
+    private function iuguIdempotentRequest(
+        string $method,
+        string $url,
+        array $data,
+        string $operation,
+        ?string $idempotencyKey,
+        bool $nativeSupport = false,
+        ?\Closure $fetchOriginal = null
+    ): object|array {
+        if (is_null($idempotencyKey)) {
+            return $this->iuguRequest($method, $url, $data, $operation);
+        }
+
+        if ($nativeSupport) {
+            try {
+                return $this->iuguRequest($method, $url, $data, $operation, ['Idempotency-Key: ' . $idempotencyKey]);
+            } catch (IdempotencyConflictException $e) {
+                if (is_null($fetchOriginal) || is_null($e->resourceId)) {
+                    throw $e;
+                }
+
+                return $fetchOriginal($e->resourceId);
+            }
+        }
+
+        return $this->rememberIuguOperation(
+            $idempotencyKey,
+            $method . ' ' . $url,
+            fn () => $this->iuguRequest($method, $url, $data, $operation)
+        );
+    }
+
+    /**
+     * Executa a operação uma única vez por chave pela `IdempotencyStore` e devolve o resultado
+     * guardado nas chamadas seguintes. O resultado é guardado junto com a assinatura da
+     * operação (método e url, ou nome da operação); a mesma chave reaparecendo em outra
+     * operação lança `IdempotencyConflictException` em vez de devolver o resultado errado.
+     *
+     * @param  string  $idempotencyKey
+     * @param  string  $fingerprint  identifica a operação que a chave cobre
+     * @param  \Closure  $operation
+     * @return mixed
+     * @throws IdempotencyConflictException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    private function rememberIuguOperation(string $idempotencyKey, string $fingerprint, \Closure $operation): mixed
+    {
+        $stored = $this->idempotencyStore()->remember(
+            self::IDEMPOTENCY_STORE_PREFIX . $idempotencyKey,
+            fn () => ['fingerprint' => $fingerprint, 'result' => $operation()],
+            ConfigurationHelper::idempotencyTtl()
+        );
+
+        if (!is_array($stored) || ($stored['fingerprint'] ?? null) !== $fingerprint) {
+            throw IdempotencyConflictException::reusedOnAnotherOperation($idempotencyKey);
+        }
+
+        return $stored['result'];
+    }
+
+    /**
+     * `IdempotencyStore` deste driver: a injetada no construtor ou a registrada no container,
+     * resolvida na primeira vez que uma operação precisa dela.
+     *
+     * @return IdempotencyStore
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    private function idempotencyStore(): IdempotencyStore
+    {
+        return $this->idempotencyStore ??= ConfigurationHelper::resolveIdempotencyStore();
     }
 
     /**
@@ -1045,22 +1294,24 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     {
         $invoice = $invoice ?? new Invoice();
 
-        $invoice->id = $iuguInvoice->id;
+        // leituras com `??`: a resposta é stdClass do request cru, que avisa em campo ausente
+        $iuguInvoice = (object) $iuguInvoice;
+        $invoice->id = $iuguInvoice->id ?? null;
         $invoice->gateway = 'iugu';
-        $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status);
-        $invoice->amount = $iuguInvoice->total_cents;
-        $invoice->paidAt = $iuguInvoice->paid_at ? new Carbon($iuguInvoice->paid_at) : null;
-        $invoice->url = $iuguInvoice->secure_url;
+        $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status ?? null);
+        $invoice->amount = $iuguInvoice->total_cents ?? null;
+        $invoice->paidAt = !empty($iuguInvoice->paid_at) ? new Carbon($iuguInvoice->paid_at) : null;
+        $invoice->url = $iuguInvoice->secure_url ?? null;
         $invoice->fee = $iuguInvoice->taxes_paid_cents ?? null;
         $invoice->original = $iuguInvoice;
-        $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
-        $invoice->paidAmount = $iuguInvoice->paid_cents;
-        $invoice->refundedAmount = $iuguInvoice->refunded_cents;
+        $invoice->createdAt = !empty($iuguInvoice->created_at_iso) ? new Carbon($iuguInvoice->created_at_iso) : null;
+        $invoice->paidAmount = $iuguInvoice->paid_cents ?? null;
+        $invoice->refundedAmount = $iuguInvoice->refunded_cents ?? null;
         $invoice->refunds = $this->parseRefunds($invoice);
         $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
 
         if (empty($invoice->paymentMethod)) {
-            $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
+            $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method ?? null);
         }
 
         if (!empty($iuguInvoice->payable_with)) {
@@ -1071,20 +1322,20 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $invoice->customer = new Customer();
         }
 
-        $invoice->customer->id = $iuguInvoice->customer_id;
-        $invoice->customer->name = $iuguInvoice->customer_name;
-        $invoice->customer->email = $iuguInvoice->email;
-        $invoice->customer->phoneNumber = $iuguInvoice->payer_phone;
-        $invoice->customer->phoneArea = $iuguInvoice->payer_phone_prefix;
+        $invoice->customer->id = $iuguInvoice->customer_id ?? null;
+        $invoice->customer->name = $iuguInvoice->customer_name ?? null;
+        $invoice->customer->email = $iuguInvoice->email ?? null;
+        $invoice->customer->phoneNumber = $iuguInvoice->payer_phone ?? null;
+        $invoice->customer->phoneArea = $iuguInvoice->payer_phone_prefix ?? null;
 
         $invoice->items = [];
 
-        foreach ($iuguInvoice->items as $itemIugu) {
+        foreach ((array) ($iuguInvoice->items ?? []) as $itemIugu) {
             $invoiceItem = new InvoiceItem();
             $itemIugu = (object) $itemIugu;
-            $invoiceItem->description = $itemIugu->description;
-            $invoiceItem->price = $itemIugu->price_cents;
-            $invoiceItem->quantity = $itemIugu->quantity;
+            $invoiceItem->description = $itemIugu->description ?? null;
+            $invoiceItem->price = $itemIugu->price_cents ?? null;
+            $invoiceItem->quantity = $itemIugu->quantity ?? null;
             $invoice->items[] = $invoiceItem;
         }
 
@@ -1093,31 +1344,33 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 $invoice->customer->address = new Address();
             }
             $invoice->customer->address->zipCode = $iuguInvoice->payer_address_zip_code;
-            $invoice->customer->address->street = $iuguInvoice->payer_address_street;
-            $invoice->customer->address->number = $iuguInvoice->payer_address_number;
-            $invoice->customer->address->district = $iuguInvoice->payer_address_district;
-            $invoice->customer->address->city = $iuguInvoice->payer_address_city;
-            $invoice->customer->address->state = $iuguInvoice->payer_address_state;
-            $invoice->customer->address->complement = $iuguInvoice->payer_address_complement;
-            $invoice->customer->address->country = $iuguInvoice->payer_address_country;
+            $invoice->customer->address->street = $iuguInvoice->payer_address_street ?? null;
+            $invoice->customer->address->number = $iuguInvoice->payer_address_number ?? null;
+            $invoice->customer->address->district = $iuguInvoice->payer_address_district ?? null;
+            $invoice->customer->address->city = $iuguInvoice->payer_address_city ?? null;
+            $invoice->customer->address->state = $iuguInvoice->payer_address_state ?? null;
+            $invoice->customer->address->complement = $iuguInvoice->payer_address_complement ?? null;
+            $invoice->customer->address->country = $iuguInvoice->payer_address_country ?? null;
         }
 
         if (!empty($iuguInvoice->bank_slip)) {
             if (empty($invoice->bankSlip)) {
                 $invoice->bankSlip = new BankSlip();
             }
-            $invoice->bankSlip->url = $iuguInvoice->secure_url . '.pdf';
-            $invoice->bankSlip->number = $iuguInvoice->bank_slip->digitable_line;
-            $invoice->bankSlip->barcodeData = $iuguInvoice->bank_slip->barcode_data;
-            $invoice->bankSlip->barcodeImage = $iuguInvoice->bank_slip->barcode;
+            $bankSlip = (object) $iuguInvoice->bank_slip;
+            $invoice->bankSlip->url = ($iuguInvoice->secure_url ?? '') . '.pdf';
+            $invoice->bankSlip->number = $bankSlip->digitable_line ?? null;
+            $invoice->bankSlip->barcodeData = $bankSlip->barcode_data ?? null;
+            $invoice->bankSlip->barcodeImage = $bankSlip->barcode ?? null;
         }
 
         if (!empty($iuguInvoice->pix)) {
             if (empty($invoice->pix)) {
                 $invoice->pix = new Pix();
             }
-            $invoice->pix->qrCodeImageUrl = $iuguInvoice->pix->qrcode;
-            $invoice->pix->qrCodeText = $iuguInvoice->pix->qrcode_text;
+            $pix = (object) $iuguInvoice->pix;
+            $invoice->pix->qrCodeImageUrl = $pix->qrcode ?? null;
+            $invoice->pix->qrCodeText = $pix->qrcode_text ?? null;
         }
 
         if (!empty($iuguInvoice->automatic_pix)) {
@@ -1141,15 +1394,18 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             if (empty($invoice->creditCard)) {
                 $invoice->creditCard = new CreditCard();
             }
+            $transaction = (object) $iuguInvoice->credit_card_transaction;
             $invoice->creditCard->brand = $iuguInvoice->credit_card_brand ?? null;
-            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4 ?? $iuguInvoice->credit_card_transaction->last4;
+            $invoice->creditCard->lastDigits = $iuguInvoice->credit_card_last_4 ?? $transaction->last4 ?? null;
 
             $holderName = null;
-            foreach ($iuguInvoice->variables as $iuguInvoiceVariable) {
-                if ($iuguInvoiceVariable->variable == 'payment_data.holder_name') {
-                    $holderName = $iuguInvoiceVariable->value;
-                } else if (empty($invoice->creditCard->lastDigits) && $iuguInvoiceVariable->variable == 'payment_data.display_number') {
-                    $invoice->creditCard->lastDigits = substr($iuguInvoiceVariable->value, -4);
+            foreach ((array) ($iuguInvoice->variables ?? []) as $iuguInvoiceVariable) {
+                $iuguInvoiceVariable = (object) $iuguInvoiceVariable;
+                $variableName = $iuguInvoiceVariable->variable ?? null;
+                if ($variableName == 'payment_data.holder_name') {
+                    $holderName = $iuguInvoiceVariable->value ?? null;
+                } else if (empty($invoice->creditCard->lastDigits) && $variableName == 'payment_data.display_number') {
+                    $invoice->creditCard->lastDigits = substr((string) ($iuguInvoiceVariable->value ?? ''), -4);
                 }
             }
 
@@ -1173,7 +1429,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
-    public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice
+    public function chargeInvoiceWithCreditCard(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
@@ -1196,38 +1452,56 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $iuguInvoiceData['token'] = $invoice->creditCard->token;
         }
 
-        $iuguInvoice = $this->chargeIuguInvoice($iuguInvoiceData);
+        $iuguInvoice = $this->chargeIuguInvoice($iuguInvoiceData, $this->idempotencyKeyFor($idempotencyKey, $invoice));
 
         return $this->parseInvoice($iuguInvoice, $invoice);
     }
 
     /**
+     * Cobra pela cobrança direta da Iugu (`POST /charge`, com a chave de idempotência no
+     * cabeçalho `Idempotency-Key`) e lê a fatura cobrada, que a resposta só identifica pelo id.
+     * Recusa de cartão (`success` falso) vira `ChargingException`; chave reutilizada (409 com
+     * `resource_id`) devolve a fatura da primeira cobrança.
+     *
      * @param  array  $iuguInvoiceData
-     * @return mixed
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return object
      * @throws \Potelo\MultiPayment\Exceptions\ChargingException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\AuthenticationException
      */
-    private function chargeIuguInvoice(array $iuguInvoiceData)
+    private function chargeIuguInvoice(array $iuguInvoiceData, ?string $idempotencyKey): object
     {
+        $headers = is_null($idempotencyKey) ? [] : ['Idempotency-Key: ' . $idempotencyKey];
+
         try {
-            $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
+            $iuguCharge = $this->apiRequest->request('POST', Iugu::getBaseURI() . '/charge', $iuguInvoiceData, $headers);
         } catch (\Exception $e) {
             throw $this->translateIuguException($e, 'charging invoice');
         }
-        if ($iuguCharge->errors) {
-            throw $this->iuguResponseException('Error charging invoice', $iuguCharge->errors);
-        } elseif (!$iuguCharge->success) {
+
+        $iuguCharge = is_array($iuguCharge) ? (object) $iuguCharge : $iuguCharge;
+        if (!empty($iuguCharge->errors)) {
+            $exception = $this->iuguResponseException('Error charging invoice', $iuguCharge->errors);
+            // chave reutilizada: a Iugu aponta a fatura da primeira cobrança, que é o resultado
+            if ($exception instanceof IdempotencyConflictException && !is_null($exception->resourceId)) {
+                return $this->fetchIuguInvoice($exception->resourceId, 'getting charged invoice');
+            }
+
+            throw $exception;
+        }
+        if (empty($iuguCharge->success)) {
             throw $this->cardDeclined($iuguCharge);
         }
 
         // a cobrança devolve só o id; a leitura da fatura é outra requisição e falha como tal
-        try {
-            return $iuguCharge->invoice();
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'getting charged invoice');
+        $invoiceId = $iuguCharge->invoice_id ?? null;
+        if (empty($invoiceId)) {
+            throw new GatewayException('Error getting charged invoice: the charge response has no invoice_id');
         }
+
+        return $this->fetchIuguInvoice((string) $invoiceId, 'getting charged invoice');
     }
 
     /**
@@ -1269,31 +1543,34 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function getCustomer(Customer $customer): Customer
     {
-        try {
-            $iuguCustomer = Iugu_Customer::fetch($customer->id);
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'getting customer');
-        }
-
-        if (!empty($iuguCustomer->errors)) {
-            throw $this->iuguResponseException('Error getting customer', $iuguCustomer->errors);
-        }
+        $iuguCustomer = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/customers/' . rawurlencode((string) $customer->id),
+            [],
+            'getting customer'
+        );
 
         return $this->parseCustomer($iuguCustomer, $customer);
     }
 
-    public function updateCustomer(Customer $customer): Customer
+    /**
+     * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o cabeçalho
+     * neste endpoint).
+     */
+    public function updateCustomer(Customer $customer, ?string $idempotencyKey = null): Customer
     {
         if (empty($customer->id)) {
             throw ModelAttributeValidationException::required('Customer', 'id');
         }
 
-        // request cru em vez de Iugu_Customer::save(): o SDK engole a exceção e devolve false
-        $iuguCustomer = $this->iuguRequest(
+        $iuguCustomer = $this->iuguIdempotentRequest(
             'PUT',
             Iugu::getBaseURI() . '/customers/' . rawurlencode($customer->id),
             $this->customerToIuguData($customer),
-            'updating customer'
+            'updating customer',
+            $this->idempotencyKeyFor($idempotencyKey, $customer)
         );
 
         return $this->parseCustomer($iuguCustomer, $customer);
@@ -1310,6 +1587,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private function parseCustomer($iuguCustomer, ?Customer $customer = null): Customer
     {
         $customer = $customer ?? new Customer();
+        $iuguCustomer = (object) $iuguCustomer;
 
         $valuesInsideCustomVariables = ['birth_date' => null, 'country' => null];
 
@@ -1402,10 +1680,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             ];
         }
 
-        if (!empty($customer->gatewayOptions)) {
-            foreach ($customer->gatewayOptions as $option => $value) {
-                $iuguCustomerData[$option] = $value;
-            }
+        foreach (self::withoutIdempotencyKey($customer->gatewayOptions) as $option => $value) {
+            $iuguCustomerData[$option] = $value;
         }
 
         if (!empty($customer->defaultCard) && !empty($customer->defaultCard->id)) {
@@ -1418,18 +1694,20 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      */
-    public function setCustomerDefaultCard(Customer $customer, string $cardId): Customer
+    public function setCustomerDefaultCard(Customer $customer, string $cardId, ?string $idempotencyKey = null): Customer
     {
         $customer->defaultCard = new CreditCard();
         $customer->defaultCard->id = $cardId;
 
-        return $this->updateCustomer($customer);
+        return $this->updateCustomer($customer, $idempotencyKey);
     }
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`.
      */
-    public function deleteCreditCard(CreditCard $creditCard): void
+    public function deleteCreditCard(CreditCard $creditCard, ?string $idempotencyKey = null): void
     {
         if (empty($creditCard->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'id');
@@ -1438,13 +1716,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
 
-        // request cru em vez de Iugu_PaymentMethod::delete(): o SDK engole a exceção e devolve false
-        $this->iuguRequest(
+        $this->iuguIdempotentRequest(
             'DELETE',
             Iugu::getBaseURI() . '/customers/' . rawurlencode($creditCard->customer->id)
                 . '/payment_methods/' . rawurlencode($creditCard->id),
             [],
-            'deleting credit card'
+            'deleting credit card',
+            $this->idempotencyKeyFor($idempotencyKey, $creditCard)
         );
     }
 
@@ -1453,15 +1731,17 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function getCreditCard(CreditCard $creditCard): CreditCard
     {
-        try {
-            $iuguCustomer = new Iugu_Customer(['id' => $creditCard->customer->id]);
-            $iuguCreditCard = $iuguCustomer->payment_methods()->fetch($creditCard->id);
-        } catch (\Exception $e) {
-            throw $this->translateIuguException($e, 'getting credit card');
+        if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
+            throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
-        if ($iuguCreditCard->errors) {
-            throw $this->iuguResponseException('Error getting creditCard: ', $iuguCreditCard->errors);
-        }
+
+        $iuguCreditCard = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/customers/' . rawurlencode($creditCard->customer->id)
+                . '/payment_methods/' . rawurlencode((string) $creditCard->id),
+            [],
+            'getting credit card'
+        );
 
         return $this->parseIuguCard($iuguCreditCard, $creditCard);
     }
@@ -1476,6 +1756,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         if (is_null($creditCard)) {
             $creditCard = new CreditCard();
         }
+        $iuguCreditCard = (object) $iuguCreditCard;
 
         $creditCard->id = $iuguCreditCard->id ?? null;
         $creditCard->brand = $iuguCreditCard->data->brand ?? null;
@@ -1488,28 +1769,36 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $creditCard->firstName = $names[0] ?? null;
             $creditCard->lastName = $names[array_key_last($names)] ?? null;
         }
-        $creditCard->lastDigits = $iuguCreditCard->data->last_digits ?? substr($iuguCreditCard->data->display_number, -4);
+        $displayNumber = $iuguCreditCard->data->display_number ?? null;
+        $creditCard->lastDigits = $iuguCreditCard->data->last_digits
+            ?? (is_string($displayNumber) ? substr($displayNumber, -4) : null);
         $creditCard->gateway = 'iugu';
         $creditCard->original = $iuguCreditCard;
-        $creditCard->createdAt = new Carbon($iuguCreditCard->created_at_iso) ?? null;
+        $creditCard->createdAt = !empty($iuguCreditCard->created_at_iso) ? new Carbon($iuguCreditCard->created_at_iso) : null;
         return $creditCard;
     }
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /subscriptions`. Na
+     * reutilização da chave a Iugu responde 409 sem o id da assinatura original
+     * (`resource_id: processing`), que chega como `IdempotencyConflictException`.
      */
-    public function createSubscription(Subscription $subscription): Subscription
+    public function createSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
         $data = array_merge(
             $this->subscriptionToIuguData($subscription),
-            $subscription->gatewayOptions
+            self::withoutIdempotencyKey($subscription->gatewayOptions)
         );
 
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'POST',
             Iugu::getBaseURI() . '/subscriptions',
             $data,
-            'creating subscription'
+            'creating subscription',
+            $this->idempotencyKeyFor($idempotencyKey, $subscription),
+            true
         );
 
         return $this->parseIuguSubscription($response, $subscription);
@@ -1536,16 +1825,20 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`: a informada no `PUT` da
+     * atualização e `{chave}:remove` na remoção de subitens que a antecede.
      */
-    public function updateSubscription(Subscription $subscription): Subscription
+    public function updateSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
         $data = array_merge(
             $this->subscriptionToIuguData($subscription, false),
-            $subscription->gatewayOptions
+            self::withoutIdempotencyKey($subscription->gatewayOptions)
         );
         $subitems = $data['subitems'] ?? null;
         unset($data['subitems']);
@@ -1561,11 +1854,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             );
 
             if (!empty($toDestroy)) {
-                $this->iuguRequest(
+                $this->iuguIdempotentRequest(
                     'PUT',
                     $this->subscriptionUrl($subscription->id),
                     ['subitems' => $toDestroy],
-                    'removing subscription items'
+                    'removing subscription items',
+                    self::derivedIdempotencyKey($idempotencyKey, 'remove')
                 );
             }
 
@@ -1574,11 +1868,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             }
         }
 
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'PUT',
             $this->subscriptionUrl($subscription->id),
             $data,
-            'updating subscription'
+            'updating subscription',
+            $idempotencyKey
         );
 
         return $this->parseIuguSubscription($response, $subscription);
@@ -1586,18 +1881,21 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`.
      */
-    public function suspendSubscription(Subscription $subscription): Subscription
+    public function suspendSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
 
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'POST',
             $this->subscriptionUrl($subscription->id) . '/suspend',
             [],
-            'suspending subscription'
+            'suspending subscription',
+            $this->idempotencyKeyFor($idempotencyKey, $subscription)
         );
 
         return $this->parseIuguSubscription($response, $subscription);
@@ -1605,18 +1903,21 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore`.
      */
-    public function resumeSubscription(Subscription $subscription): Subscription
+    public function resumeSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
 
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'POST',
             $this->subscriptionUrl($subscription->id) . '/activate',
             [],
-            'resuming subscription'
+            'resuming subscription',
+            $this->idempotencyKeyFor($idempotencyKey, $subscription)
         );
 
         return $this->parseIuguSubscription($response, $subscription);
@@ -1625,33 +1926,43 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      */
-    public function cancelSubscription(Subscription $subscription, bool $atPeriodEnd = false): Subscription
-    {
+    public function cancelSubscription(
+        Subscription $subscription,
+        bool $atPeriodEnd = false,
+        ?string $idempotencyKey = null
+    ): Subscription {
         if ($atPeriodEnd) {
             $this->assertSupports(Capability::CANCEL_AT_PERIOD_END, 'Suspenda a assinatura na data desejada.');
         }
 
-        return $this->suspendSubscription($subscription);
+        return $this->suspendSubscription($subscription, $idempotencyKey);
     }
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore` na requisição que aplica a troca
+     * (`POST change_plan` ou `PUT`); a releitura da assinatura que segue a troca com cobrança
+     * não a usa.
      */
     public function changeSubscriptionPlan(
         Subscription $subscription,
         string $planId,
-        bool $charge = true
+        bool $charge = true,
+        ?string $idempotencyKey = null
     ): Subscription {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
         if ($charge) {
-            $this->iuguRequest(
+            $this->iuguIdempotentRequest(
                 'POST',
                 $this->subscriptionUrl($subscription->id) . '/change_plan/' . rawurlencode($planId),
                 [],
-                'changing subscription plan'
+                'changing subscription plan',
+                $idempotencyKey
             );
 
             $subscription->planId = $planId;
@@ -1665,11 +1976,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $data['expires_at'] = $subscription->nextBillingAt->format('Y-m-d');
         }
 
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'PUT',
             $this->subscriptionUrl($subscription->id),
             $data,
-            'changing subscription plan'
+            'changing subscription plan',
+            $idempotencyKey
         );
 
         return $this->parseIuguSubscription($response, $subscription);
@@ -1734,14 +2046,18 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o cabeçalho
+     * neste endpoint).
      */
-    public function createPlan(Plan $plan): Plan
+    public function createPlan(Plan $plan, ?string $idempotencyKey = null): Plan
     {
-        $response = $this->iuguRequest(
+        $response = $this->iuguIdempotentRequest(
             'POST',
             Iugu::getBaseURI() . '/plans',
-            array_merge($this->planToIuguData($plan), $plan->gatewayOptions),
-            'creating plan'
+            array_merge($this->planToIuguData($plan), self::withoutIdempotencyKey($plan->gatewayOptions)),
+            'creating plan',
+            $this->idempotencyKeyFor($idempotencyKey, $plan)
         );
 
         return $this->parseIuguPlan($response, $plan);
@@ -1797,11 +2113,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * Sempre lança: a Iugu não tem desativação de plano.
      *
      * @param  Plan  $plan
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Plan
      * @throws UnsupportedOperationException
      */
-    public function deactivatePlan(Plan $plan): Plan
+    public function deactivatePlan(Plan $plan, ?string $idempotencyKey = null): Plan
     {
         throw UnsupportedOperationException::forGateway(
             $this,

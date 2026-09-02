@@ -23,6 +23,7 @@ use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
@@ -318,16 +319,59 @@ class StripeGatewayInvoiceTest extends TestCase
         );
     }
 
-    public function testIdempotencyKeyFromGatewayOptionsBecomesRequestHeader(): void
+    public function testIdempotencyKeyArgumentBecomesRequestHeader(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        (new StripeGateway())->createInvoice($this->pixInvoiceModel(), 'chave-unica-123');
+
+        $this->assertSame('chave-unica-123', $httpClient->header(0, 'Idempotency-Key'));
+        $this->assertArrayNotHasKey('idempotency_key', $httpClient->calls[0][2]);
+    }
+
+    public function testWithoutIdempotencyKeyNoHeaderIsSent(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        (new StripeGateway())->createInvoice($this->pixInvoiceModel());
+
+        $this->assertNull($httpClient->header(0, 'Idempotency-Key'));
+    }
+
+    /**
+     * A chave antiga em `gatewayOptions` ainda vira o cabeçalho, com aviso de deprecação, e
+     * não vaza como parâmetro do payload (a API a rejeitaria).
+     */
+    #[IgnoreDeprecations]
+    public function testLegacyIdempotencyKeyInGatewayOptionsStillBecomesTheHeaderWithADeprecation(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
 
         $invoice = $this->pixInvoiceModel();
-        $invoice->gatewayOptions = ['idempotency_key' => 'chave-unica-123'];
+        $invoice->gatewayOptions = ['idempotency_key' => 'chave-antiga'];
+
+        $this->expectUserDeprecationMessage("gateway_options['idempotency_key'] está obsoleto desde 2026-09-02; passe idempotencyKey como argumento da operação");
+
         (new StripeGateway())->createInvoice($invoice);
 
-        // a chave não pode vazar como parâmetro do payload (a API a rejeitaria)
+        $this->assertSame('chave-antiga', $httpClient->header(0, 'Idempotency-Key'));
         $this->assertArrayNotHasKey('idempotency_key', $httpClient->calls[0][2]);
+    }
+
+    /**
+     * O argumento tem precedência sobre a chave antiga em `gatewayOptions`.
+     */
+    #[IgnoreDeprecations]
+    public function testIdempotencyKeyArgumentWinsOverTheLegacyGatewayOption(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->gatewayOptions = ['idempotency_key' => 'chave-antiga'];
+
+        (new StripeGateway())->createInvoice($invoice, 'chave-nova');
+
+        $this->assertSame('chave-nova', $httpClient->header(0, 'Idempotency-Key'));
     }
 
     public function testCancelsPendingInvoice(): void
@@ -748,9 +792,10 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame(InvoiceStatus::PAID, $result->status);
     }
 
-    public function testChargeInvoiceKeepsMatchingCustomerAndOmitsItFromUpdate(): void
+    public function testChargeInvoiceWithMatchingCustomerResendsItInTheUpdate(): void
     {
-        // PI e PaymentMethod do mesmo customer: nada de customer no update
+        // PI e PaymentMethod do mesmo customer: o update repete o customer, sem efeito na Stripe,
+        // para o payload ser o mesmo num retry com a mesma chave de idempotência
         $httpClient = RecordingStripeHttpClient::withResponses([
             $this->paymentMethodResponse(customer: 'cus_fake123'),
             $this->paidCardPaymentIntentResponse(status: 'requires_payment_method'),
@@ -764,7 +809,7 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->creditCard->id = 'pm_fake123';
         (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
 
-        $this->assertSame(['payment_method_types' => ['card']], $httpClient->calls[2][2]);
+        $this->assertSame(['payment_method_types' => ['card'], 'customer' => 'cus_fake123'], $httpClient->calls[2][2]);
     }
 
     public function testChargeInvoiceRejectsCardFromAnotherCustomer(): void

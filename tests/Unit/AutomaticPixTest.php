@@ -121,7 +121,7 @@ class AutomaticPixTest extends TestCase
             ->once()
             ->with(Mockery::on(fn (AutomaticPixCharge $charge) =>
                 $charge->id === 'payment-id' && $charge->endToEndId === 'end-to-end-id'
-            ))
+            ), null)
             ->andReturn($cancellation);
 
         $result = (new MultiPayment($gateway))
@@ -136,7 +136,7 @@ class AutomaticPixTest extends TestCase
         $gateway = Mockery::mock(GatewayContract::class);
         $gateway->shouldReceive('cancelAutomaticPixRecurrence')
             ->once()
-            ->with(Mockery::on(fn (AutomaticPix $automaticPix) => $automaticPix->id === 'recurrence-id'))
+            ->with(Mockery::on(fn (AutomaticPix $automaticPix) => $automaticPix->id === 'recurrence-id'), null)
             ->andReturn($cancellation);
 
         $result = (new MultiPayment($gateway))->cancelAutomaticPixRecurrence('recurrence-id');
@@ -152,7 +152,7 @@ class AutomaticPixTest extends TestCase
         $gateway = Mockery::mock(GatewayContract::class);
         $gateway->shouldReceive('rescheduleAutomaticPixPayment')
             ->once()
-            ->with(Mockery::on(fn (Invoice $model) => $model->id === 'invoice-id'))
+            ->with(Mockery::on(fn (Invoice $model) => $model->id === 'invoice-id'), null)
             ->andReturn($invoice);
 
         $result = (new MultiPayment($gateway))->rescheduleAutomaticPixPayment('invoice-id');
@@ -199,7 +199,7 @@ class AutomaticPixTest extends TestCase
         $gateway = Mockery::mock(GatewayContract::class);
         $gateway->shouldReceive('cancelInvoice')
             ->once()
-            ->with(Mockery::on(fn (Invoice $invoice) => $invoice->id === 'invoice-id'))
+            ->with(Mockery::on(fn (Invoice $invoice) => $invoice->id === 'invoice-id'), null)
             ->andReturn($cancelledInvoice);
 
         $result = (new MultiPayment($gateway))->cancelInvoice('invoice-id');

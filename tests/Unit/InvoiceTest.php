@@ -38,6 +38,21 @@ class InvoiceTest extends TestCase
         $this->assertSame($expected, Invoice::isSettled($status));
     }
 
+    /**
+     * `amount` sem `items` vira um único item com o valor; a lista precisa sobreviver ao
+     * restante do `fill()`.
+     */
+    public function testFillWithAmountAndNoItemsCreatesASingleItem(): void
+    {
+        $invoice = new Invoice();
+        $invoice->fill(['amount' => 10000, 'available_payment_methods' => ['pix']]);
+
+        $this->assertCount(1, $invoice->items);
+        $this->assertSame(10000, $invoice->items[0]->price);
+        $this->assertSame(1, $invoice->items[0]->quantity);
+        $this->assertNull($invoice->amount);
+    }
+
     public static function contestedProvider(): array
     {
         return [

@@ -9,6 +9,7 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Idempotency\IdempotencyKey;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -351,13 +352,14 @@ class Subscription extends Model
      *
      * @param  GatewayContract|string|null  $gateway
      * @param  bool  $validate
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return void
      * @throws GatewayException|\Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws UnsupportedOperationException
      */
-    public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string|null $gateway = null, bool $validate = true, ?string $idempotencyKey = null): void
     {
         if ($validate) {
             $this->validate();
@@ -369,10 +371,10 @@ class Subscription extends Model
         $gateway = $this->resolveSubscriptionGateway($this->gatewayForSave($gateway));
 
         if (empty($this->id) && !empty($this->customer) && empty($this->customer->id)) {
-            $this->customer->save($gateway, $validate);
+            $this->customer->save($gateway, $validate, IdempotencyKey::derive($idempotencyKey, 'customer'));
         }
 
-        parent::save($gateway, false);
+        parent::save($gateway, false, $idempotencyKey);
     }
 
     /**
@@ -405,6 +407,7 @@ class Subscription extends Model
      * Suspende a cobrança da assinatura, mantendo-a reativável por resume().
      *
      * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
@@ -413,15 +416,16 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      * @throws UnsupportedOperationException
      */
-    public function suspend(GatewayContract|string|null $gateway = null): Subscription
+    public function suspend(GatewayContract|string|null $gateway = null, ?string $idempotencyKey = null): Subscription
     {
-        return $this->resolveSubscriptionGateway($gateway)->suspendSubscription($this);
+        return $this->resolveSubscriptionGateway($gateway)->suspendSubscription($this, $idempotencyKey);
     }
 
     /**
      * Volta a cobrar uma assinatura suspensa.
      *
      * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
@@ -430,9 +434,9 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      * @throws UnsupportedOperationException
      */
-    public function resume(GatewayContract|string|null $gateway = null): Subscription
+    public function resume(GatewayContract|string|null $gateway = null, ?string $idempotencyKey = null): Subscription
     {
-        return $this->resolveSubscriptionGateway($gateway)->resumeSubscription($this);
+        return $this->resolveSubscriptionGateway($gateway)->resumeSubscription($this, $idempotencyKey);
     }
 
     /**
@@ -440,6 +444,7 @@ class Subscription extends Model
      *
      * @param  bool  $atPeriodEnd
      * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
@@ -448,9 +453,12 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      * @throws UnsupportedOperationException
      */
-    public function cancel(bool $atPeriodEnd = false, GatewayContract|string|null $gateway = null): Subscription
-    {
-        return $this->resolveSubscriptionGateway($gateway)->cancelSubscription($this, $atPeriodEnd);
+    public function cancel(
+        bool $atPeriodEnd = false,
+        GatewayContract|string|null $gateway = null,
+        ?string $idempotencyKey = null
+    ): Subscription {
+        return $this->resolveSubscriptionGateway($gateway)->cancelSubscription($this, $atPeriodEnd, $idempotencyKey);
     }
 
     /**
@@ -462,6 +470,7 @@ class Subscription extends Model
      * @param  string  $planId
      * @param  bool  $charge
      * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
@@ -473,10 +482,11 @@ class Subscription extends Model
     public function changePlan(
         string $planId,
         bool $charge = true,
-        GatewayContract|string|null $gateway = null
+        GatewayContract|string|null $gateway = null,
+        ?string $idempotencyKey = null
     ): Subscription {
         return $this->resolveSubscriptionGateway($gateway)
-            ->changeSubscriptionPlan($this, $planId, $charge);
+            ->changeSubscriptionPlan($this, $planId, $charge, $idempotencyKey);
     }
 
     /**

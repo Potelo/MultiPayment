@@ -23,22 +23,39 @@ use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 interface AutomaticPixContract
 {
     /**
+     * Pede um novo agendamento de débito para uma fatura de Pix Automático que não foi paga.
+     *
+     * @param  Invoice  $invoice
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice;
+    public function rescheduleAutomaticPixPayment(Invoice $invoice, ?string $idempotencyKey = null): Invoice;
 
     /**
+     * Cancela um pagamento agendado da recorrência.
+     *
+     * @param  AutomaticPixCharge  $charge
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return AutomaticPixCancellation
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function cancelAutomaticPixScheduledPayment(
-        AutomaticPixCharge $charge
+        AutomaticPixCharge $charge,
+        ?string $idempotencyKey = null
     ): AutomaticPixCancellation;
 
     /**
+     * Cancela a recorrência inteira.
+     *
+     * @param  AutomaticPix  $automaticPix
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return AutomaticPixCancellation
      * @throws GatewayException|GatewayNotAvailableException
      */
     public function cancelAutomaticPixRecurrence(
-        AutomaticPix $automaticPix
+        AutomaticPix $automaticPix,
+        ?string $idempotencyKey = null
     ): AutomaticPixCancellation;
 
     /**

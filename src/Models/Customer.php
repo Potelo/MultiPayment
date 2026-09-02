@@ -170,10 +170,19 @@ class Customer extends Model
         return $array;
     }
 
-    public function setDefaultCard(string $cardId): Customer
+    /**
+     * Define o cartão padrão do cliente no gateway.
+     *
+     * @param  string  $cardId
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Customer
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function setDefaultCard(string $cardId, ?string $idempotencyKey = null): Customer
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
-        return $gateway->setCustomerDefaultCard($this, $cardId);
+        return $gateway->setCustomerDefaultCard($this, $cardId, $idempotencyKey);
     }
 
     /**
@@ -202,18 +211,22 @@ class Customer extends Model
      *
      * @param  string  $creditCardId
      * @param  \Potelo\MultiPayment\Contracts\GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
-    public function deleteCreditCard(string $creditCardId, GatewayContract|string|null $gateway = null): void
-    {
+    public function deleteCreditCard(
+        string $creditCardId,
+        GatewayContract|string|null $gateway = null,
+        ?string $idempotencyKey = null
+    ): void {
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         $creditCard = new CreditCard();
         $creditCard->customer = $this;
         $creditCard->id = $creditCardId;
 
-        $gateway->deleteCreditCard($creditCard);
+        $gateway->deleteCreditCard($creditCard, $idempotencyKey);
     }
 }

@@ -15,11 +15,12 @@ interface CustomerContract
      * Create a new customer and return the customer
      *
      * @param  Customer  $customer
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return Customer
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function createCustomer(Customer $customer): Customer;
+    public function createCustomer(Customer $customer, ?string $idempotencyKey = null): Customer;
 
     /**
      * Return one customer based on the customer ID
@@ -35,18 +36,20 @@ interface CustomerContract
      * Update an existing customer
      *
      * @param  Customer  $customer
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return Customer
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function updateCustomer(Customer $customer): Customer;
+    public function updateCustomer(Customer $customer, ?string $idempotencyKey = null): Customer;
 
     /**
      * Set the customer's default card
      *
      * @param  \Potelo\MultiPayment\Models\Customer  $customer
      * @param  string  $cardId
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return \Potelo\MultiPayment\Models\Customer
      */
-    public function setCustomerDefaultCard(Customer $customer, string $cardId): Customer;
+    public function setCustomerDefaultCard(Customer $customer, string $cardId, ?string $idempotencyKey = null): Customer;
 }

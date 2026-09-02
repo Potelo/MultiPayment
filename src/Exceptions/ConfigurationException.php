@@ -41,4 +41,33 @@ class ConfigurationException extends MultiPaymentException
     {
         return new static("Gateway class [{$gateway}] not found.");
     }
+
+    /**
+     * Nenhuma `IdempotencyStore` registrada no container, e a operação recebeu uma chave de
+     * idempotência num endpoint que o gateway não deduplica sozinho.
+     *
+     * @return self
+     */
+    public static function IdempotencyStoreNotConfigured(): self
+    {
+        return new static(
+            'Nenhuma IdempotencyStore registrada no container: registre o MultiPaymentServiceProvider '
+            . '(que usa o cache do Laravel) ou faça bind de Potelo\\MultiPayment\\Contracts\\IdempotencyStore.'
+        );
+    }
+
+    /**
+     * O cache store configurado para a `CacheIdempotencyStore` não suporta lock.
+     *
+     * @param  string  $storeClass
+     * @return self
+     */
+    public static function IdempotencyStoreWithoutLock(string $storeClass): self
+    {
+        return new static(
+            "O cache store [{$storeClass}] não suporta lock; a CacheIdempotencyStore exige um store "
+            . 'com LockProvider (redis, memcached, database, file, array ou dynamodb). Configure '
+            . 'multi-payment.idempotency.cache_store com um deles.'
+        );
+    }
 }

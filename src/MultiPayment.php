@@ -109,18 +109,19 @@ class MultiPayment
      * Charge a customer
      *
      * @param  array  $attributes
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return Invoice
      * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException
      */
-    public function charge(array $attributes): Invoice
+    public function charge(array $attributes, ?string $idempotencyKey = null): Invoice
     {
         $invoice = new Invoice();
         $invoice->fill($attributes);
         $invoice->customer = new Customer();
         $invoice->customer->fill($attributes['customer']);
 
-        $invoice->save($this->gateway);
+        $invoice->save($this->gateway, true, $idempotencyKey);
         return $invoice;
     }
 
@@ -249,13 +250,18 @@ class MultiPayment
      * @param  \Potelo\MultiPayment\Models\Invoice|string  $invoice
      * @param  \Carbon\Carbon  $expiresAt
      * @param  array  $gatewayOptions
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function duplicateInvoice(Invoice|string $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
-    {
+    public function duplicateInvoice(
+        Invoice|string $invoice,
+        Carbon $expiresAt,
+        array $gatewayOptions = [],
+        ?string $idempotencyKey = null
+    ): Invoice {
         if (is_string($invoice)) {
             $invoiceInstance = new Invoice();
             $invoiceInstance->id = $invoice;
@@ -267,7 +273,7 @@ class MultiPayment
             $invoice->gateway = $this->gateway;
         }
 
-        return $invoice->duplicate($expiresAt, $gatewayOptions);
+        return $invoice->duplicate($expiresAt, $gatewayOptions, $idempotencyKey);
     }
 
     /**
@@ -292,13 +298,14 @@ class MultiPayment
      *
      * @param  string  $id
      * @param  int|null  $partialValueCents
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return \Potelo\MultiPayment\Models\Refund
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException  valor parcial zero ou negativo
      */
-    public function refundInvoice(string $id, ?int $partialValueCents = null): Refund
+    public function refundInvoice(string $id, ?int $partialValueCents = null, ?string $idempotencyKey = null): Refund
     {
         if (!is_null($partialValueCents) && $partialValueCents <= 0) {
             throw ModelAttributeValidationException::invalid(
@@ -316,19 +323,19 @@ class MultiPayment
             $invoice->refundedAmount = $partialValueCents;
         }
 
-        return $invoice->refund();
-
+        return $invoice->refund($idempotencyKey);
     }
 
     /**
      * Cancel an invoice.
      *
      * @param  Invoice|string  $invoice
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
-    public function cancelInvoice(Invoice|string $invoice): Invoice
+    public function cancelInvoice(Invoice|string $invoice, ?string $idempotencyKey = null): Invoice
     {
         if (is_string($invoice)) {
             $invoiceInstance = new Invoice();
@@ -336,7 +343,7 @@ class MultiPayment
             $invoice = $invoiceInstance;
         }
 
-        return $invoice->cancel($this->gateway);
+        return $invoice->cancel($this->gateway, $idempotencyKey);
     }
 
     /**
@@ -345,6 +352,7 @@ class MultiPayment
      * @param  Invoice|string  $invoice
      * @param  string|null  $creditCardToken
      * @param  string|null  $creditCardId
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return \Potelo\MultiPayment\Models\Invoice
      *
@@ -354,8 +362,12 @@ class MultiPayment
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      * @throws \Potelo\MultiPayment\Exceptions\MultiPaymentException
      */
-    public function chargeInvoiceWithCreditCard($invoice, ?string $creditCardToken = null, ?string $creditCardId = null): Invoice
-    {
+    public function chargeInvoiceWithCreditCard(
+        $invoice,
+        ?string $creditCardToken = null,
+        ?string $creditCardId = null,
+        ?string $idempotencyKey = null
+    ): Invoice {
         if (is_string($invoice)) {
             $invoiceInstance = new Invoice();
             $invoiceInstance->id = $invoice;
@@ -381,7 +393,7 @@ class MultiPayment
         $invoice->gateway = $this->gateway;
         $invoice->creditCard->gateway = $this->gateway;
 
-        return $invoice->chargeInvoiceWithCreditCard();
+        return $invoice->chargeInvoiceWithCreditCard(null, $idempotencyKey);
     }
 
     /**
@@ -408,18 +420,19 @@ class MultiPayment
      *
      * @param  string  $customerId
      * @param  string  $creditCardId
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function deleteCard(string $customerId, string $creditCardId): void
+    public function deleteCard(string $customerId, string $creditCardId, ?string $idempotencyKey = null): void
     {
         $creditCard = new CreditCard();
         $creditCard->customer = new Customer();
         $creditCard->customer->id = $customerId;
         $creditCard->id = $creditCardId;
 
-        $creditCard->delete($this->gateway);
+        $creditCard->delete($this->gateway, $idempotencyKey);
     }
 
     /**
@@ -427,35 +440,38 @@ class MultiPayment
      *
      * @param  string  $customerId
      * @param  string  $creditCardId
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return \Potelo\MultiPayment\Models\Customer
      */
-    public function setDefaultCard(string $customerId, string $creditCardId): Customer
+    public function setDefaultCard(string $customerId, string $creditCardId, ?string $idempotencyKey = null): Customer
     {
         $customer = new Customer();
         $customer->id = $customerId;
         // sem isso o model resolveria o gateway default, ignorando o setGateway() desta instância
         $customer->gateway = $this->gateway;
-        return $customer->setDefaultCard($creditCardId);
+        return $customer->setDefaultCard($creditCardId, $idempotencyKey);
     }
 
     /**
      * Cancela uma recorrência de Pix Automático no gateway.
      *
      * @param  AutomaticPix|string  $automaticPix
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return AutomaticPixCancellation
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      */
     public function cancelAutomaticPixRecurrence(
-        AutomaticPix|string $automaticPix
-    ): AutomaticPixCancellation
-    {
+        AutomaticPix|string $automaticPix,
+        ?string $idempotencyKey = null
+    ): AutomaticPixCancellation {
         if (is_string($automaticPix)) {
             $automaticPixModel = new AutomaticPix();
             $automaticPixModel->id = $automaticPix;
             $automaticPix = $automaticPixModel;
         }
 
-        return $this->gateway->cancelAutomaticPixRecurrence($automaticPix);
+        return $this->gateway->cancelAutomaticPixRecurrence($automaticPix, $idempotencyKey);
     }
 
     /**
@@ -463,12 +479,15 @@ class MultiPayment
      *
      * @param  AutomaticPixCharge|string  $charge
      * @param  string|null  $endToEndId
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return AutomaticPixCancellation
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      */
     public function cancelAutomaticPixScheduledPayment(
         AutomaticPixCharge|string $charge,
-        ?string $endToEndId = null
+        ?string $endToEndId = null,
+        ?string $idempotencyKey = null
     ): AutomaticPixCancellation {
         if (is_string($charge)) {
             $chargeModel = new AutomaticPixCharge();
@@ -477,13 +496,19 @@ class MultiPayment
             $charge = $chargeModel;
         }
 
-        return $this->gateway->cancelAutomaticPixScheduledPayment($charge);
+        return $this->gateway->cancelAutomaticPixScheduledPayment($charge, $idempotencyKey);
     }
 
     /**
-     * Request a new Automatic Pix debit schedule for an expired invoice.
+     * Pede um novo agendamento de débito de Pix Automático para uma fatura que expirou.
+     *
+     * @param  Invoice|string  $invoice
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
+     * @throws GatewayException
+     * @throws GatewayNotAvailableException
      */
-    public function rescheduleAutomaticPixPayment(Invoice|string $invoice): Invoice
+    public function rescheduleAutomaticPixPayment(Invoice|string $invoice, ?string $idempotencyKey = null): Invoice
     {
         if (is_string($invoice)) {
             $invoiceModel = new Invoice();
@@ -491,7 +516,7 @@ class MultiPayment
             $invoice = $invoiceModel;
         }
 
-        return $invoice->rescheduleAutomaticPixPayment($this->gateway);
+        return $invoice->rescheduleAutomaticPixPayment($this->gateway, $idempotencyKey);
     }
 
     /**

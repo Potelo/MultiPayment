@@ -18,11 +18,12 @@ trait MultiPaymentTrait
      * @param  array  $options
      * @param  string|null  $gatewayName
      * @param  int|null  $amount
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return Invoice
      * @throws GatewayException|ModelAttributeValidationException
      */
-    public function charge(array $options, ?string $gatewayName = null, ?int $amount = null): Invoice
+    public function charge(array $options, ?string $gatewayName = null, ?int $amount = null, ?string $idempotencyKey = null): Invoice
     {
         $payment = new MultiPayment($gatewayName);
 
@@ -33,7 +34,7 @@ trait MultiPaymentTrait
         if (!empty($amount)) {
             $options['amount'] = $amount;
         }
-        $invoice = $payment->charge($options);
+        $invoice = $payment->charge($options, $idempotencyKey);
         if (empty($customerId)) {
             $this->setCustomerId($gatewayName, $invoice->customer->id);
         }
@@ -82,19 +83,29 @@ trait MultiPaymentTrait
     }
 
     /**
-     * Set the default credit card of the customer
+     * Define o cartão padrão do cliente no gateway.
+     *
+     * @param  string  $gatewayName
+     * @param  string  $cardId
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return void
      */
-    public function setDefaultCreditCard(string $gatewayName, string $cardId): void
+    public function setDefaultCreditCard(string $gatewayName, string $cardId, ?string $idempotencyKey = null): void
     {
-        MultiPayment::setGateway($gatewayName)->setDefaultCard($this->getGatewayCustomerId($gatewayName), $cardId);
+        MultiPayment::setGateway($gatewayName)->setDefaultCard($this->getGatewayCustomerId($gatewayName), $cardId, $idempotencyKey);
     }
 
     /**
-     * Delete a credit card of the customer
+     * Exclui um cartão do cliente no gateway.
+     *
+     * @param  string  $gatewayName
+     * @param  string  $cardId
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return void
      */
-    public function deleteCreditCard(string $gatewayName, string $cardId): void
+    public function deleteCreditCard(string $gatewayName, string $cardId, ?string $idempotencyKey = null): void
     {
-        MultiPayment::setGateway($gatewayName)->deleteCard($this->getGatewayCustomerId($gatewayName), $cardId);
+        MultiPayment::setGateway($gatewayName)->deleteCard($this->getGatewayCustomerId($gatewayName), $cardId, $idempotencyKey);
     }
 
     /**

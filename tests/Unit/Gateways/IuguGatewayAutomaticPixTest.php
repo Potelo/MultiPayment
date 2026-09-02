@@ -309,7 +309,7 @@ class RecordingIuguApiRequest extends Iugu_APIRequest
     {
     }
 
-    public function request($method, $url, $data = [])
+    public function request($method, $url, $data = [], $headers = [])
     {
         $this->method = $method;
         $this->url = $url;

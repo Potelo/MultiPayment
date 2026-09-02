@@ -12,6 +12,13 @@ class Builder
     protected Model $model;
 
     /**
+     * Chave de idempotência enviada com o `create()`.
+     *
+     * @var string|null
+     */
+    protected ?string $idempotencyKey = null;
+
+    /**
      * Builder constructor.
      *
      * @param  GatewayContract|string|null  $gateway
@@ -31,8 +38,22 @@ class Builder
      */
     public function create(): Model
     {
-        $this->model->save($this->gateway, true);
+        $this->model->save($this->gateway, true, $this->idempotencyKey);
         return $this->model;
+    }
+
+    /**
+     * Define a chave de idempotência que `create()` envia ao gateway (ver a seção
+     * "Idempotência" do README). Nula desliga a deduplicação.
+     *
+     * @param  string|null  $idempotencyKey
+     * @return $this
+     */
+    public function withIdempotencyKey(?string $idempotencyKey): static
+    {
+        $this->idempotencyKey = $idempotencyKey;
+
+        return $this;
     }
 
     /**

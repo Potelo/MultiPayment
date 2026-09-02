@@ -91,12 +91,13 @@ class Plan extends Model
      *
      * @param  GatewayContract|string|null  $gateway
      * @param  bool  $validate
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return void
      * @throws GatewayException|\Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
      */
-    public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string|null $gateway = null, bool $validate = true, ?string $idempotencyKey = null): void
     {
         if (!empty($this->id)) {
             throw new GatewayException(
@@ -104,7 +105,7 @@ class Plan extends Model
             );
         }
 
-        parent::save($gateway, $validate);
+        parent::save($gateway, $validate, $idempotencyKey);
     }
 
     /**

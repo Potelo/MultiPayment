@@ -454,7 +454,8 @@ class SubscriptionTest extends TestCase
         $gateway = self::subscriptionGateway();
         $gateway->shouldReceive($gatewayMethod)
             ->once()
-            ->with($subscription, ...$gatewayArgs)
+            // o último argumento do contract é a chave de idempotência, nula por padrão
+            ->with($subscription, ...array_merge($gatewayArgs, [null]))
             ->andReturn($subscription);
 
         $this->assertSame(

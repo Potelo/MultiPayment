@@ -8,6 +8,7 @@ use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Idempotency\IdempotencyKey;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -181,14 +182,14 @@ class Invoice extends Model
     {
         if (empty($data['items']) && !empty($data['amount'])) {
             $invoiceItem = new InvoiceItem();
-            $data['items'] = [];
             $invoiceItem->fill([
                 'description' => 'Nova cobrança',
                 'quantity' => 1,
                 'price' => $data['amount'],
             ]);
             $this->items[] = $invoiceItem;
-            unset($data['amount']);
+            // a chave items não pode chegar ao parent::fill(), que sobrescreveria a lista
+            unset($data['amount'], $data['items']);
         } elseif (!empty($data['items'])) {
             $this->items = [];
             foreach ($data['items'] as $item) {
@@ -310,7 +311,7 @@ class Invoice extends Model
     /**
      * @inheritDoc
      */
-    public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string|null $gateway = null, bool $validate = true, ?string $idempotencyKey = null): void
     {
         if ($validate) {
             $this->validate();
@@ -321,12 +322,12 @@ class Invoice extends Model
         $gateway = ConfigurationHelper::resolveGateway($this->gatewayForSave($gateway));
         $this->assertGatewaySupports($gateway);
         if (empty($this->customer->id)) {
-            $this->customer->save($gateway, $validate);
+            $this->customer->save($gateway, $validate, IdempotencyKey::derive($idempotencyKey, 'customer'));
         }
         if (!empty($this->creditCard) && empty($this->creditCard->id)) {
             $this->creditCard->customer = $this->customer;
         }
-        parent::save($gateway, false);
+        parent::save($gateway, false, $idempotencyKey);
     }
 
     /**
@@ -448,25 +449,29 @@ class Invoice extends Model
      * com o valor em centavos. Devolve o `Refund` criado e atualiza esta instância com o
      * estado posterior ao estorno (`$refund->invoice()` é esta instância).
      *
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      * @return Refund
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
-    public function refund(): Refund
+    public function refund(?string $idempotencyKey = null): Refund
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
-        return $gateway->refundInvoice($this);
+        return $gateway->refundInvoice($this, $idempotencyKey);
     }
 
     /**
-     * Charge invoice with credit card
+     * Cobra a fatura com o cartão informado (ou com o já preenchido em `creditCard`).
      *
+     * @param  CreditCard|null  $creditCard
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      * @throws \Potelo\MultiPayment\Exceptions\ChargingException
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      */
-    public function chargeInvoiceWithCreditCard(?CreditCard $creditCard = null): Invoice
+    public function chargeInvoiceWithCreditCard(?CreditCard $creditCard = null, ?string $idempotencyKey = null): Invoice
     {
         if (!empty($creditCard)) {
             $this->creditCard = $creditCard;
@@ -474,7 +479,7 @@ class Invoice extends Model
 
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
 
-        return $gateway->chargeInvoiceWithCreditCard($this);
+        return $gateway->chargeInvoiceWithCreditCard($this, $idempotencyKey);
     }
 
     /**
@@ -482,33 +487,46 @@ class Invoice extends Model
      *
      * @param  \Carbon\Carbon  $expiresAt
      * @param  array  $gatewayOptions
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function duplicate(Carbon $expiresAt, array $gatewayOptions = []): Invoice
+    public function duplicate(Carbon $expiresAt, array $gatewayOptions = [], ?string $idempotencyKey = null): Invoice
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
-        return $gateway->duplicateInvoice($this, $expiresAt, $gatewayOptions);
+        return $gateway->duplicateInvoice($this, $expiresAt, $gatewayOptions, $idempotencyKey);
     }
 
     /**
-     * Cancel the invoice.
+     * Cancela a fatura.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function cancel(GatewayContract|string|null $gateway = null): Invoice
+    public function cancel(GatewayContract|string|null $gateway = null, ?string $idempotencyKey = null): Invoice
     {
         $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
 
-        return $gateway->cancelInvoice($this);
+        return $gateway->cancelInvoice($this, $idempotencyKey);
     }
 
     /**
-     * Request a new debit schedule after a failed Automatic Pix payment.
+     * Pede um novo agendamento de débito depois de um pagamento de Pix Automático que falhou.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      */
-    public function rescheduleAutomaticPixPayment(GatewayContract|string|null $gateway = null): Invoice
+    public function rescheduleAutomaticPixPayment(GatewayContract|string|null $gateway = null, ?string $idempotencyKey = null): Invoice
     {
         $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
 
-        return $gateway->rescheduleAutomaticPixPayment($this);
+        return $gateway->rescheduleAutomaticPixPayment($this, $idempotencyKey);
     }
 }

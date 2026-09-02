@@ -17,12 +17,13 @@ interface InvoiceContract
      * create a new invoice
      *
      * @param  Invoice  $invoice
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Invoice
      * @throws GatewayException|GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
-    public function createInvoice(Invoice $invoice): Invoice;
+    public function createInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice;
 
     /**
      * Return one invoice based on the invoice ID
@@ -44,29 +45,25 @@ interface InvoiceContract
      * re-read after the refund in `$refund->invoice`; the given model is updated in place.
      *
      * @param  Invoice  $invoice
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return Refund
      * @throws GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice): Refund;
-
-    /**
-     * String representation of the gateway
-     *
-     * @return string
-     */
+    public function refundInvoice(Invoice $invoice, ?string $idempotencyKey = null): Refund;
 
     /**
      * Charge an invoice with a credit card
      *
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws \Potelo\MultiPayment\Exceptions\ChargingException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
-    public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice;
+    public function chargeInvoiceWithCreditCard(Invoice $invoice, ?string $idempotencyKey = null): Invoice;
 
     /**
      * Duplicate an invoice
@@ -74,18 +71,25 @@ interface InvoiceContract
      * @param  Invoice  $invoice
      * @param  \Carbon\Carbon  $expiresAt
      * @param  array  $gatewayOptions
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
-    public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice;
+    public function duplicateInvoice(
+        Invoice $invoice,
+        Carbon $expiresAt,
+        array $gatewayOptions = [],
+        ?string $idempotencyKey = null
+    ): Invoice;
 
     /**
      * Cancel an invoice.
      *
      * @param  Invoice  $invoice
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return Invoice
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function cancelInvoice(Invoice $invoice): Invoice;
+    public function cancelInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice;
 }

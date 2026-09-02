@@ -18,6 +18,7 @@ use Stripe\Exception\RateLimitException as StripeRateLimitException;
 use Stripe\Exception\AuthenticationException as StripeAuthenticationException;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Pix;
+use Potelo\MultiPayment\Models\Model;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Address;
@@ -35,6 +36,7 @@ use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
 use Potelo\MultiPayment\Gateways\Stripe\DeclineCodes as StripeDeclineCodes;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
@@ -52,6 +54,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 class StripeGateway implements GatewayContract
 {
     use ChecksCapabilities;
+    use ResolvesIdempotencyKey;
 
     /**
      * Versão da API Stripe usada pelo pacote. Fixada no código (em vez de herdar o default da
@@ -135,6 +138,7 @@ class StripeGateway implements GatewayContract
             Capability::PARTIAL_REFUND_PIX,
             Capability::INVOICE_DUPLICATION,
             Capability::IDEMPOTENCY,
+            Capability::IDEMPOTENCY_ALL_ENDPOINTS,
         ];
     }
 
@@ -148,7 +152,6 @@ class StripeGateway implements GatewayContract
             Capability::AUTOMATIC_PIX,
             Capability::MULTIPLE_PAYMENT_METHODS,
             Capability::DELAYED_CAPTURE,
-            Capability::IDEMPOTENCY_ALL_ENDPOINTS,
             Capability::SUBSCRIPTIONS,
             Capability::PLANS,
             Capability::PLAN_DEACTIVATION,
@@ -161,9 +164,12 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` da criação.
      */
-    public function createCustomer(Customer $customer): Customer
+    public function createCustomer(Customer $customer, ?string $idempotencyKey = null): Customer
     {
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $customer);
         $stripeCustomerData = $this->customerToStripeData($customer);
 
         if (!empty($customer->taxDocument)) {
@@ -173,8 +179,11 @@ class StripeGateway implements GatewayContract
             ]];
         }
 
-        $stripeCustomer = $this->stripeRequest(function () use ($stripeCustomerData) {
-            return $this->client->customers->create($this->withTaxIdsExpanded($stripeCustomerData));
+        $stripeCustomer = $this->stripeRequest(function () use ($stripeCustomerData, $idempotencyKey) {
+            return $this->client->customers->create(
+                $this->withTaxIdsExpanded($stripeCustomerData),
+                self::stripeOptions($idempotencyKey)
+            );
         });
 
         return $this->parseCustomer($stripeCustomer, $customer);
@@ -182,23 +191,33 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do update; a criação de um tax
+     * id novo, quando o documento mudou, usa a chave derivada `{chave}:tax_id`.
+     *
      * @throws ModelAttributeValidationException
      */
-    public function updateCustomer(Customer $customer): Customer
+    public function updateCustomer(Customer $customer, ?string $idempotencyKey = null): Customer
     {
         if (empty($customer->id)) {
             throw ModelAttributeValidationException::required('Customer', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $customer);
 
         $stripeCustomerData = $this->customerToStripeData($customer);
 
-        $stripeCustomer = $this->stripeRequest(function () use ($customer, $stripeCustomerData) {
+        $stripeCustomer = $this->stripeRequest(function () use ($customer, $stripeCustomerData, $idempotencyKey) {
             $stripeCustomer = $this->client->customers->update(
                 $customer->id,
-                $this->withTaxIdsExpanded($stripeCustomerData)
+                $this->withTaxIdsExpanded($stripeCustomerData),
+                self::stripeOptions($idempotencyKey)
             );
 
-            if ($this->syncCustomerTaxDocument($stripeCustomer, $customer->taxDocument)) {
+            if ($this->syncCustomerTaxDocument(
+                $stripeCustomer,
+                $customer->taxDocument,
+                self::derivedIdempotencyKey($idempotencyKey, 'tax_id')
+            )) {
                 $stripeCustomer = $this->client->customers->retrieve(
                     $customer->id,
                     ['expand' => ['tax_ids']]
@@ -227,12 +246,12 @@ class StripeGateway implements GatewayContract
      * @inheritDoc
      * @throws ModelAttributeValidationException
      */
-    public function setCustomerDefaultCard(Customer $customer, string $cardId): Customer
+    public function setCustomerDefaultCard(Customer $customer, string $cardId, ?string $idempotencyKey = null): Customer
     {
         $customer->defaultCard = new CreditCard();
         $customer->defaultCard->id = $cardId;
 
-        return $this->updateCustomer($customer);
+        return $this->updateCustomer($customer, $idempotencyKey);
     }
 
     /**
@@ -322,10 +341,8 @@ class StripeGateway implements GatewayContract
             $stripeCustomerData['invoice_settings']['default_payment_method'] = $customer->defaultCard->id;
         }
 
-        if (!empty($customer->gatewayOptions)) {
-            foreach ($customer->gatewayOptions as $option => $value) {
-                $stripeCustomerData[$option] = $value;
-            }
+        foreach (self::withoutIdempotencyKey($customer->gatewayOptions) as $option => $value) {
+            $stripeCustomerData[$option] = $value;
         }
 
         return $stripeCustomerData;
@@ -421,11 +438,15 @@ class StripeGateway implements GatewayContract
      *
      * @param  \Stripe\Customer  $stripeCustomer  customer com `tax_ids` expandido
      * @param  string|null  $taxDocument
+     * @param  string|null  $idempotencyKey  chave da criação do tax id novo
      * @return bool  true se algum tax id foi criado/excluído (o customer precisa de refetch)
      * @throws ApiErrorException
      */
-    private function syncCustomerTaxDocument(StripeCustomer $stripeCustomer, ?string $taxDocument): bool
-    {
+    private function syncCustomerTaxDocument(
+        StripeCustomer $stripeCustomer,
+        ?string $taxDocument,
+        ?string $idempotencyKey = null
+    ): bool {
         if (empty($taxDocument)) {
             return false;
         }
@@ -450,10 +471,18 @@ class StripeGateway implements GatewayContract
             $this->client->customers->createTaxId($stripeCustomer->id, [
                 'type' => $this->taxDocumentType($taxDocument),
                 'value' => $taxDocument,
-            ]);
+            ], self::stripeOptions($idempotencyKey));
         }
         foreach ($staleTaxIds as $staleTaxIdId) {
-            $this->client->customers->deleteTaxId($stripeCustomer->id, $staleTaxIdId);
+            try {
+                $this->client->customers->deleteTaxId($stripeCustomer->id, $staleTaxIdId);
+            } catch (InvalidRequestException $e) {
+                // já excluído por uma tentativa anterior (a Stripe repete o update com o
+                // tax_ids antigo quando a chave é a mesma): o objetivo já foi atingido
+                if (($e->getError()?->code ?? null) !== 'resource_missing') {
+                    throw $e;
+                }
+            }
         }
 
         return !$alreadyPresent || !empty($staleTaxIds);
@@ -650,17 +679,22 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` da criação do PaymentIntent;
+     * o cartão salvo antes da cobrança usa a chave derivada `{chave}:card`.
+     *
      * @throws ChargingException|ModelAttributeValidationException|UnsupportedOperationException
      */
-    public function createInvoice(Invoice $invoice): Invoice
+    public function createInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         $this->assertSupportsAll($invoice->requiredCapabilities());
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         $paymentMethod = $this->invoicePaymentMethod($invoice);
 
         return match ($paymentMethod) {
-            PaymentMethod::CREDIT_CARD => $this->createCreditCardInvoice($invoice),
-            PaymentMethod::PIX => $this->createPixInvoice($invoice),
+            PaymentMethod::CREDIT_CARD => $this->createCreditCardInvoice($invoice, $idempotencyKey),
+            PaymentMethod::PIX => $this->createPixInvoice($invoice, $idempotencyKey),
             default => throw UnsupportedOperationException::forGateway($this, Capability::forPaymentMethod($paymentMethod)),
         };
     }
@@ -702,10 +736,11 @@ class StripeGateway implements GatewayContract
      * Cria e confirma um PaymentIntent de cartão (síncrono: succeeded ou recusa na hora).
      *
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @param  string|null  $idempotencyKey
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws ChargingException|GatewayException|ModelAttributeValidationException
      */
-    private function createCreditCardInvoice(Invoice $invoice): Invoice
+    private function createCreditCardInvoice(Invoice $invoice, ?string $idempotencyKey): Invoice
     {
         if (empty($invoice->creditCard)) {
             throw ModelAttributeValidationException::required('Invoice', 'creditCard');
@@ -716,7 +751,10 @@ class StripeGateway implements GatewayContract
                 $invoice->creditCard->customer = $invoice->customer;
             }
             // a Stripe valida o cartão já no attach; a recusa nesse ponto é ChargingException
-            $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
+            $invoice->creditCard = $this->createCreditCard(
+                $invoice->creditCard,
+                self::derivedIdempotencyKey($idempotencyKey, 'card')
+            );
         }
 
         $stripePaymentIntentData = $this->invoiceToStripeData($invoice);
@@ -725,12 +763,11 @@ class StripeGateway implements GatewayContract
         $stripePaymentIntentData['confirm'] = true;
         $stripePaymentIntentData['off_session'] = true;
         $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
-        $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
 
-        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
+        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $idempotencyKey) {
             return $this->client->paymentIntents->create(
                 $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND),
-                $requestOptions
+                self::stripeOptions($idempotencyKey)
             );
         });
 
@@ -742,10 +779,11 @@ class StripeGateway implements GatewayContract
      * com o QR code em next_action; o pagamento é assíncrono (acompanhar via getInvoice).
      *
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @param  string|null  $idempotencyKey
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws GatewayException|ModelAttributeValidationException
      */
-    private function createPixInvoice(Invoice $invoice): Invoice
+    private function createPixInvoice(Invoice $invoice, ?string $idempotencyKey): Invoice
     {
         // o pix exige CPF/CNPJ no billing_details em produção — falhar cedo evita um
         // erro obscuro da API (a sandbox não valida, produção sim)
@@ -779,12 +817,11 @@ class StripeGateway implements GatewayContract
             $stripePaymentIntentData['payment_method_options']['pix']['expires_at'] = $invoice->expiresAt->getTimestamp();
         }
         $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
-        $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
 
-        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
+        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $idempotencyKey) {
             return $this->client->paymentIntents->create(
                 $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND),
-                $requestOptions
+                self::stripeOptions($idempotencyKey)
             );
         });
 
@@ -810,22 +847,15 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Extrai a idempotency key das opções do consumidor para enviá-la como cabeçalho da
-     * requisição (Idempotency-Key) — como parâmetro do payload a API a rejeitaria.
+     * Opções de requisição do stripe-php com a chave de idempotência, que o SDK envia no
+     * cabeçalho `Idempotency-Key`. Sem chave, nenhuma opção.
      *
-     * @param  array  $stripeData  recebe o payload por referência e remove a chave dele
+     * @param  string|null  $idempotencyKey
      * @return array
      */
-    private function extractIdempotencyKey(array &$stripeData): array
+    private static function stripeOptions(?string $idempotencyKey): array
     {
-        if (!array_key_exists('idempotency_key', $stripeData)) {
-            return [];
-        }
-
-        $requestOptions = ['idempotency_key' => $stripeData['idempotency_key']];
-        unset($stripeData['idempotency_key']);
-
-        return $requestOptions;
+        return is_null($idempotencyKey) ? [] : ['idempotency_key' => $idempotencyKey];
     }
 
     /**
@@ -867,15 +897,16 @@ class StripeGateway implements GatewayContract
 
     /**
      * Mescla as opções extras/override do consumidor por último, para que possam
-     * sobrescrever qualquer chave montada pelo gateway (válvula de escape do pacote).
+     * sobrescrever qualquer chave montada pelo gateway (válvula de escape do pacote). A chave
+     * antiga de idempotência fica de fora do payload.
      *
      * @param  array  $stripeData
-     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @param  Model  $model
      * @return array
      */
-    private function mergeGatewayOptions(array $stripeData, Invoice $invoice): array
+    private function mergeGatewayOptions(array $stripeData, Model $model): array
     {
-        foreach ($invoice->gatewayOptions ?? [] as $option => $value) {
+        foreach (self::withoutIdempotencyKey($model->gatewayOptions) as $option => $value) {
             $stripeData[$option] = $value;
         }
 
@@ -908,13 +939,20 @@ class StripeGateway implements GatewayContract
      * gateway guarda. A leitura prévia acontece numa cópia: o model do chamador só é alterado se
      * o estorno acontecer.
      *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` da criação do refund; as
+     * leituras do PaymentIntent não a usam. Com chave, uma guarda de estado (fatura já
+     * estornada, valor acima do restante) não recusa de imediato: a mesma chave pode ser a de um
+     * estorno já feito, então o driver envia o refund e deixa a Stripe repetir a resposta
+     * original; se ela recusar, a recusa da guarda é a que sobe.
+     *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice): Refund
+    public function refundInvoice(Invoice $invoice, ?string $idempotencyKey = null): Refund
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
         $requestedAmount = $invoice->refundedAmount ?: null;
@@ -928,19 +966,21 @@ class StripeGateway implements GatewayContract
             $current = $this->getInvoice(clone $invoice);
         }
 
-        $this->assertInvoiceIsRefundable($current, $requestedAmount, $current !== $invoice);
-
         // mesma semântica da Iugu: refundedAmount preenchido = estorno parcial; vazio = total
         $stripeRefundData = ['payment_intent' => $invoice->id];
         if (!is_null($requestedAmount)) {
             $stripeRefundData['amount'] = $requestedAmount;
         }
         $stripeRefundData = $this->mergeGatewayOptions($stripeRefundData, $invoice);
-        $requestOptions = $this->extractIdempotencyKey($stripeRefundData);
 
-        $stripeRefund = $this->stripeRequest(function () use ($stripeRefundData, $requestOptions) {
-            return $this->client->refunds->create($stripeRefundData, $requestOptions);
-        });
+        try {
+            $this->assertInvoiceIsRefundable($current, $requestedAmount, $current !== $invoice);
+            $stripeRefund = $this->stripeRequest(function () use ($stripeRefundData, $idempotencyKey) {
+                return $this->client->refunds->create($stripeRefundData, self::stripeOptions($idempotencyKey));
+            });
+        } catch (RefundNotSupportedException $refusal) {
+            $stripeRefund = $this->replayStripeRefund($refusal, $stripeRefundData, $idempotencyKey);
+        }
 
         // o refund não devolve o PaymentIntent: refetch para reparse com o charge atualizado
         $invoice = $this->getInvoice($invoice);
@@ -949,6 +989,34 @@ class StripeGateway implements GatewayContract
         $refund->invoice = $invoice;
 
         return $refund;
+    }
+
+    /**
+     * Tenta repetir, pela chave de idempotência, um estorno que a guarda de estado recusou:
+     * a Stripe devolve o refund original quando a chave é a dele. Sem chave, ou quando a recusa
+     * não é de estado (boleto), ou quando a Stripe também recusa, sobe a recusa da guarda.
+     *
+     * @param  RefundNotSupportedException  $refusal
+     * @param  array  $stripeRefundData
+     * @param  string|null  $idempotencyKey
+     * @return object  o objeto Refund devolvido pela Stripe
+     * @throws RefundNotSupportedException
+     */
+    private function replayStripeRefund(RefundNotSupportedException $refusal, array $stripeRefundData, ?string $idempotencyKey): object
+    {
+        $stateReasons = [
+            RefundNotSupportedException::REASON_ALREADY_REFUNDED,
+            RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE,
+        ];
+        if (is_null($idempotencyKey) || !in_array($refusal->reason, $stateReasons, true)) {
+            throw $refusal;
+        }
+
+        try {
+            return $this->client->refunds->create($stripeRefundData, self::stripeOptions($idempotencyKey));
+        } catch (\Exception $e) {
+            throw $refusal;
+        }
     }
 
     /**
@@ -991,9 +1059,14 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do confirm; o update que
+     * antecede o confirm usa `{chave}:update` e a conversão de token legado em PaymentMethod
+     * usa `{chave}:payment_method`.
+     *
      * @throws ChargingException|ModelAttributeValidationException
      */
-    public function chargeInvoiceWithCreditCard(Invoice $invoice): Invoice
+    public function chargeInvoiceWithCreditCard(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
@@ -1004,14 +1077,18 @@ class StripeGateway implements GatewayContract
         if (empty($invoice->creditCard->token) && empty($invoice->creditCard->id)) {
             throw new ModelAttributeValidationException('Credit card token or id is required');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         // id = PaymentMethod salvo no customer; token = PaymentMethod criado client-side
         $paymentMethodId = !empty($invoice->creditCard->id)
             ? $invoice->creditCard->id
             : $invoice->creditCard->token;
 
-        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice, $paymentMethodId) {
-            $paymentMethodId = $this->resolvePaymentMethodId($paymentMethodId);
+        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice, $paymentMethodId, $idempotencyKey) {
+            $paymentMethodId = $this->resolvePaymentMethodId(
+                $paymentMethodId,
+                self::derivedIdempotencyKey($idempotencyKey, 'payment_method')
+            );
             $stripePaymentMethod = $this->client->paymentMethods->retrieve($paymentMethodId);
 
             // o PaymentIntent pode ter sido criado para outro método (ex.: pix expirado):
@@ -1030,17 +1107,23 @@ class StripeGateway implements GatewayContract
                 );
             }
 
+            // o customer vai sempre que o cartão tem um (igual ao do PaymentIntent, ou o
+            // PaymentIntent ainda sem cliente): o payload fica o mesmo num retry com a mesma chave
             $updateParams = ['payment_method_types' => ['card']];
-            if (empty($paymentIntentCustomer) && !empty($stripePaymentMethod->customer)) {
+            if (!empty($stripePaymentMethod->customer)) {
                 $updateParams['customer'] = $stripePaymentMethod->customer;
             }
-            $this->client->paymentIntents->update($invoice->id, $updateParams);
+            $this->client->paymentIntents->update(
+                $invoice->id,
+                $updateParams,
+                self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'update'))
+            );
 
             return $this->client->paymentIntents->confirm($invoice->id, [
                 'payment_method' => $paymentMethodId,
                 'off_session' => true,
                 'expand' => self::PAYMENT_INTENT_EXPAND,
-            ]);
+            ], self::stripeOptions($idempotencyKey));
         });
 
         return $this->parseInvoice($stripePaymentIntent, $invoice);
@@ -1305,15 +1388,24 @@ class StripeGateway implements GatewayContract
      * O PaymentIntent não tem duplicate nativo: a fatura nova é criada com os dados da
      * original (customer, items, valor) e a nova expiração, e só então a original é
      * cancelada — se a criação falhar, o consumidor não fica sem fatura nenhuma.
-     * Restrito a faturas pix pendentes (cartão é síncrono, não há o que duplicar).
+     * Restrito a faturas pix pendentes (cartão é síncrono, não há o que duplicar). A chave de
+     * idempotência vai na criação da nova fatura; o cancelamento da original usa
+     * `{chave}:cancel_original`. Com chave, uma original já cancelada é aceita, porque pode ser
+     * o resultado de uma tentativa anterior com a mesma chave, que a Stripe repete.
      *
      * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
-    public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
-    {
+    public function duplicateInvoice(
+        Invoice $invoice,
+        Carbon $expiresAt,
+        array $gatewayOptions = [],
+        ?string $idempotencyKey = null
+    ): Invoice {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice, $gatewayOptions);
+        $gatewayOptions = self::withoutIdempotencyKey($gatewayOptions);
 
         $original = $this->stripeRequest(function () use ($invoice) {
             return $this->client->paymentIntents->retrieve(
@@ -1323,7 +1415,10 @@ class StripeGateway implements GatewayContract
         });
         $parsedOriginal = $this->parseInvoice($original, new Invoice());
 
-        if ($parsedOriginal->status !== InvoiceStatus::PENDING) {
+        // com chave, a original cancelada pode ser obra de uma tentativa anterior com a mesma
+        // chave: a Stripe repete a criação da duplicata e o cancelamento
+        $replayable = !is_null($idempotencyKey) && $parsedOriginal->status === InvoiceStatus::CANCELED;
+        if ($parsedOriginal->status !== InvoiceStatus::PENDING && !$replayable) {
             throw UnsupportedOperationException::restricted(
                 (string) $this,
                 Capability::INVOICE_DUPLICATION,
@@ -1368,10 +1463,10 @@ class StripeGateway implements GatewayContract
         if (!empty($gatewayOptions)) {
             $duplicated->gatewayOptions = array_merge($duplicated->gatewayOptions, $gatewayOptions);
         }
-        $duplicated = $this->createPixInvoice($duplicated);
+        $duplicated = $this->createPixInvoice($duplicated, $idempotencyKey);
 
         try {
-            $this->cancelInvoice($parsedOriginal);
+            $this->cancelInvoice($parsedOriginal, self::derivedIdempotencyKey($idempotencyKey, 'cancel_original'));
         } catch (MultiPaymentException $e) {
             // a duplicata já existe — propaga o id dela para o consumidor não a perder
             throw new GatewayException(
@@ -1388,20 +1483,25 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do cancelamento.
+     *
      * @throws ModelAttributeValidationException
      */
-    public function cancelInvoice(Invoice $invoice): Invoice
+    public function cancelInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         // só estados não-terminais são canceláveis; PaymentIntent pago recusa o cancel
         // com payment_intent_unexpected_state (vira GatewayException)
-        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice) {
+        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice, $idempotencyKey) {
             return $this->client->paymentIntents->cancel(
                 $invoice->id,
-                ['expand' => self::PAYMENT_INTENT_EXPAND]
+                ['expand' => self::PAYMENT_INTENT_EXPAND],
+                self::stripeOptions($idempotencyKey)
             );
         });
 
@@ -1410,13 +1510,19 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do attach; as requisições
+     * secundárias usam chaves derivadas: `{chave}:payment_method` na conversão de token legado,
+     * `{chave}:metadata` na descrição e `{chave}:default` ao marcar como padrão.
+     *
      * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
-    public function createCreditCard(CreditCard $creditCard): CreditCard
+    public function createCreditCard(CreditCard $creditCard, ?string $idempotencyKey = null): CreditCard
     {
         if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $creditCard);
         if (empty($creditCard->token)) {
             // token-only: dados crus exigiriam a liberação de raw card data APIs pela
             // Stripe e escopo PCI SAQ D; o cartão é tokenizado client-side
@@ -1426,26 +1532,31 @@ class StripeGateway implements GatewayContract
             );
         }
 
-        $stripePaymentMethod = $this->stripeRequest(function () use ($creditCard) {
-            $paymentMethodId = $this->resolvePaymentMethodId($creditCard->token);
+        $stripePaymentMethod = $this->stripeRequest(function () use ($creditCard, $idempotencyKey) {
+            $paymentMethodId = $this->resolvePaymentMethodId(
+                $creditCard->token,
+                self::derivedIdempotencyKey($idempotencyKey, 'payment_method')
+            );
 
             $stripePaymentMethod = $this->client->paymentMethods->attach(
                 $paymentMethodId,
-                ['customer' => $creditCard->customer->id]
+                ['customer' => $creditCard->customer->id],
+                self::stripeOptions($idempotencyKey)
             );
 
             // o PaymentMethod da Stripe não tem campo de descrição — vai para metadata
             if (!empty($creditCard->description)) {
                 $stripePaymentMethod = $this->client->paymentMethods->update(
                     $stripePaymentMethod->id,
-                    ['metadata' => ['description' => $creditCard->description]]
+                    ['metadata' => ['description' => $creditCard->description]],
+                    self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'metadata'))
                 );
             }
 
             if (!empty($creditCard->default)) {
                 $this->client->customers->update($creditCard->customer->id, [
                     'invoice_settings' => ['default_payment_method' => $stripePaymentMethod->id],
-                ]);
+                ], self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'default')));
             }
 
             return $stripePaymentMethod;
@@ -1471,14 +1582,24 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do detach. Com chave, um cartão
+     * já sem cliente passa pela checagem de posse, porque pode ter sido desvinculado por uma
+     * tentativa anterior com a mesma chave.
      */
-    public function deleteCreditCard(CreditCard $creditCard): void
+    public function deleteCreditCard(CreditCard $creditCard, ?string $idempotencyKey = null): void
     {
-        $this->stripeRequest(function () use ($creditCard) {
-            $stripePaymentMethod = $this->client->paymentMethods->retrieve($creditCard->id);
-            $this->assertCardBelongsToCustomer($stripePaymentMethod, $creditCard);
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $creditCard);
 
-            return $this->client->paymentMethods->detach($creditCard->id);
+        $this->stripeRequest(function () use ($creditCard, $idempotencyKey) {
+            $stripePaymentMethod = $this->client->paymentMethods->retrieve($creditCard->id);
+            // cartão já sem cliente com chave informada: pode ter sido desvinculado por uma
+            // tentativa anterior com a mesma chave, que a Stripe repete
+            if (!empty($stripePaymentMethod->customer) || is_null($idempotencyKey)) {
+                $this->assertCardBelongsToCustomer($stripePaymentMethod, $creditCard);
+            }
+
+            return $this->client->paymentMethods->detach($creditCard->id, null, self::stripeOptions($idempotencyKey));
         });
     }
 
@@ -1487,16 +1608,17 @@ class StripeGateway implements GatewayContract
      * (tok_...) não são utilizáveis diretamente e viram PaymentMethod antes.
      *
      * @param  string  $token
+     * @param  string|null  $idempotencyKey  chave da criação do PaymentMethod a partir do token
      * @return string
      * @throws ApiErrorException
      */
-    private function resolvePaymentMethodId(string $token): string
+    private function resolvePaymentMethodId(string $token, ?string $idempotencyKey = null): string
     {
         if (str_starts_with($token, 'tok_')) {
             return $this->client->paymentMethods->create([
                 'type' => 'card',
                 'card' => ['token' => $token],
-            ])->id;
+            ], self::stripeOptions($idempotencyKey))->id;
         }
 
         return $token;
@@ -1562,7 +1684,7 @@ class StripeGateway implements GatewayContract
     /**
      * @inheritDoc
      */
-    public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice
+    public function rescheduleAutomaticPixPayment(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
@@ -1570,16 +1692,20 @@ class StripeGateway implements GatewayContract
     /**
      * @inheritDoc
      */
-    public function cancelAutomaticPixScheduledPayment(AutomaticPixCharge $charge): AutomaticPixCancellation
-    {
+    public function cancelAutomaticPixScheduledPayment(
+        AutomaticPixCharge $charge,
+        ?string $idempotencyKey = null
+    ): AutomaticPixCancellation {
         throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 
     /**
      * @inheritDoc
      */
-    public function cancelAutomaticPixRecurrence(AutomaticPix $automaticPix): AutomaticPixCancellation
-    {
+    public function cancelAutomaticPixRecurrence(
+        AutomaticPix $automaticPix,
+        ?string $idempotencyKey = null
+    ): AutomaticPixCancellation {
         throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 

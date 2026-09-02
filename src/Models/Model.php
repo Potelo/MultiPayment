@@ -229,30 +229,34 @@ abstract class Model implements \JsonSerializable
      * Create a new instance of the model with an array of attributes.
      *
      * @param  array  $data
-     * @param  null  $gateway
+     * @param  string|GatewayContract|null  $gateway
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      *
      * @return void
      * @throws GatewayException
      * @throws GatewayNotAvailableException
      * @throws ModelAttributeValidationException
      */
-    public function create(array $data, $gateway = null): void
+    public function create(array $data, $gateway = null, ?string $idempotencyKey = null): void
     {
         $this->fill($data);
-        $this->save($gateway);
+        $this->save($gateway, true, $idempotencyKey);
     }
 
     /**
-     * If gateway is set, then we will use it to save the model
+     * Salva o model no gateway: `create{Model}` sem `id`, `update{Model}` com `id` (sem
+     * validação). A chave de idempotência vai para essa operação; o cliente salvo antes de uma
+     * fatura ou assinatura recebe a chave derivada `{chave}:customer`.
      *
      * @param  string|GatewayContract|null  $gateway
      * @param  bool  $validate
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return void
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws UnsupportedOperationException
      */
-    public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
+    public function save(GatewayContract|string|null $gateway = null, bool $validate = true, ?string $idempotencyKey = null): void
     {
         $class = $this->getClassName();
         if (property_exists($this, 'id') && !empty($this->id)) {
@@ -272,7 +276,7 @@ abstract class Model implements \JsonSerializable
         if (!method_exists($gatewayClass, $method)) {
             throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
         }
-        $gatewayClass->$method($this);
+        $gatewayClass->$method($this, $idempotencyKey);
     }
 
     /**
@@ -455,12 +459,13 @@ abstract class Model implements \JsonSerializable
      * Delete the model instance by id in the gateway.
      *
      * @param  \Potelo\MultiPayment\Contracts\GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws UnsupportedOperationException
      */
-    public function delete(GatewayContract|string|null $gateway = null): void
+    public function delete(GatewayContract|string|null $gateway = null, ?string $idempotencyKey = null): void
     {
         $method = 'delete' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
@@ -468,7 +473,7 @@ abstract class Model implements \JsonSerializable
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
-        $gateway->$method($this);
+        $gateway->$method($this, $idempotencyKey);
     }
 
     /**

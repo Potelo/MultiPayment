@@ -23,6 +23,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Idempotência
+    |--------------------------------------------------------------------------
+    |
+    | Deduplicação feita pela lib (IdempotencyStore) nas operações de escrita em que o
+    | gateway não aceita o cabeçalho Idempotency-Key. A store padrão usa o cache do Laravel;
+    | para trocar, faça bind de Potelo\MultiPayment\Contracts\IdempotencyStore no container.
+    |
+    */
+    'idempotency' => [
+        // prazo, em segundos, em que a mesma chave devolve o resultado guardado
+        'ttl' => env('MULTIPAYMENT_IDEMPOTENCY_TTL', 86400),
+        // store de cache do Laravel usada pela CacheIdempotencyStore; nulo usa a padrão da aplicação
+        'cache_store' => env('MULTIPAYMENT_IDEMPOTENCY_CACHE_STORE'),
+        // prefixo das chaves no cache
+        'prefix' => 'multi-payment:idempotency:',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Available gateways
     |--------------------------------------------------------------------------
     |

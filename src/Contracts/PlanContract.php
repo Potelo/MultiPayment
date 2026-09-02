@@ -13,11 +13,12 @@ interface PlanContract
      * Cria o plano no gateway.
      *
      * @param  Plan  $plan
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Plan
      * @throws GatewayException|GatewayNotAvailableException
      */
-    public function createPlan(Plan $plan): Plan;
+    public function createPlan(Plan $plan, ?string $idempotencyKey = null): Plan;
 
     /**
      * Busca o plano no gateway pelo id ou pelo identifier.
@@ -44,10 +45,11 @@ interface PlanContract
      * Desativa o plano, impedindo novas assinaturas sem afetar as existentes.
      *
      * @param  Plan  $plan
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Plan
      * @throws GatewayException|GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
-    public function deactivatePlan(Plan $plan): Plan;
+    public function deactivatePlan(Plan $plan, ?string $idempotencyKey = null): Plan;
 }

@@ -15,11 +15,12 @@ interface SubscriptionContract
      * Cria a assinatura no gateway.
      *
      * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function createSubscription(Subscription $subscription): Subscription;
+    public function createSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription;
 
     /**
      * Busca a assinatura no gateway pelo id.
@@ -39,31 +40,34 @@ interface SubscriptionContract
      * sem `id` é sempre criação.
      *
      * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function updateSubscription(Subscription $subscription): Subscription;
+    public function updateSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription;
 
     /**
      * Suspende a cobrança da assinatura, mantendo-a reativável por resumeSubscription().
      *
      * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function suspendSubscription(Subscription $subscription): Subscription;
+    public function suspendSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription;
 
     /**
      * Volta a cobrar uma assinatura suspensa.
      *
      * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      */
-    public function resumeSubscription(Subscription $subscription): Subscription;
+    public function resumeSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription;
 
     /**
      * Cancela a assinatura.
@@ -74,12 +78,17 @@ interface SubscriptionContract
      *
      * @param  Subscription  $subscription
      * @param  bool  $atPeriodEnd
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
      * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
-    public function cancelSubscription(Subscription $subscription, bool $atPeriodEnd = false): Subscription;
+    public function cancelSubscription(
+        Subscription $subscription,
+        bool $atPeriodEnd = false,
+        ?string $idempotencyKey = null
+    ): Subscription;
 
     /**
      * Troca o plano da assinatura.
@@ -90,6 +99,7 @@ interface SubscriptionContract
      * @param  Subscription  $subscription
      * @param  string  $planId
      * @param  bool  $charge
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
@@ -97,7 +107,8 @@ interface SubscriptionContract
     public function changeSubscriptionPlan(
         Subscription $subscription,
         string $planId,
-        bool $charge = true
+        bool $charge = true,
+        ?string $idempotencyKey = null
     ): Subscription;
 
     /**

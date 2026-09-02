@@ -4,6 +4,8 @@ namespace Potelo\MultiPayment\Providers;
 
 use Potelo\MultiPayment\MultiPayment;
 use Illuminate\Support\ServiceProvider;
+use Potelo\MultiPayment\Contracts\IdempotencyStore;
+use Potelo\MultiPayment\Idempotency\CacheIdempotencyStore;
 
 class MultiPaymentServiceProvider extends ServiceProvider
 {
@@ -40,6 +42,16 @@ class MultiPaymentServiceProvider extends ServiceProvider
 
         $this->app->bind('multiPayment', function ($app) {
             return $app->make(MultiPayment::class);
+        });
+
+        // a aplicação troca a store com um bind próprio de IdempotencyStore depois deste
+        $this->app->bind(IdempotencyStore::class, function ($app) {
+            $config = $app['config']->get('multi-payment.idempotency', []);
+
+            return new CacheIdempotencyStore(
+                $app['cache']->store($config['cache_store'] ?? null),
+                $config['prefix'] ?? CacheIdempotencyStore::DEFAULT_PREFIX
+            );
         });
     }
 }

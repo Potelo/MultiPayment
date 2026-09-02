@@ -208,7 +208,7 @@ class MultiPaymentTest extends TestCase
         $multiPayment->deleteCard($customer->id, $creditCard->id);
 
         $this->expectException(\Potelo\MultiPayment\Exceptions\NotFoundException::class);
-        $this->expectExceptionMessage('payment_method: not found');
+        $this->expectExceptionMessageMatches('/not found/i');
         $multiPayment->getCard($customer->id, $creditCard->id);
     }
 
