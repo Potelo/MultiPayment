@@ -285,17 +285,17 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
 - **Bandeiras aceitas no Brasil: somente Visa e Mastercard crédito.** Elo, Hipercard, Amex e
   débito nacional não são suportados pelo Stripe BR. Para essas bandeiras, roteie a cobrança
   para outro gateway (ex.: Iugu) — de preferência detectando a bandeira pelo BIN antes de
-  tokenizar. Para decidir o fallback programaticamente, use `ChargingException::$reason`,
-  que traz a razão normalizada da recusa (`card_declined`, `brand_not_supported`,
-  `authentication_required`, `expired_card`, `insufficient_funds`, `incorrect_cvc`...).
+  tokenizar. Para decidir o fallback programaticamente, use `CardDeclinedException::$declineCode`:
+  `DeclineCode::BRAND_NOT_SUPPORTED` é a recusa por bandeira (`card_not_supported` na Stripe), e
+  `retryable` diz se vale repetir com o mesmo cartão (ver [Códigos de recusa](#códigos-de-recusa)).
   `GatewayNotAvailableException` também sinaliza "tente outro gateway"; `AuthenticationException`
   sinaliza credencial errada e não deve gerar fallback (ver [Tratamento de erros](#tratamento-de-erros)).
 - **Cartão salvo não garante cobrança futura.** Salvar o cartão (`newCreditCard()->create()`)
   faz só o `attach` do PaymentMethod ao cliente, sem autenticar com o emissor. Um cartão que
   exige autenticação (3DS) é salvo normalmente e recusado na primeira cobrança `off_session`,
-  com `ChargingException::$reason` igual a `authentication_required`. Essa razão pede ação do
-  pagador (autenticar o cartão ou informar outro); o gateway respondeu normalmente e não cabe
-  fallback. Autenticar no momento de salvar (SetupIntent) está planejado para uma versão futura.
+  com `CardDeclinedException::$declineCode` igual a `DeclineCode::AUTHENTICATION_REQUIRED`. Esse
+  código pede ação do pagador (autenticar o cartão ou informar outro); o gateway respondeu
+  normalmente e não cabe fallback. Autenticar no momento de salvar (SetupIntent) está planejado para uma versão futura.
 - **Pix exige `tax_document` do cliente** (CPF/CNPJ vai nos billing details do pagamento).
 - **`expires_at` do pix é opcional** (default do Stripe: 4 horas) e, quando informado, deve
   ficar entre 10 segundos e 14 dias no futuro — diferente da Iugu, onde `expires_at` é a
@@ -353,48 +353,116 @@ exceção original em `getPrevious()` (quando o SDK lançou uma; a Iugu devolve 
 corpo JSON sem exceção) e expõem o status HTTP da resposta em `httpStatus` (nulo quando não
 houve resposta HTTP, como numa falha de rede ou numa validação local).
 
+A árvore, com a indentação marcando a herança:
+
+```
+MultiPaymentException
+    ConfigurationException              gateway não configurado ou classe inválida
+    ModelAttributeValidationException   atributo obrigatório ausente ou inválido, antes da requisição
+    UnsupportedOperationException       operação fora das capabilities do gateway, antes da requisição
+        RefundNotSupportedException     estorno recusado pela lib antes da requisição
+    AuthenticationException             credencial recusada (401, 403) ou não configurada
+    GatewayNotAvailableException        5xx, falha de conexão ou timeout
+    CardDeclinedException               cobrança recusada: declineCode, gatewayCode, retryable
+        ChargingException               nome antigo, deprecado; é a classe que os drivers lançam
+    GatewayException                    resposta de erro do gateway: httpStatus e getErrors()
+        ValidationException             400 ou 422: fieldErrors por campo
+        NotFoundException               404: recurso inexistente no gateway
+        RateLimitException              429: retryAfter em segundos quando o gateway informa
+        IdempotencyConflictException    409 na Iugu, idempotency_error na Stripe
+```
+
 | Exceção | Quando | O que fazer |
 |---|---|---|
+| `CardDeclinedException` | O gateway respondeu e a cobrança foi recusada pelo emissor, pelo adquirente ou pelo antifraude. `declineCode` (`DeclineCode`) é o motivo normalizado, `gatewayCode` o código original (`decline_code` da Stripe, LR da Iugu), `retryable` diz se vale repetir com o mesmo cartão | Ramificar por `declineCode`: outro gateway em `BRAND_NOT_SUPPORTED`, nova tentativa só se `retryable`, ação do pagador nos demais (ver [Códigos de recusa](#códigos-de-recusa)) |
+| `ChargingException` | Nome antigo de `CardDeclinedException`, deprecado. É a classe que os drivers lançam, então `catch` por qualquer um dos dois nomes captura a mesma exceção | Migrar o `catch` para `CardDeclinedException` |
+| `ValidationException` | O gateway recusou o payload (400 ou 422 na Iugu, `invalid_request_error` na Stripe); `fieldErrors` traz as mensagens por campo (`base` para erro sem campo) | Corrigir a chamada; repetir igual falha de novo |
+| `NotFoundException` | Recurso inexistente no gateway (404 na Iugu, `resource_missing` na Stripe): id errado, de outra conta ou removido | Conferir o id; não repetir |
+| `RateLimitException` | O gateway limitou a taxa de requisições (429); nada foi executado. `retryAfter` traz os segundos do cabeçalho `Retry-After` quando o gateway o envia (o SDK da Iugu não expõe cabeçalhos, então na Iugu fica nulo) | Esperar e repetir |
+| `IdempotencyConflictException` | Chave de idempotência reutilizada com outro payload, ou a primeira requisição com a chave ainda em andamento (409 na Iugu, `idempotency_error` na Stripe) | Consultar o resultado da primeira requisição ou usar chave nova; nunca repetir com a mesma chave e outro conteúdo |
 | `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
 | `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
-| `ChargingException` | Cobrança recusada pelo gateway (cartão negado etc.); `reason` traz a razão normalizada quando o gateway a informa | Tratar como recusa do pagador; `reason` decide o fallback |
 | `UnsupportedOperationException` | Operação fora das capabilities do gateway, antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented` ou `gateway_limitation`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` antes (ver [Capabilities](#capabilities)) |
 | `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway (boleto, Pix parcial, já estornada, prazo vencido); herda de `UnsupportedOperationException` e refina `reason` | Ver [Estorno](#estorno) |
 | `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição | Corrigir a chamada |
 | `ConfigurationException` | Gateway não configurado ou classe inválida | Corrigir a configuração |
-| `GatewayException` | Qualquer outra resposta de erro do gateway (validação, 404, 409, 429); `getErrors()` traz o corpo de erro | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
+| `GatewayException` | Qualquer outra resposta de erro do gateway, e a classe pai das quatro de resposta acima; `getErrors()` traz o corpo de erro | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
+
+Um `catch` por camada. As subclasses vêm antes de `GatewayException`, senão ela captura tudo:
 
 ```php
+use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Exceptions\GatewayException;
-use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\RateLimitException;
+use Potelo\MultiPayment\Exceptions\ValidationException;
+use Potelo\MultiPayment\Exceptions\CardDeclinedException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 
 try {
     $invoice = $payment->newInvoice()->/* ... */->create();
-} catch (ChargingException $e) {
-    return back()->withErrors('Pagamento recusado.');
+} catch (CardDeclinedException $e) {
+    // o gateway respondeu; a recusa é do pagamento
+    if ($e->declineCode === DeclineCode::BRAND_NOT_SUPPORTED) {
+        return $this->chargeOn('iugu');                     // outro gateway aceita a bandeira
+    }
+    if ($e->retryable) {
+        return $this->scheduleRetry($order, hours: 24);     // falha temporária ou saldo: mesmo cartão, mais tarde
+    }
+    return back()->withErrors('Pagamento recusado. Confira os dados do cartão ou use outro.');
+} catch (ValidationException $e) {
+    return back()->withErrors($e->fieldErrors);             // ['email' => ['não é válido']]
 } catch (UnsupportedOperationException $e) {
-    report($e);            // $e->capability e $e->gateway dizem o que faltou; nada foi enviado
+    report($e);            // nada foi enviado; $e->capability e $e->gateway dizem o que faltou
     return $this->chargeOn('iugu');
 } catch (AuthenticationException $e) {
     report($e);            // credencial errada: alerta, sem retry e sem fallback
     abort(500);
+} catch (RateLimitException $e) {
+    return $this->retryIn($e->retryAfter ?? 5);             // segundos; nulo quando o gateway não informa
 } catch (GatewayNotAvailableException $e) {
-    return $this->queueForRetry();
+    return $this->retryWithBackoff();                       // 5xx ou timeout: repetir mais tarde
 } catch (GatewayException $e) {
-    if ($e->httpStatus === 429) {
-        return $this->retryLater();
-    }
-    report($e);            // $e->getPrevious() é a exceção do SDK, com stack trace e corpo
+    report($e);            // 404, 409 e o restante; $e->getPrevious() é a exceção do SDK, com stack trace e corpo
     throw $e;
 }
 ```
 
-Rate limit (429) e conflito de idempotência (409) ainda chegam como `GatewayException`; o status
-está em `httpStatus` para a aplicação ramificar. Exceções próprias para esses casos estão
-previstas para uma versão futura.
+### Códigos de recusa
+
+`CardDeclinedException::$declineCode` é um `DeclineCode`, o mesmo vocabulário nos dois gateways.
+O código original fica em `$gatewayCode`; código que a tabela do pacote ainda não conhece vira
+`UNKNOWN`, com o original preservado e uma linha em nível `info` no log. `$retryable` segue o
+código (`DeclineCode::isRetryable()`) e, na Stripe, é sobrescrito pelo `advice_code` quando ele
+diz `try_again_later` ou `do_not_try_again`. `requiresPayerAction()` diz se a recusa pede ação
+do pagador antes de qualquer nova tentativa.
+
+| `DeclineCode` | Significado | `retryable` | Stripe (`decline_code` ou `code`) | Iugu (LR) |
+|---|---|---|---|---|
+| `INSUFFICIENT_FUNDS` | Saldo ou limite insuficiente | sim | `insufficient_funds`, `card_velocity_exceeded`, `withdrawal_count_limit_exceeded` | 51, 61, 65, 70, BL, DM, N4 |
+| `EXPIRED_CARD` | Cartão vencido | não | `expired_card` | 54 |
+| `INCORRECT_CVC` | CVC incorreto | não | `incorrect_cvc`, `invalid_cvc` | (a tabela da Iugu não tem código próprio) |
+| `INCORRECT_NUMBER` | Número do cartão incorreto ou ausente | não | `incorrect_number`, `invalid_number` | 14, 25 |
+| `INVALID_CARD` | Outros dados inválidos: validade, conta inexistente, cartão não desbloqueado | não | `invalid_expiry_month`, `invalid_expiry_year`, `invalid_account`, `new_account_information_available`, `incorrect_address`, `incorrect_zip` | 1, 12, 15, 30, 46, 56, 78, 101, 111, 115, 122, 6P, AV, BM, BP, BR, CF, CG, DF, DQ, G4, KA, KE, U3 |
+| `LOST_OR_STOLEN` | Perdido, roubado, retido ou bloqueado pelo emissor; não exibir o motivo ao pagador | não | `lost_card`, `stolen_card`, `pickup_card`, `restricted_card` | 4, 41, 43, 62, 146, BN |
+| `FRAUD_SUSPECTED` | Suspeita de fraude ou antifraude; tratar como recusa genérica diante do pagador | não | `fraudulent`, `merchant_blacklist` | 7, 59, AF01, AF02, BP171 |
+| `AUTHENTICATION_REQUIRED` | O emissor exige autenticação (3DS); a cobrança fora de sessão não atende | não | `authentication_required`, `authentication_not_handled`, `mobile_device_authentication_required` | AI |
+| `BRAND_NOT_SUPPORTED` | Bandeira, função (crédito ou débito) ou moeda não aceita nesta cobrança; candidato a outro gateway | não | `card_not_supported`, `currency_not_supported` | 39, 52, 53, 57, 79, 5C, AB, AC, AH, C1, DS, EK, G5 |
+| `DO_NOT_HONOR` | O emissor recusou sem detalhar e orienta o pagador a procurá-lo | não | `do_not_honor`, `call_issuer`, `no_action_taken`, `not_permitted`, `security_violation`, `service_not_allowed`, `stop_payment_order`, `transaction_not_allowed`, `revocation_of_authorization`, `revocation_of_all_authorizations`, `do_not_try_again` | 5, 6, 60, 63, 67, 93, 99, 100, 109, 110, 116, 121, 181, 200, B1, B2, BP176, C2, C3, FC, FG, GA, GD, GF, GK, GT, N7, NR, R0, R1, R2, R3, RE, RP, SC |
+| `TRY_AGAIN` | Falha temporária no emissor, no adquirente ou na comunicação | sim | `processing_error`, `issuer_not_available`, `reenter_transaction`, `try_again_later`, `approve_with_id` | 19, 28, 85, 89, 90, 91, 92, 96, 98, 911, 912, 999, 99A, 99B, 99C, 99TA, 99Z, AA, AF, AG, BD, BO, BP900, BP901, BP902 |
+| `GENERIC` | Recusa sem motivo específico | não | `generic_decline`, `card_declined`, `duplicate_transaction`, `invalid_amount`, `testmode_decline` | 13, 64, 80, 94, 97, FE |
+| `UNKNOWN` | Código fora da tabela; o original está em `gatewayCode` | não | qualquer outro | qualquer outro (senha, chip, saque, credenciamento do lojista) |
+
+As tabelas completas vivem em `src/Gateways/Stripe/DeclineCodes.php` e
+`src/Gateways/Iugu/DeclineCodes.php`, com a fonte oficial no cabeçalho de cada uma. Na Iugu, LR
+numérico é comparado sem zeros à esquerda (`05` e `5` são o mesmo código); `gatewayCode` guarda
+o valor como veio.
+
+`CardDeclinedException::$reason` (string) continua preenchido e está deprecado: na Stripe traz a
+normalização antiga (`card_declined`, `brand_not_supported`, `authentication_required`,
+`expired_card`, `insufficient_funds`, `incorrect_cvc`, ou o `code` original); na Iugu, que antes
+o deixava nulo, traz o valor de `declineCode`. Compare com `declineCode`.
 
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, credencial inválida chegava como
 > `GatewayNotAvailableException` (Stripe e chave Iugu não configurada) ou como `GatewayException`
@@ -410,6 +478,14 @@ previstas para uma versão futura.
 > chegar como `GatewayException` (ou `GatewayException::methodNotFound`) e passou a lançar
 > `UnsupportedOperationException`, que herda de `MultiPaymentException`. Um
 > `catch (GatewayException $e)` sozinho deixa de capturar esses casos.
+>
+> Ainda na 5.0.0, validação (400, 422), 404, 409 e 429 passaram a chegar como
+> `ValidationException`, `NotFoundException`, `IdempotencyConflictException` e
+> `RateLimitException`. Todas herdam de `GatewayException`, então `catch (GatewayException $e)`
+> continua capturando; um `catch` da subclasse precisa vir antes. A recusa de cartão passou a
+> ser `CardDeclinedException` (lançada pelo nome antigo `ChargingException`, que herda dela),
+> com a mensagem em português; salvar um cartão recusado pela Stripe (`newCreditCard()->create()`)
+> também lança `CardDeclinedException`, onde antes vinha `GatewayException`.
 
 ## Utilizando
 

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\NotFoundException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -387,14 +388,14 @@ class IuguGatewayRefundTest extends TestCase
         (new IuguGateway($api))->getInvoice($this->invoiceWithId());
     }
 
-    public function testGetInvoiceNotFoundBecomesGatewayException(): void
+    public function testGetInvoiceNotFoundBecomesNotFoundException(): void
     {
         $api = new QueuedIuguApiRequest([new \IuguObjectNotFound('{"errors":"Not Found"}', 404)]);
 
         try {
             (new IuguGateway($api))->getInvoice($this->invoiceWithId());
-            $this->fail('Esperava GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Esperava NotFoundException');
+        } catch (NotFoundException $e) {
             $this->assertNotInstanceOf(GatewayNotAvailableException::class, $e);
         }
 
@@ -410,14 +411,15 @@ class IuguGatewayRefundTest extends TestCase
         (new IuguGateway($api))->getInvoice($this->invoiceWithId());
     }
 
-    public function testRefundOfUnknownInvoiceBecomesGatewayExceptionWithoutPosting(): void
+    public function testRefundOfUnknownInvoiceBecomesNotFoundExceptionWithoutPosting(): void
     {
         $api = new QueuedIuguApiRequest([new \IuguObjectNotFound('{"errors":"Not Found"}', 404)]);
 
         try {
             (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
-            $this->fail('Esperava GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Esperava NotFoundException');
+        } catch (NotFoundException $e) {
+            $this->assertSame(404, $e->httpStatus);
         }
 
         $this->assertOnlyTheInvoiceWasRead($api);

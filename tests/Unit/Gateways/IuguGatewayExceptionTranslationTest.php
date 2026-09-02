@@ -15,33 +15,45 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\NotFoundException;
+use Potelo\MultiPayment\Exceptions\RateLimitException;
+use Potelo\MultiPayment\Exceptions\ValidationException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
+use Potelo\MultiPayment\Exceptions\CardDeclinedException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
+use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 
 /**
  * Cobre a tradução de falhas do SDK da Iugu para as exceções do pacote: classe escolhida pelo
- * status HTTP, exceção original em `getPrevious()` e status em `httpStatus`. Os fluxos que
- * passam pelo requester injetado usam `QueuedIuguApiRequest` direto; os que usam recursos
- * estáticos do SDK (`Iugu_Customer::create()`, `Iugu_PaymentToken::create()`, `Iugu_Charge`)
- * instalam o mesmo fake como requester do SDK.
+ * status HTTP, exceção original em `getPrevious()`, status em `httpStatus` e recusa de cartão
+ * com o LR traduzido para `declineCode`. Os fluxos que passam pelo requester injetado usam
+ * `QueuedIuguApiRequest` direto; os que usam recursos estáticos do SDK
+ * (`Iugu_Customer::create()`, `Iugu_PaymentToken::create()`, `Iugu_Charge`) instalam o mesmo
+ * fake como requester do SDK.
  */
 class IuguGatewayExceptionTranslationTest extends TestCase
 {
+    private RecordingLogger $logger;
+
     protected function setUp(): void
     {
         parent::setUp();
 
+        $this->logger = new RecordingLogger();
         $app = new Container();
         $app->instance('config', new Repository([
             'multi-payment.gateways.iugu.api_key' => 'test-api-key',
             'multi-payment.gateways.iugu.id' => 'account-id',
             'multi-payment.environment' => 'testing',
         ]));
+        $app->instance('log', $this->logger);
         Facade::setFacadeApplication($app);
     }
 
@@ -175,7 +187,7 @@ class IuguGatewayExceptionTranslationTest extends TestCase
         }
     }
 
-    public function testNotFoundKeepsBeingGatewayExceptionWithStatusAndPrevious(): void
+    public function testNotFoundBecomesNotFoundExceptionWithStatusAndPrevious(): void
     {
         // fetchAPI() do SDK relança IuguObjectNotFound sem o código HTTP
         $original = new \IuguObjectNotFound('invoice: not found');
@@ -183,16 +195,32 @@ class IuguGatewayExceptionTranslationTest extends TestCase
 
         try {
             (new IuguGateway($api))->getInvoice($this->invoiceWithId());
-            $this->fail('Esperava GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Esperava NotFoundException');
+        } catch (NotFoundException $e) {
+            $this->assertInstanceOf(GatewayException::class, $e);
             $this->assertNotInstanceOf(GatewayNotAvailableException::class, $e);
             $this->assertSame($original, $e->getPrevious());
             $this->assertSame(404, $e->httpStatus);
         }
     }
 
+    public function testNotFoundWithJsonBodyBecomesNotFoundException(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            new QueuedIuguResponse((object) ['errors' => 'Not Found'], 404),
+        ]);
+
+        try {
+            (new IuguGateway($api))->cancelInvoice($this->invoiceWithId());
+            $this->fail('Esperava NotFoundException');
+        } catch (NotFoundException $e) {
+            $this->assertSame(404, $e->httpStatus);
+            $this->assertSame(['Not Found'], $e->getErrors());
+        }
+    }
+
     #[DataProvider('clientErrorProvider')]
-    public function testOtherHttpErrorsBecomeGatewayExceptionWithStatusExposed(int $status): void
+    public function testClientErrorsGetTheExceptionOfTheirStatus(int $status, string $expectedClass): void
     {
         $api = new QueuedIuguApiRequest([
             new QueuedIuguResponse((object) ['errors' => ['base' => ['erro']]], $status),
@@ -200,23 +228,95 @@ class IuguGatewayExceptionTranslationTest extends TestCase
 
         try {
             (new IuguGateway($api))->getInvoice($this->invoiceWithId());
-            $this->fail('Esperava GatewayException');
+            $this->fail("Esperava {$expectedClass}");
         } catch (GatewayException $e) {
+            $this->assertInstanceOf($expectedClass, $e);
             $this->assertNotInstanceOf(GatewayNotAvailableException::class, $e);
             $this->assertNotInstanceOf(AuthenticationException::class, $e);
             $this->assertSame($status, $e->httpStatus);
             $this->assertSame(['base' => ['erro']], $e->getErrors());
+            $this->assertNull($e->getPrevious());
         }
     }
 
     public static function clientErrorProvider(): array
     {
         return [
-            'validação' => [422],
-            'requisição inválida' => [400],
-            'conflito de idempotência' => [409],
-            'rate limit' => [429],
+            'validação' => [422, ValidationException::class],
+            'requisição inválida' => [400, ValidationException::class],
+            'conflito de idempotência' => [409, IdempotencyConflictException::class],
+            'rate limit' => [429, RateLimitException::class],
+            'status sem classe própria' => [418, GatewayException::class],
         ];
+    }
+
+    public function testRateLimitWithHtmlBodyBecomesRateLimitExceptionWithPrevious(): void
+    {
+        // 429 com página HTML: o SDK lança IuguRequestException com o status em getCode()
+        $original = new \IuguRequestException('<html>429 Too Many Requests</html>', 429);
+        $api = new QueuedIuguApiRequest([$original]);
+
+        try {
+            (new IuguGateway($api))->getInvoice($this->invoiceWithId());
+            $this->fail('Esperava RateLimitException');
+        } catch (RateLimitException $e) {
+            $this->assertSame($original, $e->getPrevious());
+            $this->assertSame(429, $e->httpStatus);
+            $this->assertNull($e->retryAfter);
+        }
+    }
+
+    public function testValidationErrorsByFieldAreExposedInTheIuguObjectFormat(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            new QueuedIuguResponse((object) ['errors' => [
+                'email' => ['não é válido', 'já está em uso'],
+                'cpf_cnpj' => 'inválido',
+            ]], 422),
+        ]);
+
+        try {
+            (new IuguGateway($api))->updateCustomer(self::customerWithId());
+            $this->fail('Esperava ValidationException');
+        } catch (ValidationException $e) {
+            $this->assertSame(422, $e->httpStatus);
+            $this->assertSame([
+                'email' => ['não é válido', 'já está em uso'],
+                'cpf_cnpj' => ['inválido'],
+            ], $e->fieldErrors);
+            $this->assertSame(['email' => ['não é válido', 'já está em uso'], 'cpf_cnpj' => 'inválido'], $e->getErrors());
+        }
+    }
+
+    public function testValidationErrorWithNonJsonBodyUsesTheBodyAsBaseField(): void
+    {
+        // 422 sem JSON: o SDK lança IuguRequestException com o corpo cru e o status em getCode()
+        $original = new \IuguRequestException('<html>422 Unprocessable Entity</html>', 422);
+        $api = new QueuedIuguApiRequest([$original]);
+
+        try {
+            (new IuguGateway($api))->cancelInvoice($this->invoiceWithId());
+            $this->fail('Esperava ValidationException');
+        } catch (ValidationException $e) {
+            $this->assertSame($original, $e->getPrevious());
+            $this->assertSame(422, $e->httpStatus);
+            $this->assertSame(['base' => ['<html>422 Unprocessable Entity</html>']], $e->fieldErrors);
+        }
+    }
+
+    public function testValidationErrorAsStringGoesToTheBaseField(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            new QueuedIuguResponse((object) ['errors' => 'Fatura não pode ser cancelada'], 400),
+        ]);
+
+        try {
+            (new IuguGateway($api))->cancelInvoice($this->invoiceWithId());
+            $this->fail('Esperava ValidationException');
+        } catch (ValidationException $e) {
+            $this->assertSame(400, $e->httpStatus);
+            $this->assertSame(['base' => ['Fatura não pode ser cancelada']], $e->fieldErrors);
+        }
     }
 
     public function testJsonErrorBodyWithoutKnownStatusIsStillGatewayException(): void
@@ -438,7 +538,7 @@ class IuguGatewayExceptionTranslationTest extends TestCase
         $this->assertCount(1, $api->calls);
     }
 
-    public function testInvalidRawCardOnTokenizationBecomesGatewayExceptionWithoutSecondRequest(): void
+    public function testInvalidRawCardOnTokenizationBecomesValidationExceptionWithoutSecondRequest(): void
     {
         $api = (new QueuedIuguApiRequest([
             new QueuedIuguResponse((object) ['errors' => ['number' => ['não é válido']]], 422),
@@ -446,10 +546,11 @@ class IuguGatewayExceptionTranslationTest extends TestCase
 
         try {
             (new IuguGateway($api))->createCreditCard($this->rawCreditCardModel());
-            $this->fail('Esperava GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Esperava ValidationException');
+        } catch (ValidationException $e) {
             $this->assertSame(422, $e->httpStatus);
             $this->assertSame(['number' => ['não é válido']], $e->getErrors());
+            $this->assertSame(['number' => ['não é válido']], $e->fieldErrors);
             $this->assertStringContainsString('payment token', $e->getMessage());
         }
 
@@ -521,8 +622,8 @@ class IuguGatewayExceptionTranslationTest extends TestCase
 
         try {
             (new IuguGateway($api))->chargeInvoiceWithCreditCard($invoice);
-            $this->fail('Esperava GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Esperava NotFoundException');
+        } catch (NotFoundException $e) {
             $this->assertInstanceOf(\IuguObjectNotFound::class, $e->getPrevious());
             $this->assertSame(404, $e->httpStatus);
         }
@@ -530,23 +631,140 @@ class IuguGatewayExceptionTranslationTest extends TestCase
         $this->assertCount(2, $api->calls);
     }
 
-    public function testDeclinedChargeExposesTheHttpStatusOnChargingException(): void
+    public function testDeclinedChargeBecomesChargingExceptionWithTheLrTranslated(): void
     {
         $api = (new QueuedIuguApiRequest([
             (object) ['success' => false, 'LR' => '51', 'info_message' => 'Saldo insuficiente'],
         ]))->installAsSdkRequester();
 
+        try {
+            (new IuguGateway($api))->chargeInvoiceWithCreditCard($this->invoiceWithSavedCard());
+            $this->fail('Esperava ChargingException');
+        } catch (ChargingException $e) {
+            $this->assertInstanceOf(CardDeclinedException::class, $e);
+            $this->assertNotInstanceOf(GatewayException::class, $e);
+            $this->assertSame(200, $e->httpStatus);
+            $this->assertNull($e->getPrevious());
+            $this->assertSame(DeclineCode::INSUFFICIENT_FUNDS, $e->declineCode);
+            $this->assertSame('51', $e->gatewayCode);
+            $this->assertTrue($e->retryable);
+            $this->assertSame('insufficient_funds', $e->reason);
+            $this->assertSame('51', $e->chargeResponse->LR);
+            $this->assertStringContainsString('iugu', $e->getMessage());
+            $this->assertStringContainsString('Saldo insuficiente', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->logger->records);
+        $this->assertCount(1, $api->calls);
+    }
+
+    #[DataProvider('lrProvider')]
+    public function testLrIsTranslatedToDeclineCode(string $lr, DeclineCode $expected, bool $retryable): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => false, 'LR' => $lr, 'info_message' => 'Transação não autorizada'],
+        ]))->installAsSdkRequester();
+
+        try {
+            (new IuguGateway($api))->chargeInvoiceWithCreditCard($this->invoiceWithSavedCard());
+            $this->fail('Esperava ChargingException');
+        } catch (ChargingException $e) {
+            $this->assertSame($expected, $e->declineCode);
+            $this->assertSame($lr, $e->gatewayCode);
+            $this->assertSame($retryable, $e->retryable);
+        }
+
+        $this->assertSame([], $this->logger->records);
+    }
+
+    public static function lrProvider(): array
+    {
+        return [
+            '51 saldo insuficiente' => ['51', DeclineCode::INSUFFICIENT_FUNDS, true],
+            '61 valor excedido' => ['61', DeclineCode::INSUFFICIENT_FUNDS, true],
+            '54 cartão vencido' => ['54', DeclineCode::EXPIRED_CARD, false],
+            '14 número inválido' => ['14', DeclineCode::INCORRECT_NUMBER, false],
+            '12 verifique os dados' => ['12', DeclineCode::INVALID_CARD, false],
+            '78 cartão não desbloqueado' => ['78', DeclineCode::INVALID_CARD, false],
+            '41 cartão perdido' => ['41', DeclineCode::LOST_OR_STOLEN, false],
+            '43 cartão roubado' => ['43', DeclineCode::LOST_OR_STOLEN, false],
+            '59 suspeita de fraude' => ['59', DeclineCode::FRAUD_SUSPECTED, false],
+            'AF02 antifraude' => ['AF02', DeclineCode::FRAUD_SUSPECTED, false],
+            'AI autenticação não realizada' => ['AI', DeclineCode::AUTHENTICATION_REQUIRED, false],
+            '57 não permitida para o cartão' => ['57', DeclineCode::BRAND_NOT_SUPPORTED, false],
+            'AB função incorreta' => ['AB', DeclineCode::BRAND_NOT_SUPPORTED, false],
+            '5 contate a central' => ['5', DeclineCode::DO_NOT_HONOR, false],
+            '05 com zero à esquerda, como no exemplo oficial' => ['05', DeclineCode::DO_NOT_HONOR, false],
+            '93 não tente novamente' => ['93', DeclineCode::DO_NOT_HONOR, false],
+            'R1 suspensão de recorrência' => ['R1', DeclineCode::DO_NOT_HONOR, false],
+            '91 emissor fora do ar' => ['91', DeclineCode::TRY_AGAIN, true],
+            '96 falha de sistema' => ['96', DeclineCode::TRY_AGAIN, true],
+            'AA tempo excedido' => ['AA', DeclineCode::TRY_AGAIN, true],
+            '94 transação duplicada' => ['94', DeclineCode::GENERIC, false],
+        ];
+    }
+
+    public function testLrIsReadFromTheMessageWhenTheFieldIsAbsent(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => false, 'info_message' => 'JOAO DA SILVA, Master, XXXXXXXXXXXX1234, LR: 54'],
+        ]))->installAsSdkRequester();
+
+        try {
+            (new IuguGateway($api))->chargeInvoiceWithCreditCard($this->invoiceWithSavedCard());
+            $this->fail('Esperava ChargingException');
+        } catch (ChargingException $e) {
+            $this->assertSame(DeclineCode::EXPIRED_CARD, $e->declineCode);
+            $this->assertSame('54', $e->gatewayCode);
+        }
+    }
+
+    public function testUnmappedLrBecomesUnknownAndIsLoggedWithTheCode(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => false, 'LR' => '75', 'info_message' => 'Excedidas tentativas de senha'],
+        ]))->installAsSdkRequester();
+
+        try {
+            (new IuguGateway($api))->chargeInvoiceWithCreditCard($this->invoiceWithSavedCard());
+            $this->fail('Esperava ChargingException');
+        } catch (ChargingException $e) {
+            $this->assertSame(DeclineCode::UNKNOWN, $e->declineCode);
+            $this->assertSame('75', $e->gatewayCode);
+            $this->assertFalse($e->retryable);
+            $this->assertSame('unknown', $e->reason);
+        }
+
+        $this->assertCount(1, $this->logger->records);
+        $this->assertSame('info', $this->logger->records[0]['level']);
+        $this->assertSame(['gateway' => 'iugu', 'lr' => '75'], $this->logger->records[0]['context']);
+    }
+
+    public function testDeclineWithoutLrBecomesUnknownWithoutCodeAndWithoutLog(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => false, 'message' => 'Transação negada'],
+        ]))->installAsSdkRequester();
+
+        try {
+            (new IuguGateway($api))->chargeInvoiceWithCreditCard($this->invoiceWithSavedCard());
+            $this->fail('Esperava ChargingException');
+        } catch (ChargingException $e) {
+            $this->assertSame(DeclineCode::UNKNOWN, $e->declineCode);
+            $this->assertNull($e->gatewayCode);
+            $this->assertStringContainsString('Transação negada', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->logger->records);
+    }
+
+    private function invoiceWithSavedCard(): Invoice
+    {
         $invoice = $this->invoiceWithId();
         $invoice->creditCard = new CreditCard();
         $invoice->creditCard->id = 'pm_1';
 
-        try {
-            (new IuguGateway($api))->chargeInvoiceWithCreditCard($invoice);
-            $this->fail('Esperava ChargingException');
-        } catch (ChargingException $e) {
-            $this->assertSame(200, $e->httpStatus);
-            $this->assertNull($e->getPrevious());
-        }
+        return $invoice;
     }
 
     public function testDuplicateInvoiceGoesThroughTheInjectedRequesterAndTranslatesUnauthorized(): void

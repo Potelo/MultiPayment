@@ -7,16 +7,16 @@ use Stripe\ApiRequestor;
 /**
  * Fake da camada HTTP do stripe-php, no molde do QueuedIuguApiRequest: devolve respostas
  * enfileiradas e grava cada chamada para asserção. Cada resposta é um array (corpo JSON,
- * status 200), um par [corpo, status] ou um `\Throwable`, lançado no lugar da resposta para
- * simular falha de conexão. Um corpo string vai cru, sem codificar em JSON, para simular a
- * página HTML de um proxy.
+ * status 200), um par [corpo, status], uma tripla [corpo, status, cabeçalhos] ou um
+ * `\Throwable`, lançado no lugar da resposta para simular falha de conexão. Um corpo string
+ * vai cru, sem codificar em JSON, para simular a página HTML de um proxy.
  */
 class RecordingStripeHttpClient implements \Stripe\HttpClient\ClientInterface
 {
     /** @var array<int, array{0: string, 1: string, 2: array}> */
     public array $calls = [];
 
-    /** @var array<int, array{0: array, 1: int}|\Throwable> */
+    /** @var array<int, array{0: array|string, 1: int, 2?: array}|\Throwable> */
     private array $responses;
 
     private function __construct(array $responses)
@@ -61,7 +61,8 @@ class RecordingStripeHttpClient implements \Stripe\HttpClient\ClientInterface
             throw $response;
         }
         [$body, $code] = $response;
+        $headers = $response[2] ?? [];
 
-        return [is_string($body) ? $body : json_encode($body), $code, []];
+        return [is_string($body) ? $body : json_encode($body), $code, $headers];
     }
 }

@@ -9,6 +9,8 @@ use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\CardDeclinedException;
+use Potelo\MultiPayment\Enums\DeclineCode;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
@@ -100,8 +102,46 @@ class StripeGatewayTest extends TestCase
             $invoiceBuilder->create();
             $this->fail('Expected ChargingException was not thrown');
         } catch (ChargingException $exception) {
+            $this->assertInstanceOf(CardDeclinedException::class, $exception);
             $this->assertEquals('card_declined', $exception->reason);
+            $this->assertSame(DeclineCode::GENERIC, $exception->declineCode);
+            $this->assertSame('generic_decline', $exception->gatewayCode);
+            $this->assertFalse($exception->retryable);
             $this->assertNotEmpty($exception->chargeResponse);
+        }
+    }
+
+    /**
+     * Recusa por saldo insuficiente chega com o decline_code da Stripe traduzido para
+     * INSUFFICIENT_FUNDS e com nova tentativa permitida.
+     *
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testInsufficientFundsDeclineIsTranslatedToDeclineCode($gateway)
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoiceBuilder = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer(
+                $customerData['name'],
+                $customerData['email'],
+                $customerData['taxDocument'],
+                $customerData['birthDate'],
+                $customerData['phoneArea'],
+                $customerData['phoneNumber']
+            )
+            ->addItem('Assinatura mensal', 9900, 1)
+            ->setAvailablePaymentMethods([PaymentMethod::CREDIT_CARD])
+            ->addCreditCardToken('pm_card_chargeDeclinedInsufficientFunds');
+
+        try {
+            $invoiceBuilder->create();
+            $this->fail('Expected CardDeclinedException was not thrown');
+        } catch (CardDeclinedException $exception) {
+            $this->assertSame(DeclineCode::INSUFFICIENT_FUNDS, $exception->declineCode);
+            $this->assertSame('insufficient_funds', $exception->gatewayCode);
+            $this->assertTrue($exception->retryable);
+            $this->assertSame('insufficient_funds', $exception->reason);
         }
     }
 

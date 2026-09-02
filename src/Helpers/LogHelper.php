@@ -21,10 +21,35 @@ final class LogHelper
      */
     public static function warning(string $message, array $context = []): void
     {
+        self::log('warning', $message, $context);
+    }
+
+    /**
+     * Registra uma informação.
+     *
+     * @param  string  $message
+     * @param  array  $context
+     * @return void
+     */
+    public static function info(string $message, array $context = []): void
+    {
+        self::log('info', $message, $context);
+    }
+
+    /**
+     * Escreve no logger do container quando há um; senão, no `error_log()` do PHP.
+     *
+     * @param  string  $level
+     * @param  string  $message
+     * @param  array  $context
+     * @return void
+     */
+    private static function log(string $level, string $message, array $context): void
+    {
         $app = Facade::getFacadeApplication();
 
         if ($app instanceof Container && $app->bound('log')) {
-            $app->make('log')->warning($message, $context);
+            $app->make('log')->{$level}($message, $context);
 
             return;
         }

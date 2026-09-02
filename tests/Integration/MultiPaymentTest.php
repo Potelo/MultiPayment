@@ -205,7 +205,7 @@ class MultiPaymentTest extends TestCase
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
         $multiPayment->deleteCard($customer->id, $creditCard->id);
 
-        $this->expectException(\Potelo\MultiPayment\Exceptions\GatewayException::class);
+        $this->expectException(\Potelo\MultiPayment\Exceptions\NotFoundException::class);
         $this->expectExceptionMessage('payment_method: not found');
         $multiPayment->getCard($customer->id, $creditCard->id);
     }
@@ -294,7 +294,7 @@ class MultiPaymentTest extends TestCase
     #[DataProvider('shouldNotGetInvoiceDataProvider')]
     public function testShouldNotGetInvoice($gateway, $id)
     {
-        $this->expectException(\Potelo\MultiPayment\Exceptions\GatewayException::class);
+        $this->expectException(\Potelo\MultiPayment\Exceptions\NotFoundException::class);
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
         $multiPayment->getInvoice($id);
     }

@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ValidationException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ChargingException;
@@ -344,7 +345,7 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame(InvoiceStatus::CANCELED, $result->status);
     }
 
-    public function testCancelPaidInvoiceBecomesGatewayException(): void
+    public function testCancelPaidInvoiceBecomesValidationException(): void
     {
         RecordingStripeHttpClient::withResponses([
             [['error' => [
@@ -359,9 +360,13 @@ class StripeGatewayInvoiceTest extends TestCase
 
         try {
             (new StripeGateway())->cancelInvoice($invoice);
-            $this->fail('Expected GatewayException was not thrown');
-        } catch (GatewayException $exception) {
+            $this->fail('Expected ValidationException was not thrown');
+        } catch (ValidationException $exception) {
             $this->assertSame('payment_intent_unexpected_state', $exception->getErrors()['code']);
+            $this->assertSame(
+                ['base' => ['This PaymentIntent could not be canceled because it has a status of succeeded.']],
+                $exception->fieldErrors
+            );
         }
     }
 
@@ -1200,7 +1205,7 @@ class StripeGatewayInvoiceTest extends TestCase
         } catch (GatewayException $e) {
             $this->assertStringContainsString('Invoice duplicated as [pi_fake456]', $e->getMessage());
             // a falha do cancelamento continua acessível, com a exceção do SDK abaixo dela
-            $this->assertInstanceOf(GatewayException::class, $e->getPrevious());
+            $this->assertInstanceOf(ValidationException::class, $e->getPrevious());
             $this->assertInstanceOf(InvalidRequestException::class, $e->getPrevious()->getPrevious());
             $this->assertSame(400, $e->httpStatus);
         }

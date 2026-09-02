@@ -29,17 +29,24 @@ use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Gateways\Iugu\DeclineCodes as IuguDeclineCodes;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\NotFoundException;
+use Potelo\MultiPayment\Exceptions\RateLimitException;
+use Potelo\MultiPayment\Exceptions\ValidationException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
@@ -235,8 +242,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * configurada. Erro com corpo JSON passa por `iuguResponseException()`.
      *
      * Regras: 401 e 403 viram `AuthenticationException`; 5xx e falha de rede viram
-     * `GatewayNotAvailableException`; 404 e o restante viram `GatewayException`, com o status
-     * acessível em `httpStatus` (429 e 409 inclusive). Exceção do próprio pacote passa intacta.
+     * `GatewayNotAvailableException`; 404 vira `NotFoundException`; os demais status passam por
+     * `classifyIuguFailure()` (400 e 422 `ValidationException`, 409
+     * `IdempotencyConflictException`, 429 `RateLimitException`, o restante `GatewayException`),
+     * sempre com o status em `httpStatus`. Exceção do próprio pacote passa intacta.
      *
      * @param  \Throwable  $e
      * @param  string  $operation  descrição da operação, em inglês, para a mensagem
@@ -254,7 +263,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         if ($e instanceof IuguObjectNotFound) {
             // o SDK lança essa classe para 404 e fetchAPI() a relança sem o código HTTP
-            return new GatewayException("Error {$operation}: {$e->getMessage()}", null, $e, 404);
+            return new NotFoundException("Error {$operation}: {$e->getMessage()}", null, $e, 404);
         }
 
         if ($e instanceof \IuguRequestException) {
@@ -295,7 +304,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Escolhe a exceção do pacote pelo status HTTP da falha.
+     * Escolhe a exceção do pacote pelo status HTTP da falha: 401 e 403 `AuthenticationException`,
+     * 5xx `GatewayNotAvailableException`, 400 e 422 `ValidationException` (com os erros por
+     * campo, nos dois formatos que a Iugu usa: objeto por campo ou string), 404
+     * `NotFoundException`, 409 `IdempotencyConflictException`, 429 `RateLimitException` (sem
+     * `retryAfter`: o SDK não expõe cabeçalhos) e o restante `GatewayException`.
      *
      * @param  string  $message
      * @param  string  $detail  texto da resposta, para a mensagem de autenticação
@@ -319,7 +332,19 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             return new GatewayNotAvailableException($message, $previous, $httpStatus);
         }
 
-        return new GatewayException($message, $errors, $previous, $httpStatus);
+        return match ($httpStatus) {
+            400, 422 => ValidationException::withFieldErrors(
+                $message,
+                ValidationException::normalizeFieldErrors($errors ?? $detail),
+                $errors,
+                $previous,
+                $httpStatus
+            ),
+            404 => new NotFoundException($message, $errors, $previous, $httpStatus),
+            409 => new IdempotencyConflictException($message, $errors, $previous, $httpStatus),
+            429 => new RateLimitException($message, $errors, $previous, $httpStatus),
+            default => new GatewayException($message, $errors, $previous, $httpStatus),
+        };
     }
 
     /**
@@ -1143,10 +1168,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         if ($iuguCharge->errors) {
             throw $this->iuguResponseException('Error charging invoice', $iuguCharge->errors);
         } elseif (!$iuguCharge->success) {
-            $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
-            $exception->chargeResponse = $iuguCharge;
-            $exception->httpStatus = $this->lastIuguHttpStatus();
-            throw $exception;
+            throw $this->cardDeclined($iuguCharge);
         }
 
         // a cobrança devolve só o id; a leitura da fatura é outra requisição e falha como tal
@@ -1155,6 +1177,40 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         } catch (\Exception $e) {
             throw $this->translateIuguException($e, 'getting charged invoice');
         }
+    }
+
+    /**
+     * Traduz uma cobrança recusada (`success` falso em `POST /v1/charge`) para
+     * `ChargingException`, com o LR lido da resposta e traduzido para `DeclineCode`. LR fora da
+     * tabela vira `DeclineCode::UNKNOWN`, com o código preservado em `gatewayCode` e registro em
+     * nível `info`; resposta sem LR também vira `UNKNOWN`, sem registro.
+     *
+     * @param  object  $iuguCharge  resposta da cobrança
+     * @return ChargingException
+     */
+    private function cardDeclined(object $iuguCharge): ChargingException
+    {
+        $lr = IuguDeclineCodes::extractLr($iuguCharge);
+        $declineCode = IuguDeclineCodes::toDeclineCode($lr);
+        if ($declineCode === null) {
+            $declineCode = DeclineCode::UNKNOWN;
+            if ($lr !== null) {
+                LogHelper::info('Código LR da Iugu sem tradução para DeclineCode', ['gateway' => 'iugu', 'lr' => $lr]);
+            }
+        }
+
+        $detail = $iuguCharge->info_message ?? $iuguCharge->message ?? '';
+        $exception = ChargingException::declined(
+            'iugu',
+            $declineCode,
+            $lr,
+            is_string($detail) ? $detail : '',
+            null,
+            $this->lastIuguHttpStatus()
+        );
+        $exception->chargeResponse = $iuguCharge;
+
+        return $exception;
     }
 
     /**

@@ -10,8 +10,11 @@ use Stripe\PaymentMethod as StripePaymentMethod;
 use Stripe\Exception\CardException;
 use Stripe\Exception\ApiErrorException;
 use Stripe\Exception\PermissionException;
+use Stripe\Exception\IdempotencyException;
+use Stripe\Exception\InvalidRequestException;
 use Stripe\Exception\UnexpectedValueException as StripeUnexpectedValueException;
 use Stripe\Exception\ApiConnectionException;
+use Stripe\Exception\RateLimitException as StripeRateLimitException;
 use Stripe\Exception\AuthenticationException as StripeAuthenticationException;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Pix;
@@ -26,15 +29,22 @@ use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Gateways\Stripe\DeclineCodes as StripeDeclineCodes;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\NotFoundException;
+use Potelo\MultiPayment\Exceptions\RateLimitException;
+use Potelo\MultiPayment\Exceptions\ValidationException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class StripeGateway implements GatewayContract
@@ -467,11 +477,14 @@ class StripeGateway implements GatewayContract
      * Regras: 401 (`AuthenticationException` do SDK, inclusive chave não configurada) e 403
      * (`PermissionException`) viram `AuthenticationException`; falha de conexão
      * (`ApiConnectionException`) e 5xx viram `GatewayNotAvailableException`, inclusive o 5xx
-     * com corpo não JSON, que o SDK lança como `UnexpectedValueException`; o restante
-     * (`invalid_request_error`, 429, conflito de idempotência) vira `GatewayException` com
-     * `type`, `code`, `decline_code` e `param` em `getErrors()` e o status em `httpStatus`.
-     * Recusa de cartão (`CardException`) é tratada antes, em `stripeChargeRequest()`. Exceção do
-     * próprio pacote passa intacta.
+     * com corpo não JSON, que o SDK lança como `UnexpectedValueException`; recusa de cartão
+     * (`CardException`, `type` `card_error`, em qualquer operação, inclusive o attach do cartão)
+     * vira `ChargingException` com `declineCode`; `rate_limit_error` vira `RateLimitException`;
+     * `idempotency_error` vira `IdempotencyConflictException`; `invalid_request_error` vira
+     * `NotFoundException` quando o `code` é `resource_missing` e `ValidationException` nos demais
+     * casos; o restante vira `GatewayException`. Todas trazem `type`, `code`, `decline_code` e
+     * `param` em `getErrors()` e o status em `httpStatus`. Exceção do próprio pacote passa
+     * intacta.
      *
      * @param  \Throwable  $e
      * @return MultiPaymentException
@@ -502,21 +515,121 @@ class StripeGateway implements GatewayContract
         }
 
         if ($e instanceof ApiErrorException) {
-            if ($e->getHttpStatus() >= 500) {
-                return new GatewayNotAvailableException($e->getMessage(), $e, $e->getHttpStatus());
+            $httpStatus = $e->getHttpStatus();
+            if ($httpStatus >= 500) {
+                return new GatewayNotAvailableException($e->getMessage(), $e, $httpStatus);
             }
 
             $error = $e->getError();
-
-            return new GatewayException($e->getMessage(), array_filter([
+            $errors = array_filter([
                 'type' => $error?->type,
                 'code' => $error?->code,
                 'decline_code' => $error?->decline_code ?? null,
                 'param' => $error?->param,
-            ]), $e, $e->getHttpStatus());
+            ]);
+
+            if ($e instanceof CardException) {
+                return $this->cardDeclined($e);
+            }
+
+            if ($e instanceof StripeRateLimitException) {
+                return RateLimitException::withRetryAfter(
+                    $e->getMessage(),
+                    $errors,
+                    $e,
+                    $httpStatus,
+                    self::retryAfterFromHeaders($e->getHttpHeaders())
+                );
+            }
+
+            if ($e instanceof IdempotencyException) {
+                return new IdempotencyConflictException($e->getMessage(), $errors, $e, $httpStatus);
+            }
+
+            if ($e instanceof InvalidRequestException) {
+                if (($error?->code ?? null) === 'resource_missing' || $httpStatus === 404) {
+                    return new NotFoundException($e->getMessage(), $errors, $e, $httpStatus);
+                }
+
+                $field = is_string($error?->param) && $error->param !== '' ? $error->param : 'base';
+
+                return ValidationException::withFieldErrors(
+                    $e->getMessage(),
+                    [$field => [$e->getMessage()]],
+                    $errors,
+                    $e,
+                    $httpStatus
+                );
+            }
+
+            return new GatewayException($e->getMessage(), $errors, $e, $httpStatus);
         }
 
         return new GatewayException($e->getMessage(), null, $e);
+    }
+
+    /**
+     * Traduz uma recusa de cartão do stripe-php para `ChargingException`: o `decline_code` (ou,
+     * na falta dele, o `code`) vira `DeclineCode`, o `advice_code` decide `retryable` quando
+     * presente, e a resposta bruta vai em `chargeResponse`. Código fora da tabela vira
+     * `DeclineCode::UNKNOWN`, com o original preservado em `gatewayCode` e registro em nível
+     * `info`.
+     *
+     * @param  CardException  $e
+     * @return ChargingException
+     */
+    private function cardDeclined(CardException $e): ChargingException
+    {
+        $error = $e->getError();
+        $code = $error?->code ?? null;
+        $stripeDeclineCode = $error?->decline_code ?? null;
+        $gatewayCode = $stripeDeclineCode ?: $code;
+
+        $declineCode = StripeDeclineCodes::toDeclineCode($gatewayCode);
+        if ($declineCode === null) {
+            $declineCode = DeclineCode::UNKNOWN;
+            if (!empty($gatewayCode)) {
+                LogHelper::info('Código de recusa da Stripe sem tradução para DeclineCode', ['gateway' => 'stripe', 'code' => $gatewayCode]);
+            }
+        }
+
+        $exception = ChargingException::declined(
+            'stripe',
+            $declineCode,
+            $gatewayCode,
+            $e->getMessage(),
+            $e,
+            $e->getHttpStatus(),
+            StripeDeclineCodes::retryableFromAdvice($error?->advice_code ?? null)
+        );
+        // array em vez do ErrorObject, para o formato ser o mesmo em qualquer operação
+        $exception->chargeResponse = $error?->toArray();
+        $exception->reason = self::chargeFailureReason($code, $stripeDeclineCode);
+
+        return $exception;
+    }
+
+    /**
+     * Lê o cabeçalho `Retry-After` da resposta, em segundos. Nulo quando ausente ou quando não
+     * é um número inteiro (a forma em data HTTP não é interpretada). O SDK entrega os
+     * cabeçalhos como `\Stripe\Util\CaseInsensitiveArray`, iterável; um array simples também
+     * é aceito.
+     *
+     * @param  iterable|null  $headers
+     * @return int|null
+     */
+    private static function retryAfterFromHeaders(?iterable $headers): ?int
+    {
+        foreach ($headers ?? [] as $name => $value) {
+            if (strtolower((string) $name) !== 'retry-after') {
+                continue;
+            }
+            $value = is_array($value) ? reset($value) : $value;
+
+            return is_numeric($value) ? (int) $value : null;
+        }
+
+        return null;
     }
 
     /**
@@ -586,23 +699,8 @@ class StripeGateway implements GatewayContract
             if (empty($invoice->creditCard->customer)) {
                 $invoice->creditCard->customer = $invoice->customer;
             }
-            try {
-                $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
-            } catch (GatewayException $e) {
-                // a Stripe valida o cartão já no attach: recusa nesse ponto é falha de
-                // cobrança para o consumidor, não erro genérico de gateway
-                $errors = $e->getErrors();
-                if (($errors['type'] ?? null) !== 'card_error') {
-                    throw $e;
-                }
-                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage(), $e, $e->httpStatus);
-                $exception->chargeResponse = $errors;
-                $exception->reason = self::chargeFailureReason(
-                    $errors['code'] ?? null,
-                    $errors['decline_code'] ?? null
-                );
-                throw $exception;
-            }
+            // a Stripe valida o cartão já no attach; a recusa nesse ponto é ChargingException
+            $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
         }
 
         $stripePaymentIntentData = $this->invoiceToStripeData($invoice);
@@ -613,7 +711,7 @@ class StripeGateway implements GatewayContract
         $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
         $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
 
-        $stripePaymentIntent = $this->stripeChargeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
+        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
             return $this->client->paymentIntents->create(
                 $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND),
                 $requestOptions
@@ -843,7 +941,7 @@ class StripeGateway implements GatewayContract
             ? $invoice->creditCard->id
             : $invoice->creditCard->token;
 
-        $stripePaymentIntent = $this->stripeChargeRequest(function () use ($invoice, $paymentMethodId) {
+        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice, $paymentMethodId) {
             $paymentMethodId = $this->resolvePaymentMethodId($paymentMethodId);
             $stripePaymentMethod = $this->client->paymentMethods->retrieve($paymentMethodId);
 
@@ -1049,33 +1147,8 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Igual ao stripeRequest, mas traduz recusa de cartão para ChargingException com a
-     * resposta bruta e a razão normalizada (habilitador do fallback de gateway na aplicação).
-     *
-     * @param  callable  $request
-     * @return mixed
-     * @throws ChargingException|GatewayException|GatewayNotAvailableException
-     */
-    private function stripeChargeRequest(callable $request)
-    {
-        return $this->stripeRequest(function () use ($request) {
-            try {
-                return $request();
-            } catch (CardException $e) {
-                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage(), $e, $e->getHttpStatus());
-                // array em vez do ErrorObject para manter o mesmo formato da recusa no attach
-                $exception->chargeResponse = $e->getError()?->toArray();
-                $exception->reason = self::chargeFailureReason(
-                    $e->getError()?->code,
-                    $e->getError()?->decline_code ?? null
-                );
-                throw $exception;
-            }
-        });
-    }
-
-    /**
-     * Normaliza o código de recusa da Stripe para as razões genéricas do pacote.
+     * Normaliza o código de recusa da Stripe para o valor de `CardDeclinedException::$reason`, que
+     * mantém o vocabulário das versões anteriores; `declineCode` é a normalização atual.
      *
      * @param  string|null  $code
      * @param  string|null  $declineCode

@@ -12,6 +12,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ValidationException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
@@ -331,8 +332,10 @@ class StripeGatewayCustomerTest extends TestCase
 
         try {
             (new StripeGateway())->getCustomer($customer);
-            $this->fail('Expected GatewayException was not thrown');
-        } catch (GatewayException $exception) {
+            $this->fail('Expected ValidationException was not thrown');
+        } catch (ValidationException $exception) {
+            $this->assertInstanceOf(GatewayException::class, $exception);
+            $this->assertSame(['foo' => ['Received unknown parameter: foo']], $exception->fieldErrors);
             $this->assertSame([
                 'type' => 'invalid_request_error',
                 'code' => 'parameter_unknown',
