@@ -12,6 +12,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
@@ -283,7 +284,7 @@ class StripeGatewayCustomerTest extends TestCase
         (new StripeGateway())->rescheduleAutomaticPixPayment(new Invoice());
     }
 
-    public function testAuthenticationErrorBecomesGatewayNotAvailable(): void
+    public function testAuthenticationErrorBecomesAuthenticationExceptionNotGatewayNotAvailable(): void
     {
         RecordingStripeHttpClient::withResponses([
             [['error' => ['type' => 'invalid_request_error', 'message' => 'Invalid API Key provided']], 401],
@@ -292,9 +293,13 @@ class StripeGatewayCustomerTest extends TestCase
         $customer = new Customer();
         $customer->id = 'cus_fake123';
 
-        $this->expectException(GatewayNotAvailableException::class);
-
-        (new StripeGateway())->getCustomer($customer);
+        try {
+            (new StripeGateway())->getCustomer($customer);
+            $this->fail('Esperava AuthenticationException');
+        } catch (AuthenticationException $e) {
+            $this->assertNotInstanceOf(GatewayNotAvailableException::class, $e);
+            $this->assertSame(401, $e->httpStatus);
+        }
     }
 
     public function testApiErrorBecomesGatewayExceptionWithNormalizedErrors(): void

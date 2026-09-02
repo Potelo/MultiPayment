@@ -5,21 +5,27 @@ namespace Potelo\MultiPayment\Tests\Unit\Gateways;
 use Stripe\ApiRequestor;
 
 /**
- * Fake da camada HTTP do stripe-php, no molde do RecordingIuguApiRequest: devolve respostas
+ * Fake da camada HTTP do stripe-php, no molde do QueuedIuguApiRequest: devolve respostas
  * enfileiradas e grava cada chamada para asserção. Cada resposta é um array (corpo JSON,
- * status 200) ou um par [corpo, status].
+ * status 200), um par [corpo, status] ou um `\Throwable`, lançado no lugar da resposta para
+ * simular falha de conexão. Um corpo string vai cru, sem codificar em JSON, para simular a
+ * página HTML de um proxy.
  */
 class RecordingStripeHttpClient implements \Stripe\HttpClient\ClientInterface
 {
     /** @var array<int, array{0: string, 1: string, 2: array}> */
     public array $calls = [];
 
-    /** @var array<int, array{0: array, 1: int}> */
+    /** @var array<int, array{0: array, 1: int}|\Throwable> */
     private array $responses;
 
     private function __construct(array $responses)
     {
         $this->responses = array_map(static function ($response) {
+            if ($response instanceof \Throwable) {
+                return $response;
+            }
+
             return isset($response[1]) && is_int($response[1])
                 ? $response
                 : [$response, 200];
@@ -50,8 +56,12 @@ class RecordingStripeHttpClient implements \Stripe\HttpClient\ClientInterface
         if (empty($this->responses)) {
             throw new \RuntimeException("Unexpected Stripe request: {$method} {$absUrl}");
         }
-        [$body, $code] = array_shift($this->responses);
+        $response = array_shift($this->responses);
+        if ($response instanceof \Throwable) {
+            throw $response;
+        }
+        [$body, $code] = $response;
 
-        return [json_encode($body), $code, []];
+        return [is_string($body) ? $body : json_encode($body), $code, []];
     }
 }

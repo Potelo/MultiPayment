@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Tests\Unit\Gateways;
 
 use Carbon\Carbon;
 use Stripe\ApiRequestor;
+use Stripe\Exception\InvalidRequestException;
 use PHPUnit\Framework\TestCase;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
@@ -1076,10 +1077,16 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice = new Invoice();
         $invoice->id = 'pi_fake123';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('Invoice duplicated as [pi_fake456]');
-
-        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+        try {
+            (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+            $this->fail('Esperava GatewayException');
+        } catch (GatewayException $e) {
+            $this->assertStringContainsString('Invoice duplicated as [pi_fake456]', $e->getMessage());
+            // a falha do cancelamento continua acessível, com a exceção do SDK abaixo dela
+            $this->assertInstanceOf(GatewayException::class, $e->getPrevious());
+            $this->assertInstanceOf(InvalidRequestException::class, $e->getPrevious()->getPrevious());
+            $this->assertSame(400, $e->httpStatus);
+        }
     }
 
     public function testDuplicateRejectsPaidInvoice(): void

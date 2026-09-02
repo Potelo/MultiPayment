@@ -9,8 +9,10 @@ use Stripe\PaymentIntent as StripePaymentIntent;
 use Stripe\PaymentMethod as StripePaymentMethod;
 use Stripe\Exception\CardException;
 use Stripe\Exception\ApiErrorException;
+use Stripe\Exception\PermissionException;
+use Stripe\Exception\UnexpectedValueException as StripeUnexpectedValueException;
 use Stripe\Exception\ApiConnectionException;
-use Stripe\Exception\AuthenticationException;
+use Stripe\Exception\AuthenticationException as StripeAuthenticationException;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Models\Invoice;
@@ -25,6 +27,7 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
+use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -403,27 +406,74 @@ class StripeGateway implements GatewayContract
      *
      * @param  callable  $request
      * @return mixed
-     * @throws GatewayException|GatewayNotAvailableException
+     * @throws GatewayException|GatewayNotAvailableException|AuthenticationException
      */
     private function stripeRequest(callable $request)
     {
         try {
             return $request();
-        } catch (AuthenticationException | ApiConnectionException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
-        } catch (ApiErrorException $e) {
+        } catch (\Exception $e) {
+            throw $this->translateStripeException($e);
+        }
+    }
+
+    /**
+     * Traduz uma exceção do stripe-php para a hierarquia do pacote, anexando a original como
+     * `previous` e o status HTTP da resposta.
+     *
+     * Regras: 401 (`AuthenticationException` do SDK, inclusive chave não configurada) e 403
+     * (`PermissionException`) viram `AuthenticationException`; falha de conexão
+     * (`ApiConnectionException`) e 5xx viram `GatewayNotAvailableException`, inclusive o 5xx
+     * com corpo não JSON, que o SDK lança como `UnexpectedValueException`; o restante
+     * (`invalid_request_error`, 429, conflito de idempotência) vira `GatewayException` com
+     * `type`, `code`, `decline_code` e `param` em `getErrors()` e o status em `httpStatus`.
+     * Recusa de cartão (`CardException`) é tratada antes, em `stripeChargeRequest()`. Exceção do
+     * próprio pacote passa intacta.
+     *
+     * @param  \Throwable  $e
+     * @return MultiPaymentException
+     */
+    private function translateStripeException(\Throwable $e): MultiPaymentException
+    {
+        if ($e instanceof MultiPaymentException) {
+            return $e;
+        }
+
+        if ($e instanceof StripeAuthenticationException || $e instanceof PermissionException) {
+            return AuthenticationException::invalidCredentials('stripe', $e->getMessage(), $e, $e->getHttpStatus());
+        }
+
+        if ($e instanceof ApiConnectionException) {
+            return new GatewayNotAvailableException($e->getMessage(), $e, $e->getHttpStatus());
+        }
+
+        // corpo que não é JSON (página HTML de proxy num 5xx): o SDK lança esta classe com o
+        // status HTTP em getCode(), ou sem código quando o JSON veio sem a chave `error`
+        if ($e instanceof StripeUnexpectedValueException) {
+            $httpStatus = $e->getCode() > 0 ? (int) $e->getCode() : null;
+            if ($httpStatus >= 500) {
+                return new GatewayNotAvailableException($e->getMessage(), $e, $httpStatus);
+            }
+
+            return new GatewayException($e->getMessage(), null, $e, $httpStatus);
+        }
+
+        if ($e instanceof ApiErrorException) {
+            if ($e->getHttpStatus() >= 500) {
+                return new GatewayNotAvailableException($e->getMessage(), $e, $e->getHttpStatus());
+            }
+
             $error = $e->getError();
-            throw new GatewayException($e->getMessage(), array_filter([
+
+            return new GatewayException($e->getMessage(), array_filter([
                 'type' => $error?->type,
                 'code' => $error?->code,
                 'decline_code' => $error?->decline_code ?? null,
                 'param' => $error?->param,
-            ]));
-        } catch (MultiPaymentException $e) {
-            throw $e;
-        } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+            ]), $e, $e->getHttpStatus());
         }
+
+        return new GatewayException($e->getMessage(), null, $e);
     }
 
     /**
@@ -519,7 +569,7 @@ class StripeGateway implements GatewayContract
                 if (($errors['type'] ?? null) !== 'card_error') {
                     throw $e;
                 }
-                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage());
+                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage(), $e, $e->httpStatus);
                 $exception->chargeResponse = $errors;
                 $exception->reason = self::chargeFailureReason(
                     $errors['code'] ?? null,
@@ -992,7 +1042,7 @@ class StripeGateway implements GatewayContract
             try {
                 return $request();
             } catch (CardException $e) {
-                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage());
+                $exception = new ChargingException('Error charging invoice: ' . $e->getMessage(), $e, $e->getHttpStatus());
                 // array em vez do ErrorObject para manter o mesmo formato da recusa no attach
                 $exception->chargeResponse = $e->getError()?->toArray();
                 $exception->reason = self::chargeFailureReason(
@@ -1097,7 +1147,10 @@ class StripeGateway implements GatewayContract
             // a duplicata já existe — propaga o id dela para o consumidor não a perder
             throw new GatewayException(
                 "Invoice duplicated as [{$duplicated->id}] but the original [{$invoice->id}] could not be canceled: "
-                . $e->getMessage()
+                . $e->getMessage(),
+                null,
+                $e,
+                $e->httpStatus
             );
         }
 

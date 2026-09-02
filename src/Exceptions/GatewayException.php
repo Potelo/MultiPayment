@@ -8,12 +8,15 @@ class GatewayException extends MultiPaymentException
     private $errors;
 
     /**
-     * GatewayException constructor.
+     * Cria a exceção com os erros devolvidos pelo gateway, a exceção original do SDK (quando
+     * houver) e o status HTTP da resposta.
      *
      * @param  string  $message
-     * @param $errors
+     * @param  mixed  $errors  corpo de erro do gateway: string, objeto ou array
+     * @param  \Throwable|null  $previous
+     * @param  int|null  $httpStatus
      */
-    public function __construct(string $message = "", $errors = null)
+    public function __construct(string $message = "", $errors = null, ?\Throwable $previous = null, ?int $httpStatus = null)
     {
         $this->errors = $errors;
         $appends = $this->parseErrorsToString($errors);
@@ -22,7 +25,7 @@ class GatewayException extends MultiPaymentException
             $message .= ' - ' . $appends;
         }
 
-        parent::__construct($message);
+        parent::__construct($message, $previous, $httpStatus);
     }
 
     /**

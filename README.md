@@ -155,7 +155,8 @@ Invoice::isContested($invoice->status); // tem briga aberta? disputed ou chargeb
   tokenizar. Para decidir o fallback programaticamente, use `ChargingException::$reason`,
   que traz a razão normalizada da recusa (`card_declined`, `brand_not_supported`,
   `authentication_required`, `expired_card`, `insufficient_funds`, `incorrect_cvc`...).
-  `GatewayNotAvailableException` também sinaliza "tente outro gateway".
+  `GatewayNotAvailableException` também sinaliza "tente outro gateway"; `AuthenticationException`
+  sinaliza credencial errada e não deve gerar fallback (ver [Tratamento de erros](#tratamento-de-erros)).
 - **Pix exige `tax_document` do cliente** (CPF/CNPJ vai nos billing details do pagamento).
 - **`expires_at` do pix é opcional** (default do Stripe: 4 horas) e, quando informado, deve
   ficar entre 10 segundos e 14 dias no futuro — diferente da Iugu, onde `expires_at` é a
@@ -175,6 +176,60 @@ Invoice::isContested($invoice->status); // tem briga aberta? disputed ou chargeb
   não paga esse GET.
 - **Idempotência**: envie `gateway_adicional_options['idempotency_key']` na criação de
   faturas e estornos para repassar o cabeçalho `Idempotency-Key` da Stripe.
+
+## Tratamento de erros
+
+Toda exceção do pacote herda de `MultiPaymentException`. Nenhuma exceção dos SDKs da Iugu ou da
+Stripe sai do pacote: os drivers traduzem cada falha para uma das classes abaixo, anexam a
+exceção original em `getPrevious()` (quando o SDK lançou uma; a Iugu devolve alguns erros como
+corpo JSON sem exceção) e expõem o status HTTP da resposta em `httpStatus` (nulo quando não
+houve resposta HTTP, como numa falha de rede ou numa validação local).
+
+| Exceção | Quando | O que fazer |
+|---|---|---|
+| `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
+| `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
+| `ChargingException` | Cobrança recusada pelo gateway (cartão negado etc.); `reason` traz a razão normalizada quando o gateway a informa | Tratar como recusa do pagador; `reason` decide o fallback |
+| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway (boleto, Pix parcial, já estornada, prazo vencido) | Ver [Estorno](#estorno) |
+| `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição | Corrigir a chamada |
+| `ConfigurationException` | Gateway não configurado ou classe inválida | Corrigir a configuração |
+| `GatewayException` | Qualquer outra resposta de erro do gateway (validação, 404, 409, 429) e operação não suportada ou não implementada; `getErrors()` traz o corpo de erro | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
+
+```php
+use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\AuthenticationException;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+
+try {
+    $invoice = $payment->newInvoice()->/* ... */->create();
+} catch (ChargingException $e) {
+    return back()->withErrors('Pagamento recusado.');
+} catch (AuthenticationException $e) {
+    report($e);            // credencial errada: alerta, sem retry e sem fallback
+    abort(500);
+} catch (GatewayNotAvailableException $e) {
+    return $this->queueForRetry();
+} catch (GatewayException $e) {
+    if ($e->httpStatus === 429) {
+        return $this->retryLater();
+    }
+    report($e);            // $e->getPrevious() é a exceção do SDK, com stack trace e corpo
+    throw $e;
+}
+```
+
+Rate limit (429) e conflito de idempotência (409) ainda chegam como `GatewayException`; o status
+está em `httpStatus` para a aplicação ramificar. Exceções próprias para esses casos estão
+previstas para uma versão futura.
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, credencial inválida chegava como
+> `GatewayNotAvailableException` (Stripe e chave Iugu não configurada) ou como `GatewayException`
+> genérica (chave Iugu recusada com 401), e um cartão inválido no caminho de dados crus da Iugu
+> podia deixar escapar uma `IuguRequestException` do SDK. Agora os três casos lançam
+> `AuthenticationException` ou `GatewayException` do pacote. Quem repetia toda
+> `GatewayNotAvailableException` deixa de repetir credencial errada; quem capturava
+> `GatewayException` para chave recusada na Iugu precisa capturar `AuthenticationException`.
 
 ## Utilizando
 

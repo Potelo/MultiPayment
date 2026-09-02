@@ -57,14 +57,20 @@ class RefundNotSupportedException extends MultiPaymentException
      * @param  string|null  $paymentMethod
      * @param  string  $reason
      * @param  bool  $manualRefundRequired
+     * @param  \Throwable|null  $previous
      */
-    public function __construct(string $message, ?string $paymentMethod, string $reason, bool $manualRefundRequired = false)
-    {
+    public function __construct(
+        string $message,
+        ?string $paymentMethod,
+        string $reason,
+        bool $manualRefundRequired = false,
+        ?\Throwable $previous = null
+    ) {
         $this->paymentMethod = $paymentMethod;
         $this->reason = $reason;
         $this->manualRefundRequired = $manualRefundRequired;
 
-        parent::__construct($message);
+        parent::__construct($message, $previous);
     }
 
     /**

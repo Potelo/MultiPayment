@@ -30,6 +30,8 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\MultiPaymentException;
+use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -135,23 +137,161 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         } else {
             try {
                 $iuguInvoice = \Iugu_Invoice::create($iuguInvoiceData);
-            } catch (\IuguRequestException|IuguObjectNotFound $e) {
-                if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                    throw new GatewayNotAvailableException($e->getMessage());
-                } else {
-                    throw new GatewayException($e->getMessage());
-                }
-            } catch (\IuguAuthenticationException $e) {
-                throw new GatewayNotAvailableException($e->getMessage());
             } catch (\Exception $e) {
-                throw new GatewayException($e->getMessage());
+                throw $this->translateIuguException($e, 'creating invoice');
             }
             if ($iuguInvoice->errors) {
-                throw new GatewayException('Error creating invoice', $iuguInvoice->errors);
+                throw $this->iuguResponseException('Error creating invoice', $iuguInvoice->errors);
             }
         }
 
         return $this->parseInvoice($iuguInvoice, $invoice);
+    }
+
+    /**
+     * Tokeniza os dados crus do cartão na Iugu e devolve o token gerado.
+     *
+     * @param  CreditCard  $creditCard
+     * @return string
+     * @throws GatewayException|GatewayNotAvailableException|AuthenticationException
+     */
+    private function createIuguPaymentToken(CreditCard $creditCard): string
+    {
+        try {
+            $iuguToken = Iugu_PaymentToken::create([
+                'account_id' => Config::get('multi-payment.gateways.iugu.id'),
+                'method' => 'credit_card',
+                'test' => Config::get('multi-payment.environment') != 'production',
+                'data' => [
+                    'number' => $creditCard->number,
+                    'verification_value' => $creditCard->cvv,
+                    'first_name' => $creditCard->firstName,
+                    'last_name' => $creditCard->lastName,
+                    'month' => $creditCard->month,
+                    'year' => $creditCard->year,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            throw $this->translateIuguException($e, 'creating payment token');
+        }
+
+        if (!empty($iuguToken->errors) || empty($iuguToken->id)) {
+            throw $this->iuguResponseException('Error creating payment token', $iuguToken->errors);
+        }
+
+        return $iuguToken->id;
+    }
+
+    /**
+     * Traduz uma exceção capturada numa chamada à Iugu para a hierarquia do pacote, anexando a
+     * original como `previous` e o status HTTP quando o SDK o informa.
+     *
+     * O SDK lança `IuguRequestException` com o status HTTP em `getCode()` quando a resposta não é
+     * JSON (páginas de erro 5xx de proxy, corpo vazio de timeout com código 0) e
+     * `IuguObjectNotFound` para 404; `IuguAuthenticationException` só quando a chave não foi
+     * configurada. Erro com corpo JSON passa por `iuguResponseException()`.
+     *
+     * Regras: 401 e 403 viram `AuthenticationException`; 5xx e falha de rede viram
+     * `GatewayNotAvailableException`; 404 e o restante viram `GatewayException`, com o status
+     * acessível em `httpStatus` (429 e 409 inclusive). Exceção do próprio pacote passa intacta.
+     *
+     * @param  \Throwable  $e
+     * @param  string  $operation  descrição da operação, em inglês, para a mensagem
+     * @return MultiPaymentException
+     */
+    private function translateIuguException(\Throwable $e, string $operation): MultiPaymentException
+    {
+        if ($e instanceof MultiPaymentException) {
+            return $e;
+        }
+
+        if ($e instanceof \IuguAuthenticationException) {
+            return AuthenticationException::invalidCredentials('iugu', $e->getMessage(), $e);
+        }
+
+        if ($e instanceof IuguObjectNotFound) {
+            // o SDK lança essa classe para 404 e fetchAPI() a relança sem o código HTTP
+            return new GatewayException("Error {$operation}: {$e->getMessage()}", null, $e, 404);
+        }
+
+        if ($e instanceof \IuguRequestException) {
+            // corpo vazio e código 0: o cURL não obteve resposta (falha de conexão ou timeout)
+            if ($e->getCode() <= 0 && trim($e->getMessage()) === '') {
+                return new GatewayNotAvailableException(
+                    "Error {$operation}: no response from the gateway (network failure or timeout)",
+                    $e
+                );
+            }
+
+            // fetchAPI() do SDK também lança esta classe, sem código, para resposta com `error`
+            return $this->classifyIuguFailure(
+                "Error {$operation}: {$e->getMessage()}",
+                $e->getMessage(),
+                null,
+                $e,
+                $e->getCode() > 0 ? (int) $e->getCode() : null
+            );
+        }
+
+        return new GatewayException("Error {$operation}: {$e->getMessage()}", null, $e);
+    }
+
+    /**
+     * Traduz um corpo de erro devolvido pela Iugu numa resposta HTTP válida (o SDK não lança
+     * nesse caso) para a hierarquia do pacote, usando o status HTTP da última resposta.
+     *
+     * @param  string  $message
+     * @param  mixed  $errors  corpo de `errors` da resposta
+     * @return MultiPaymentException
+     */
+    private function iuguResponseException(string $message, $errors): MultiPaymentException
+    {
+        $detail = is_string($errors) ? $errors : json_encode($errors);
+
+        return $this->classifyIuguFailure($message, (string) $detail, $errors, null, $this->lastIuguHttpStatus());
+    }
+
+    /**
+     * Escolhe a exceção do pacote pelo status HTTP da falha.
+     *
+     * @param  string  $message
+     * @param  string  $detail  texto da resposta, para a mensagem de autenticação
+     * @param  mixed  $errors
+     * @param  \Throwable|null  $previous
+     * @param  int|null  $httpStatus  nulo quando o SDK não informou o status
+     * @return MultiPaymentException
+     */
+    private function classifyIuguFailure(
+        string $message,
+        string $detail,
+        $errors,
+        ?\Throwable $previous,
+        ?int $httpStatus
+    ): MultiPaymentException {
+        if (in_array($httpStatus, [401, 403], true)) {
+            return AuthenticationException::invalidCredentials('iugu', $detail, $previous, $httpStatus);
+        }
+
+        if ($httpStatus >= 500) {
+            return new GatewayNotAvailableException($message, $previous, $httpStatus);
+        }
+
+        return new GatewayException($message, $errors, $previous, $httpStatus);
+    }
+
+    /**
+     * Status HTTP da última resposta que o SDK da Iugu conseguiu decodificar. O SDK só o expõe
+     * na variável global `$iugu_last_api_response_code`, gravada em toda resposta JSON
+     * (inclusive as de erro); quando a resposta não é JSON o status vai em `getCode()` da
+     * exceção e esta leitura não é usada.
+     *
+     * @return int|null
+     */
+    private function lastIuguHttpStatus(): ?int
+    {
+        $code = $GLOBALS['iugu_last_api_response_code'] ?? null;
+
+        return is_int($code) && $code > 0 ? $code : null;
     }
 
     /**
@@ -163,20 +303,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         try {
             $iuguCustomer = Iugu_Customer::create($iuguCustomerData);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+            throw $this->translateIuguException($e, 'creating customer');
         }
 
         if ($iuguCustomer->errors) {
-            throw new GatewayException('Error creating customer', $iuguCustomer->errors);
+            throw $this->iuguResponseException('Error creating customer', $iuguCustomer->errors);
         }
 
         $customer->id = $iuguCustomer->id;
@@ -271,19 +403,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('CreditCard', 'customer');
         }
         if (empty($creditCard->token)) {
-            $creditCard->token = Iugu_PaymentToken::create([
-                'account_id' => Config::get('multi-payment.gateways.iugu.id'),
-                'method' => 'credit_card',
-                'test' => Config::get('multi-payment.environment') != 'production',
-                'data' => [
-                    'number' => $creditCard->number,
-                    'verification_value' => $creditCard->cvv,
-                    'first_name' => $creditCard->firstName,
-                    'last_name' => $creditCard->lastName,
-                    'month' => $creditCard->month,
-                    'year' => $creditCard->year,
-                ],
-            ]);
+            $creditCard->token = $this->createIuguPaymentToken($creditCard);
         }
 
         $options = [
@@ -298,19 +418,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         try {
             $iuguCreditCard = Iugu_PaymentMethod::create($options);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+            throw $this->translateIuguException($e, 'creating credit card');
         }
         if ($iuguCreditCard->errors) {
-            throw new GatewayException('Error creating creditCard: ', $iuguCreditCard->errors);
+            throw $this->iuguResponseException('Error creating creditCard: ', $iuguCreditCard->errors);
         }
 
         return $this->parseIuguCard($iuguCreditCard, $creditCard);
@@ -447,20 +559,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         try {
             $response = $this->apiRequest->request('PUT', $url);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            }
-
-            throw new GatewayException($e->getMessage());
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
-            throw new GatewayException("Error cancelling invoice: {$e->getMessage()}");
+            throw $this->translateIuguException($e, 'cancelling invoice');
         }
 
         if (!empty($response->errors)) {
-            throw new GatewayException('Error cancelling invoice', (array) $response->errors);
+            throw $this->iuguResponseException('Error cancelling invoice', (array) $response->errors);
         }
 
         return $this->parseInvoice($response, $invoice);
@@ -471,25 +575,21 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
     {
-        $iuguInvoice = new \Iugu_Invoice(['id' => $invoice->id]);
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
 
         $params = array_merge($gatewayOptions, [
             'due_date' => $expiresAt->format('Y-m-d'),
         ]);
-        try {
-            $iuguInvoice = $iuguInvoice->duplicate($params);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\Exception $e) {
-            throw new GatewayException("Error getting invoice: {$e->getMessage()}");
-        }
-        if (!empty($iuguInvoice->errors)) {
-            throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
-        }
+
+        // request cru em vez de Iugu_Invoice::duplicate(): o SDK engole a exceção e devolve false
+        $iuguInvoice = $this->iuguRequest(
+            'POST',
+            Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/duplicate',
+            $params,
+            'duplicating invoice'
+        );
 
         return $this->parseInvoice($iuguInvoice);
     }
@@ -742,16 +842,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     ): object|array {
         try {
             $response = $this->apiRequest->request($method, $url, $data);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            }
-
-            throw new GatewayException($e->getMessage());
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
-            throw new GatewayException("Error {$operation}: {$e->getMessage()}");
+            throw $this->translateIuguException($e, $operation);
         }
 
         $responseObject = is_array($response) ? (object) $response : $response;
@@ -759,7 +851,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             !empty($responseObject->errors)
             || (isset($responseObject->success) && $responseObject->success !== true)
         ) {
-            throw new GatewayException("Error {$operation}", (array) ($responseObject->errors ?? []));
+            throw $this->iuguResponseException("Error {$operation}", (array) ($responseObject->errors ?? []));
         }
 
         return $response;
@@ -1004,22 +1096,31 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @return mixed
      * @throws \Potelo\MultiPayment\Exceptions\ChargingException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\AuthenticationException
      */
     private function chargeIuguInvoice(array $iuguInvoiceData)
     {
         try {
             $iuguCharge = \Iugu_Charge::create($iuguInvoiceData);
         } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+            throw $this->translateIuguException($e, 'charging invoice');
         }
         if ($iuguCharge->errors) {
-            throw new GatewayException('Error charging invoice', $iuguCharge->errors);
+            throw $this->iuguResponseException('Error charging invoice', $iuguCharge->errors);
         } elseif (!$iuguCharge->success) {
             $exception = new ChargingException('Error charging invoice: ' . $iuguCharge->info_message);
             $exception->chargeResponse = $iuguCharge;
+            $exception->httpStatus = $this->lastIuguHttpStatus();
             throw $exception;
         }
-        return $iuguCharge->invoice();
+
+        // a cobrança devolve só o id; a leitura da fatura é outra requisição e falha como tal
+        try {
+            return $iuguCharge->invoice();
+        } catch (\Exception $e) {
+            throw $this->translateIuguException($e, 'getting charged invoice');
+        }
     }
 
     /**
@@ -1029,18 +1130,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     {
         try {
             $iuguCustomer = Iugu_Customer::fetch($customer->id);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
         } catch (\Exception $e) {
-            throw new GatewayException("Error getting customer: {$e->getMessage()}");
+            throw $this->translateIuguException($e, 'getting customer');
         }
 
         if (!empty($iuguCustomer->errors)) {
-            throw new GatewayException('Error getting customer', $iuguCustomer->errors);
+            throw $this->iuguResponseException('Error getting customer', $iuguCustomer->errors);
         }
 
         return $this->parseCustomer($iuguCustomer, $customer);
@@ -1052,29 +1147,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('Customer', 'id');
         }
 
-        $iuguCustomerData = $this->customerToIuguData($customer);
-
-        try {
-            $iuguCustomer = Iugu_Customer::fetch($customer->id);
-            foreach ($iuguCustomerData as $key => $value) {
-                $iuguCustomer->{$key} = $value;
-            }
-            $iuguCustomer->save();
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
-        } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
-        }
-
-        if ($iuguCustomer->errors) {
-            throw new GatewayException('Error updating customer', $iuguCustomer->errors);
-        }
+        // request cru em vez de Iugu_Customer::save(): o SDK engole a exceção e devolve false
+        $iuguCustomer = $this->iuguRequest(
+            'PUT',
+            Iugu::getBaseURI() . '/customers/' . rawurlencode($customer->id),
+            $this->customerToIuguData($customer),
+            'updating customer'
+        );
 
         return $this->parseCustomer($iuguCustomer, $customer);
     }
@@ -1101,17 +1180,20 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             }
         }
 
-        $customer->id = $iuguCustomer->id;
-        $customer->name = $iuguCustomer->name;
-        $customer->email = $iuguCustomer->email;
-        $customer->taxDocument = $iuguCustomer->cpf_cnpj;
-        $customer->phoneNumber = $iuguCustomer->phone;
-        $customer->phoneArea = $iuguCustomer->phone_prefix;
+        // leituras com `??`: a resposta pode ser stdClass (request cru), que avisa em campo ausente
+        $customer->id = $iuguCustomer->id ?? null;
+        $customer->name = $iuguCustomer->name ?? null;
+        $customer->email = $iuguCustomer->email ?? null;
+        $customer->taxDocument = $iuguCustomer->cpf_cnpj ?? null;
+        $customer->phoneNumber = $iuguCustomer->phone ?? null;
+        $customer->phoneArea = $iuguCustomer->phone_prefix ?? null;
         $customer->birthDate = !empty($valuesInsideCustomVariables['birth_date'])
             ? Carbon::createFromFormat('Y-m-d', $valuesInsideCustomVariables['birth_date'])
             : null;
         $customer->gateway = 'iugu';
-        $customer->createdAt = new Carbon($iuguCustomer->created_at_iso);
+        // o recurso de cliente da Iugu devolve `created_at` (a fatura é que tem `created_at_iso`)
+        $createdAt = $iuguCustomer->created_at ?? $iuguCustomer->created_at_iso ?? null;
+        $customer->createdAt = !empty($createdAt) ? new Carbon($createdAt) : null;
         $customer->original = $iuguCustomer;
 
         if (!empty($iuguCustomer->zip_code) || !empty($iuguCustomer->street) || !empty($iuguCustomer->number) || !empty($iuguCustomer->district) || !empty($iuguCustomer->city) || !empty($iuguCustomer->state) || !empty($iuguCustomer->complement) || !empty($iuguCustomer->country)) {
@@ -1208,23 +1290,21 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function deleteCreditCard(CreditCard $creditCard): void
     {
-        try {
-            $iuguCreditCard = new Iugu_PaymentMethod([
-                'id' => $creditCard->id,
-                'customer_id' => $creditCard->customer->id
-            ]);
-            $iuguCreditCard->delete();
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
-        } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+        if (empty($creditCard->id)) {
+            throw ModelAttributeValidationException::required('CreditCard', 'id');
         }
+        if (empty($creditCard->customer) || empty($creditCard->customer->id)) {
+            throw ModelAttributeValidationException::required('CreditCard', 'customer');
+        }
+
+        // request cru em vez de Iugu_PaymentMethod::delete(): o SDK engole a exceção e devolve false
+        $this->iuguRequest(
+            'DELETE',
+            Iugu::getBaseURI() . '/customers/' . rawurlencode($creditCard->customer->id)
+                . '/payment_methods/' . rawurlencode($creditCard->id),
+            [],
+            'deleting credit card'
+        );
     }
 
     /**
@@ -1235,19 +1315,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         try {
             $iuguCustomer = new Iugu_Customer(['id' => $creditCard->customer->id]);
             $iuguCreditCard = $iuguCustomer->payment_methods()->fetch($creditCard->id);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\IuguAuthenticationException $e) {
-            throw new GatewayNotAvailableException($e->getMessage());
         } catch (\Exception $e) {
-            throw new GatewayException($e->getMessage());
+            throw $this->translateIuguException($e, 'getting credit card');
         }
         if ($iuguCreditCard->errors) {
-            throw new GatewayException('Error getting creditCard: ', $iuguCreditCard->errors);
+            throw $this->iuguResponseException('Error getting creditCard: ', $iuguCreditCard->errors);
         }
 
         return $this->parseIuguCard($iuguCreditCard, $creditCard);
