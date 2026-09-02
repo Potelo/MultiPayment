@@ -20,7 +20,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static \Potelo\MultiPayment\Models\Plan[] listPlans(int $page = 1, int $limit = 100)
  * @method static Invoice getInvoice(string $id)
  * @method static \Potelo\MultiPayment\Models\Customer getCustomer(string $id)
- * @method static Invoice refundInvoice(string $id, ?int $partialValueCents = null)
+ * @method static \Potelo\MultiPayment\Models\Refund refundInvoice(string $id, ?int $partialValueCents = null)
  * @method static Invoice duplicateInvoice(Invoice|string $invoice, \Carbon\Carbon $expiresAt, array $gatewayOptions = [])
  * @method static CreditCard getCard(string $customerId, string $creditCardId)
  * @method static void deleteCard(string $customerId, string $creditCardId)

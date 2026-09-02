@@ -8,6 +8,7 @@ use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Subscription;
@@ -286,22 +287,32 @@ class MultiPayment
     }
 
     /**
-     * Refund an invoice
+     * Estorna uma fatura pelo id: integral sem valor, parcial com o valor em centavos.
+     * Devolve o `Refund` criado; a fatura relida após o estorno está em `$refund->invoice()`.
      *
      * @param  string  $id
      * @param  int|null  $partialValueCents
      *
-     * @return \Potelo\MultiPayment\Models\Invoice
+     * @return \Potelo\MultiPayment\Models\Refund
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException  valor parcial zero ou negativo
      */
-    public function refundInvoice(string $id, ?int $partialValueCents = null): Invoice
+    public function refundInvoice(string $id, ?int $partialValueCents = null): Refund
     {
+        if (!is_null($partialValueCents) && $partialValueCents <= 0) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'refundedAmount',
+                'The partial refund value must be a positive amount in cents; omit it for a full refund.'
+            );
+        }
+
         $invoice = new Invoice();
         $invoice->id = $id;
         $invoice->gateway = $this->gateway;
 
-        if ($partialValueCents) {
+        if (!is_null($partialValueCents)) {
             $invoice->refundedAmount = $partialValueCents;
         }
 

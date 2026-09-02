@@ -10,6 +10,7 @@ use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
@@ -23,6 +24,7 @@ use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 
@@ -75,7 +77,7 @@ class StripeGatewayInvoiceTest extends TestCase
             // o encoder do stripe-php serializa booleanos como string antes da camada HTTP
             'confirm' => 'true',
             'off_session' => 'true',
-            'expand' => ['latest_charge.balance_transaction'],
+            'expand' => ['latest_charge.balance_transaction', 'latest_charge.refunds'],
         ], $params);
 
         $this->assertSame('pi_fake123', $result->id);
@@ -229,7 +231,7 @@ class StripeGatewayInvoiceTest extends TestCase
             ],
             'confirm' => 'true',
             'payment_method_options' => ['pix' => ['expires_at' => $requestedExpiresAt]],
-            'expand' => ['latest_charge.balance_transaction'],
+            'expand' => ['latest_charge.balance_transaction', 'latest_charge.refunds'],
         ], $params);
 
         $this->assertSame(InvoiceStatus::PENDING, $result->status);
@@ -341,7 +343,7 @@ class StripeGatewayInvoiceTest extends TestCase
         [$method, $url, $params] = $httpClient->calls[0];
         $this->assertSame('post', $method);
         $this->assertSame('/v1/payment_intents/pi_fake123/cancel', parse_url($url, PHP_URL_PATH));
-        $this->assertSame(['expand' => ['latest_charge.balance_transaction']], $params);
+        $this->assertSame(['expand' => ['latest_charge.balance_transaction', 'latest_charge.refunds']], $params);
         $this->assertSame(InvoiceStatus::CANCELED, $result->status);
     }
 
@@ -829,7 +831,7 @@ class StripeGatewayInvoiceTest extends TestCase
         // a opção do consumidor vence a chave montada pelo gateway
         $this->assertSame('false', $params['off_session']);
         // o expand do consumidor é mesclado, não descartado
-        $this->assertSame(['customer', 'latest_charge.balance_transaction'], $params['expand']);
+        $this->assertSame(['customer', 'latest_charge.balance_transaction', 'latest_charge.refunds'], $params['expand']);
     }
 
     /**
@@ -893,13 +895,21 @@ class StripeGatewayInvoiceTest extends TestCase
         (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
     }
 
+    /**
+     * Só com o id, o driver lê a fatura antes das guardas (um GET), cria o refund e relê o
+     * PaymentIntent. O `Refund` devolvido vem do objeto da Stripe e carrega a fatura relida.
+     */
     public function testRefundsInvoiceTotally(): void
     {
         $refunded = $this->paidCardPaymentIntentResponse();
         $refunded['latest_charge']['amount_refunded'] = 12345;
         $refunded['latest_charge']['refunded'] = true;
+        $refunded['latest_charge']['refunds'] = $this->refundListResponse([
+            $this->refundResponse('re_fake123', 12345, 'succeeded'),
+        ]);
         $httpClient = RecordingStripeHttpClient::withResponses([
-            ['id' => 're_fake123', 'object' => 'refund', 'status' => 'pending', 'amount' => 12345],
+            $this->paidCardPaymentIntentResponse(),
+            $this->refundResponse('re_fake123', 12345, 'pending'),
             $refunded,
         ]);
 
@@ -907,14 +917,31 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->id = 'pi_fake123';
         $result = (new StripeGateway())->refundInvoice($invoice);
 
-        [$method, $url, $params] = $httpClient->calls[0];
-        $this->assertSame('post', $method);
-        $this->assertSame('/v1/refunds', parse_url($url, PHP_URL_PATH));
+        $this->assertSame([
+            'get /v1/payment_intents/pi_fake123',
+            'post /v1/refunds',
+            'get /v1/payment_intents/pi_fake123',
+        ], $this->calledPaths($httpClient));
         // sem amount: estorno total
-        $this->assertSame(['payment_intent' => 'pi_fake123'], $params);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
-        $this->assertSame(12345, $result->refundedAmount);
-        $this->assertSame('re_fake123', $result->lastRefundId);
+        $this->assertSame(['payment_intent' => 'pi_fake123'], $httpClient->calls[1][2]);
+
+        $this->assertInstanceOf(Refund::class, $result);
+        $this->assertSame('re_fake123', $result->id);
+        $this->assertSame('pi_fake123', $result->invoiceId);
+        $this->assertSame(12345, $result->amount);
+        $this->assertSame(RefundStatus::PENDING, $result->status);
+        $this->assertSame(1786700100, $result->createdAt->getTimestamp());
+        $this->assertSame('requested_by_customer', $result->reason);
+        $this->assertSame('stripe', $result->gateway);
+        $this->assertSame('re_fake123', $result->original->id);
+
+        $this->assertSame($invoice, $result->invoice());
+        $this->assertSame(InvoiceStatus::REFUNDED, $invoice->status);
+        $this->assertSame(12345, $invoice->refundedAmount);
+        $this->assertCount(1, $invoice->refunds);
+        $this->assertSame('re_fake123', $invoice->refunds[0]->id);
+        $this->assertSame(RefundStatus::SUCCEEDED, $invoice->refunds[0]->status);
+        $this->assertCount(3, $httpClient->calls, 'invoice() não faz requisição');
     }
 
     public function testRefundsInvoicePartially(): void
@@ -922,7 +949,8 @@ class StripeGatewayInvoiceTest extends TestCase
         $refunded = $this->paidCardPaymentIntentResponse();
         $refunded['latest_charge']['amount_refunded'] = 2345;
         $httpClient = RecordingStripeHttpClient::withResponses([
-            ['id' => 're_fake123', 'object' => 'refund', 'status' => 'pending', 'amount' => 2345],
+            $this->paidCardPaymentIntentResponse(),
+            $this->refundResponse('re_fake123', 2345, 'pending'),
             $refunded,
         ]);
 
@@ -933,11 +961,11 @@ class StripeGatewayInvoiceTest extends TestCase
 
         $this->assertSame(
             ['payment_intent' => 'pi_fake123', 'amount' => 2345],
-            $httpClient->calls[0][2]
+            $httpClient->calls[1][2]
         );
-        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->status);
-        $this->assertSame(2345, $result->refundedAmount);
-        $this->assertSame('re_fake123', $result->lastRefundId);
+        $this->assertSame(2345, $result->amount);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->invoice()->status);
+        $this->assertSame(2345, $result->invoice()->refundedAmount);
     }
 
     public function testRefundInvoiceRequiresId(): void
@@ -950,26 +978,38 @@ class StripeGatewayInvoiceTest extends TestCase
     /**
      * Boleto ainda não existe neste driver; a guarda já nasce coberta para quando entrar.
      */
-    public function testBoletoRefundThrowsBeforeTheNetwork(): void
+    public function testBoletoRefundWithThePaymentMethodInHandMakesNoRequest(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = new Invoice();
         $invoice->id = 'pi_fake123';
         $invoice->paymentMethod = PaymentMethod::BANK_SLIP;
+        $invoice->status = InvoiceStatus::PAID;
 
-        try {
-            (new StripeGateway())->refundInvoice($invoice);
-            $this->fail('Esperava RefundNotSupportedException');
-        } catch (RefundNotSupportedException $e) {
-            $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $e->reason);
-            $this->assertSame(PaymentMethod::BANK_SLIP->value, $e->paymentMethod);
-            $this->assertTrue($e->manualRefundRequired);
-        }
+        $exception = $this->refundExpectingRefusal($invoice);
 
+        $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $exception->reason);
+        $this->assertSame(PaymentMethod::BANK_SLIP->value, $exception->paymentMethod);
+        $this->assertTrue($exception->manualRefundRequired);
         $this->assertSame([], $httpClient->calls);
     }
 
-    public function testAlreadyRefundedInvoiceThrowsBeforeTheNetwork(): void
+    public function testBoletoRefundThrowsBeforePostingAfterReadingTheInvoice(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['payment_method_types'] = ['boleto'];
+        $response['latest_charge']['payment_method_details'] = ['type' => 'boleto', 'boleto' => []];
+        $httpClient = RecordingStripeHttpClient::withResponses([$response]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $exception = $this->refundExpectingRefusal($invoice);
+
+        $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $exception->reason);
+        $this->assertSame(['get /v1/payment_intents/pi_fake123'], $this->calledPaths($httpClient));
+    }
+
+    public function testAlreadyRefundedInvoiceWithTheStatusInHandMakesNoRequest(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = new Invoice();
@@ -977,16 +1017,32 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->paymentMethod = PaymentMethod::CREDIT_CARD;
         $invoice->status = InvoiceStatus::REFUNDED;
 
-        try {
-            (new StripeGateway())->refundInvoice($invoice);
-            $this->fail('Esperava RefundNotSupportedException');
-        } catch (RefundNotSupportedException $e) {
-            $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $e->reason);
-            $this->assertSame(PaymentMethod::CREDIT_CARD->value, $e->paymentMethod);
-            $this->assertFalse($e->manualRefundRequired);
-        }
+        $exception = $this->refundExpectingRefusal($invoice);
 
+        $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $exception->reason);
+        $this->assertSame(PaymentMethod::CREDIT_CARD->value, $exception->paymentMethod);
+        $this->assertFalse($exception->manualRefundRequired);
         $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * Só com o id, a leitura prévia é o que faz a guarda de fatura já estornada disparar sem
+     * um POST que a Stripe recusaria com `charge_already_refunded`.
+     */
+    public function testAlreadyRefundedInvoiceWithOnlyTheIdIsRefusedAfterReadingIt(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 12345;
+        $response['latest_charge']['refunded'] = true;
+        $httpClient = RecordingStripeHttpClient::withResponses([$response]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $exception = $this->refundExpectingRefusal($invoice);
+
+        $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $exception->reason);
+        $this->assertSame(['get /v1/payment_intents/pi_fake123'], $this->calledPaths($httpClient));
+        $this->assertNull($invoice->status, 'a leitura prévia não altera o model do chamador');
     }
 
     /**
@@ -997,7 +1053,8 @@ class StripeGatewayInvoiceTest extends TestCase
         $refunded = $this->paidPixPaymentIntentResponse();
         $refunded['latest_charge']['amount_refunded'] = 2345;
         $httpClient = RecordingStripeHttpClient::withResponses([
-            ['id' => 're_fake123', 'object' => 'refund', 'status' => 'succeeded', 'amount' => 2345],
+            $this->paidPixPaymentIntentResponse(),
+            $this->refundResponse('re_fake123', 2345, 'succeeded'),
             $refunded,
         ]);
 
@@ -1007,26 +1064,186 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->refundedAmount = 2345;
         $result = (new StripeGateway())->refundInvoice($invoice);
 
-        $this->assertCount(2, $httpClient->calls);
-        $this->assertSame('post', $httpClient->calls[0][0]);
-        $this->assertSame('/v1/refunds', parse_url($httpClient->calls[0][1], PHP_URL_PATH));
-        $this->assertSame(['payment_intent' => 'pi_fake123', 'amount' => 2345], $httpClient->calls[0][2]);
-        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->status);
-        $this->assertSame(2345, $result->refundedAmount);
-        $this->assertSame('re_fake123', $result->lastRefundId);
+        $this->assertSame([
+            'get /v1/payment_intents/pi_fake123',
+            'post /v1/refunds',
+            'get /v1/payment_intents/pi_fake123',
+        ], $this->calledPaths($httpClient));
+        $this->assertSame(['payment_intent' => 'pi_fake123', 'amount' => 2345], $httpClient->calls[1][2]);
+        $this->assertSame('re_fake123', $result->id);
+        $this->assertSame(RefundStatus::SUCCEEDED, $result->status);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->invoice()->status);
+        $this->assertSame(2345, $result->invoice()->refundedAmount);
     }
 
     /**
-     * Fatura parcialmente estornada aceita novo estorno: a guarda `already_refunded` olha só
-     * `refunded`.
+     * Um model lido do gateway, pago e sem estorno anterior não paga o GET extra no estorno
+     * por valor: o restante estornável é o valor pago.
      */
-    public function testPartiallyRefundedInvoiceAcceptsAnotherRefund(): void
+    public function testPaidInvoiceReadFromTheGatewayDoesNotPayTheExtraGet(): void
     {
+        $refunded = $this->paidCardPaymentIntentResponse();
+        $refunded['latest_charge']['amount_refunded'] = 2345;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->paidCardPaymentIntentResponse(),
+            $this->refundResponse('re_fake123', 2345, 'succeeded'),
+            $refunded,
+        ]);
+        $gateway = new StripeGateway();
+
+        $invoice = $gateway->getInvoice($this->invoiceWithId());
+        $invoice->refundedAmount = 2345;
+        $result = $gateway->refundInvoice($invoice);
+
+        $this->assertSame([
+            'get /v1/payment_intents/pi_fake123',
+            'post /v1/refunds',
+            'get /v1/payment_intents/pi_fake123',
+        ], $this->calledPaths($httpClient));
+        $this->assertSame(2345, $result->amount);
+    }
+
+    /**
+     * Fatura parcialmente estornada aceita novo estorno até o restante. Com o status fora de
+     * `PAID` o driver relê a fatura mesmo com o model preenchido, porque o acumulado que o
+     * chamador tinha em `refundedAmount` foi sobrescrito pelo valor pedido.
+     */
+    public function testSecondPartialRefundWithinTheRemainderGoesToTheGateway(): void
+    {
+        $partiallyRefunded = $this->paidCardPaymentIntentResponse();
+        $partiallyRefunded['latest_charge']['amount_refunded'] = 2345;
+        $refunded = $this->paidCardPaymentIntentResponse();
+        $refunded['latest_charge']['amount_refunded'] = 7345;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $partiallyRefunded,
+            $this->refundResponse('re_fake456', 5000, 'succeeded'),
+            $refunded,
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->paymentMethod = PaymentMethod::CREDIT_CARD;
+        $invoice->status = InvoiceStatus::PARTIALLY_REFUNDED;
+        $invoice->paidAmount = 12345;
+        $invoice->refundedAmount = 5000;
+        $result = (new StripeGateway())->refundInvoice($invoice);
+
+        $this->assertSame([
+            'get /v1/payment_intents/pi_fake123',
+            'post /v1/refunds',
+            'get /v1/payment_intents/pi_fake123',
+        ], $this->calledPaths($httpClient));
+        $this->assertSame(['payment_intent' => 'pi_fake123', 'amount' => 5000], $httpClient->calls[1][2]);
+        $this->assertSame('re_fake456', $result->id);
+        $this->assertSame(5000, $result->amount);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->invoice()->status);
+        $this->assertSame(7345, $result->invoice()->refundedAmount);
+    }
+
+    /**
+     * Sem leitura prévia (model em `PAID` com `paidAmount`), o restante é o valor pago e a
+     * recusa acontece sem nenhuma requisição além da leitura inicial.
+     */
+    public function testRefundAboveThePaidAmountOnAModelReadFromTheGatewayThrowsWithoutAnotherRequest(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+        $gateway = new StripeGateway();
+
+        $invoice = $gateway->getInvoice($this->invoiceWithId());
+        $invoice->refundedAmount = 12346;
+
+        try {
+            $gateway->refundInvoice($invoice);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $e->reason);
+            $this->assertStringContainsString('12345', $e->getMessage());
+        }
+        $this->assertSame(['get /v1/payment_intents/pi_fake123'], $this->calledPaths($httpClient));
+    }
+
+    /**
+     * Regressão: a leitura prévia parseia uma cópia, e a cópia precisa ser profunda, senão o
+     * `customer` do model do chamador recebe os dados da resposta mesmo quando a guarda dispara.
+     */
+    public function testRefusedRefundLeavesTheCallerNestedObjectsUntouched(): void
+    {
+        $partiallyRefunded = $this->paidCardPaymentIntentResponse();
+        $partiallyRefunded['latest_charge']['amount_refunded'] = 2345;
+        RecordingStripeHttpClient::withResponses([$partiallyRefunded]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->customer = new Customer();
+        $invoice->customer->name = 'Nome do chamador';
+        $invoice->creditCard = new CreditCard();
+        $invoice->refundedAmount = 11000;
+
+        $this->refundExpectingRefusal($invoice);
+
+        $this->assertSame('Nome do chamador', $invoice->customer->name);
+        $this->assertNull($invoice->customer->id);
+        $this->assertNull($invoice->creditCard->brand);
+    }
+
+    /**
+     * Model lido do gateway em `partially_refunded` carrega o acumulado em `refundedAmount`, e
+     * `refund()` sem alterar o valor reenvia o acumulado como novo estorno parcial. Para
+     * estornar o restante, o chamador limpa `refundedAmount` antes (documentado no README).
+     */
+    public function testRefundOnAPartiallyRefundedModelReadFromTheGatewayResendsTheAccumulatedAmount(): void
+    {
+        $partiallyRefunded = $this->paidCardPaymentIntentResponse();
+        $partiallyRefunded['latest_charge']['amount_refunded'] = 2345;
+        $refundedTwice = $this->paidCardPaymentIntentResponse();
+        $refundedTwice['latest_charge']['amount_refunded'] = 4690;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $partiallyRefunded,
+            $partiallyRefunded,
+            $this->refundResponse('re_fake456', 2345, 'succeeded'),
+            $refundedTwice,
+        ]);
+        $gateway = new StripeGateway();
+
+        $invoice = $gateway->getInvoice($this->invoiceWithId());
+        $result = $gateway->refundInvoice($invoice);
+
+        $this->assertSame('post /v1/refunds', $this->calledPaths($httpClient)[2]);
+        $this->assertSame(['payment_intent' => 'pi_fake123', 'amount' => 2345], $httpClient->calls[2][2]);
+        $this->assertSame(2345, $result->amount);
+        $this->assertSame(4690, $invoice->refundedAmount);
+    }
+
+    public function testSecondPartialRefundAboveTheRemainderThrowsBeforePosting(): void
+    {
+        $partiallyRefunded = $this->paidCardPaymentIntentResponse();
+        $partiallyRefunded['latest_charge']['amount_refunded'] = 2345;
+        $httpClient = RecordingStripeHttpClient::withResponses([$partiallyRefunded]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->refundedAmount = 11000;
+        $exception = $this->refundExpectingRefusal($invoice);
+
+        $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $exception->reason);
+        $this->assertSame(PaymentMethod::CREDIT_CARD->value, $exception->paymentMethod);
+        $this->assertFalse($exception->manualRefundRequired);
+        $this->assertStringContainsString('11000', $exception->getMessage());
+        $this->assertStringContainsString('10000', $exception->getMessage());
+        $this->assertSame(['get /v1/payment_intents/pi_fake123'], $this->calledPaths($httpClient));
+        $this->assertSame(11000, $invoice->refundedAmount, 'a leitura prévia não altera o model do chamador');
+    }
+
+    public function testRefundingTheExactRemainderOfAPartiallyRefundedInvoiceGoesToTheGateway(): void
+    {
+        $partiallyRefunded = $this->paidCardPaymentIntentResponse();
+        $partiallyRefunded['latest_charge']['amount_refunded'] = 2345;
         $refunded = $this->paidCardPaymentIntentResponse();
         $refunded['latest_charge']['amount_refunded'] = 12345;
         $refunded['latest_charge']['refunded'] = true;
         $httpClient = RecordingStripeHttpClient::withResponses([
-            ['id' => 're_fake456', 'object' => 'refund', 'status' => 'succeeded', 'amount' => 10000],
+            $partiallyRefunded,
+            $this->refundResponse('re_fake456', 10000, 'succeeded'),
             $refunded,
         ]);
 
@@ -1036,23 +1253,112 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->refundedAmount = 10000;
         $result = (new StripeGateway())->refundInvoice($invoice);
 
-        $this->assertSame('post', $httpClient->calls[0][0]);
-        $this->assertSame('/v1/refunds', parse_url($httpClient->calls[0][1], PHP_URL_PATH));
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
-        $this->assertSame('re_fake456', $result->lastRefundId);
+        $this->assertSame('post', $httpClient->calls[1][0]);
+        $this->assertSame(['payment_intent' => 'pi_fake123', 'amount' => 10000], $httpClient->calls[1][2]);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
+        $this->assertSame('re_fake456', $result->id);
     }
 
-    public function testGetInvoiceDoesNotFillLastRefundId(): void
+    public function testGetInvoiceListsTheRefundsOfTheCharge(): void
     {
         $response = $this->paidCardPaymentIntentResponse();
-        $response['latest_charge']['amount_refunded'] = 12345;
-        $response['latest_charge']['refunded'] = true;
+        $response['latest_charge']['amount_refunded'] = 5345;
+        $response['latest_charge']['refunds'] = $this->refundListResponse([
+            $this->refundResponse('re_fake123', 2345, 'succeeded'),
+            $this->refundResponse('re_fake456', 3000, 'pending', 1786700200, null),
+        ]);
         RecordingStripeHttpClient::withResponses([$response]);
 
         $result = $this->getInvoice();
 
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
-        $this->assertNull($result->lastRefundId);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->status);
+        $this->assertCount(2, $result->refunds);
+        $this->assertContainsOnlyInstancesOf(Refund::class, $result->refunds);
+        $this->assertSame('re_fake123', $result->refunds[0]->id);
+        $this->assertSame(2345, $result->refunds[0]->amount);
+        $this->assertSame(RefundStatus::SUCCEEDED, $result->refunds[0]->status);
+        $this->assertSame('requested_by_customer', $result->refunds[0]->reason);
+        $this->assertSame(1786700100, $result->refunds[0]->createdAt->getTimestamp());
+        $this->assertSame('pi_fake123', $result->refunds[0]->invoiceId);
+        $this->assertSame('stripe', $result->refunds[0]->gateway);
+        $this->assertNull($result->refunds[0]->invoice, 'um Refund lido da fatura não carrega a fatura');
+        $this->assertSame('re_fake456', $result->refunds[1]->id);
+        $this->assertSame(RefundStatus::PENDING, $result->refunds[1]->status);
+        $this->assertNull($result->refunds[1]->reason);
+    }
+
+    public function testGetInvoiceWithoutRefundHasAnEmptyRefundsList(): void
+    {
+        RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $this->assertSame([], $this->getInvoice()->refunds);
+    }
+
+    /**
+     * Resposta com estorno mas sem a lista `refunds` expandida: a lista não pode contradizer
+     * `refundedAmount`, então volta um único `Refund` sem id com o acumulado.
+     */
+    public function testGetInvoiceWithoutTheRefundsListFallsBackToASingleRefundWithoutId(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 2345;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $loggerAnterior = \Stripe\Stripe::getLogger();
+        $logger = new RecordingStripeLogger();
+        \Stripe\Stripe::setLogger($logger);
+
+        try {
+            $result = $this->getInvoice();
+        } finally {
+            \Stripe\Stripe::setLogger($loggerAnterior);
+        }
+
+        $this->assertSame([], $logger->messages, 'ler `refunds` ausente não pode logar Undefined property');
+        $this->assertCount(1, $result->refunds);
+        $this->assertNull($result->refunds[0]->id);
+        $this->assertSame(2345, $result->refunds[0]->amount);
+        $this->assertSame(RefundStatus::SUCCEEDED, $result->refunds[0]->status);
+    }
+
+    #[DataProvider('refundStatusProvider')]
+    public function testRefundStatusIsMappedToTheGenericEnum(string $stripeStatus, RefundStatus $expected): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 2345;
+        $response['latest_charge']['refunds'] = $this->refundListResponse([
+            $this->refundResponse('re_fake123', 2345, $stripeStatus),
+        ]);
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $this->assertSame($expected, $this->getInvoice()->refunds[0]->status);
+    }
+
+    public static function refundStatusProvider(): array
+    {
+        return [
+            'pending' => ['pending', RefundStatus::PENDING],
+            'requires_action' => ['requires_action', RefundStatus::PENDING],
+            'succeeded' => ['succeeded', RefundStatus::SUCCEEDED],
+            'failed' => ['failed', RefundStatus::FAILED],
+            'canceled' => ['canceled', RefundStatus::CANCELED],
+        ];
+    }
+
+    public function testRefundStatusOutsideTheMapIsReadAsUnknownWithAWarning(): void
+    {
+        Facade::getFacadeApplication()->instance('log', $logger = new RecordingLogger());
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 2345;
+        $response['latest_charge']['refunds'] = $this->refundListResponse([
+            $this->refundResponse('re_fake123', 2345, 'status_novo'),
+        ]);
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $this->assertSame(RefundStatus::UNKNOWN, $this->getInvoice()->refunds[0]->status);
+        $this->assertCount(1, $logger->records);
+        $this->assertSame('warning', $logger->records[0]['level']);
+        $this->assertSame(['status' => 'status_novo', 'gateway' => 'stripe'], $logger->records[0]['context']);
     }
 
     public function testDuplicatesPendingPixInvoiceCancelingTheOriginal(): void
@@ -1104,7 +1410,7 @@ class StripeGatewayInvoiceTest extends TestCase
             ],
             'confirm' => 'true',
             'payment_method_options' => ['pix' => ['expires_at' => $expiresAt->getTimestamp()]],
-            'expand' => ['latest_charge.balance_transaction'],
+            'expand' => ['latest_charge.balance_transaction', 'latest_charge.refunds'],
         ], $httpClient->calls[2][2]);
 
         $this->assertSame('pi_fake456', $result->id);
@@ -1272,6 +1578,61 @@ class StripeGatewayInvoiceTest extends TestCase
                     ['id' => 'txi_fake1', 'object' => 'tax_id', 'type' => 'br_cpf', 'value' => '20176996915'],
                 ],
             ],
+        ];
+    }
+
+    private function invoiceWithId(): Invoice
+    {
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        return $invoice;
+    }
+
+    private function refundExpectingRefusal(Invoice $invoice): RefundNotSupportedException
+    {
+        try {
+            (new StripeGateway())->refundInvoice($invoice);
+        } catch (RefundNotSupportedException $e) {
+            return $e;
+        }
+
+        $this->fail('Esperava RefundNotSupportedException');
+    }
+
+    /**
+     * @return string[]  método e caminho de cada chamada, na ordem
+     */
+    private function calledPaths(RecordingStripeHttpClient $httpClient): array
+    {
+        return array_map(
+            static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH),
+            $httpClient->calls
+        );
+    }
+
+    private function refundResponse(string $id, int $amount, string $status, int $created = 1786700100, ?string $reason = 'requested_by_customer'): array
+    {
+        return [
+            'id' => $id,
+            'object' => 'refund',
+            'amount' => $amount,
+            'currency' => 'brl',
+            'status' => $status,
+            'created' => $created,
+            'reason' => $reason,
+            'payment_intent' => 'pi_fake123',
+            'charge' => 'ch_fake123',
+        ];
+    }
+
+    private function refundListResponse(array $refunds): array
+    {
+        return [
+            'object' => 'list',
+            'data' => $refunds,
+            'has_more' => false,
+            'url' => '/v1/charges/ch_fake123/refunds',
         ];
     }
 

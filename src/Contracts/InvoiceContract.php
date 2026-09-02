@@ -4,6 +4,7 @@ namespace  Potelo\MultiPayment\Contracts;
 
 use Carbon\Carbon;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -38,15 +39,17 @@ interface InvoiceContract
      *
      * Full refund when `refundedAmount` is empty; partial when set. The gateway throws
      * `RefundNotSupportedException` before any request when its own rules already guarantee
-     * the refusal (bank slip, partial Pix on Iugu, invoice already refunded, window expired).
+     * the refusal (bank slip, partial Pix on Iugu, invoice already refunded, amount above the
+     * refundable remainder, window expired). Returns the created `Refund`, with the invoice
+     * re-read after the refund in `$refund->invoice`; the given model is updated in place.
      *
      * @param  Invoice  $invoice
      *
-     * @return Invoice
+     * @return Refund
      * @throws GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice): Invoice;
+    public function refundInvoice(Invoice $invoice): Refund;
 
     /**
      * String representation of the gateway

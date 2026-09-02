@@ -12,6 +12,7 @@ use IuguObjectNotFound;
 use Potelo\MultiPayment\Models\Pix;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
@@ -27,6 +28,7 @@ use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\DeclineCode;
@@ -544,11 +546,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * no estorno por valor, do valor pago. Um model que traz só o `id` custa um GET a mais para
      * ler a fatura antes do estorno; um model lido do gateway e já pago não paga esse GET. A
      * leitura prévia acontece numa cópia: o model do chamador só é alterado se o estorno
-     * acontecer.
+     * acontecer. A Iugu não devolve um objeto de estorno, então o `Refund` é montado pela lib:
+     * sem id, com o valor pedido (ou, no estorno integral, o `paid_cents` anterior ao estorno,
+     * que a Iugu devolve líquido do já estornado) e status `SUCCEEDED`, porque a Iugu só
+     * responde 200 com o estorno feito.
      *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice): Invoice
+    public function refundInvoice(Invoice $invoice): Refund
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
@@ -575,17 +580,30 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         if (!is_null($requestedAmount) && $requestedAmount !== $current->paidAmount) {
             $data['partial_value_refund_cents'] = $requestedAmount;
         }
+        // o estorno integral devolve o paid_cents anterior, que parseInvoice() vai sobrescrever
+        $refundableBefore = $current->paidAmount;
 
         $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/refund';
         $iuguInvoice = $this->iuguRequest('POST', $url, $data, 'refunding invoice');
 
-        return $this->parseInvoice($iuguInvoice, $invoice);
+        $invoice = $this->parseInvoice($iuguInvoice, $invoice);
+
+        $refund = new Refund();
+        $refund->invoiceId = $invoice->id;
+        $refund->amount = $requestedAmount ?? $refundableBefore ?? $invoice->refundedAmount;
+        $refund->status = RefundStatus::SUCCEEDED;
+        $refund->createdAt = Carbon::now();
+        $refund->gateway = 'iugu';
+        $refund->invoice = $invoice;
+
+        return $refund;
     }
 
     /**
      * Lança antes da rede quando a Iugu certamente recusaria o estorno: boleto não tem estorno
-     * pela API, fatura em `refunded` é terminal, Pix só estorna o valor integral e o prazo de
-     * estorno termina no fim do 90º dia após o pagamento.
+     * pela API, fatura em `refunded` é terminal, o valor pedido não pode passar do que resta
+     * (`paid_cents`, que a Iugu já devolve líquido do que foi estornado), Pix só estorna o valor
+     * integral e o prazo de estorno termina no fim do 90º dia após o pagamento.
      *
      * @param  Invoice  $invoice
      * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno integral
@@ -600,6 +618,15 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         if ($invoice->status === InvoiceStatus::REFUNDED) {
             throw RefundNotSupportedException::alreadyRefunded('iugu', $invoice->paymentMethod?->value);
+        }
+
+        if (!is_null($requestedAmount) && !is_null($invoice->paidAmount) && $requestedAmount > $invoice->paidAmount) {
+            throw RefundNotSupportedException::amountExceedsRefundable(
+                'iugu',
+                $invoice->paymentMethod?->value,
+                $requestedAmount,
+                $invoice->paidAmount
+            );
         }
 
         if (
@@ -983,6 +1010,29 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
+     * Monta a lista de estornos da fatura a partir de `refunded_cents`. A Iugu não lista os
+     * estornos nem os identifica, então a lista tem no máximo um `Refund`, sem id, com o
+     * acumulado estornado; sem estorno a lista é vazia.
+     *
+     * @param  Invoice  $invoice  fatura já parseada, com `id`, `refundedAmount` e `paidAt`
+     * @return Refund[]
+     */
+    private function parseRefunds(Invoice $invoice): array
+    {
+        if (empty($invoice->refundedAmount)) {
+            return [];
+        }
+
+        $refund = new Refund();
+        $refund->invoiceId = $invoice->id;
+        $refund->amount = $invoice->refundedAmount;
+        $refund->status = RefundStatus::SUCCEEDED;
+        $refund->gateway = 'iugu';
+
+        return [$refund];
+    }
+
+    /**
      * Convert the iugu invoice into a MultiPayment invoice
      *
      * @param $iuguInvoice
@@ -1006,6 +1056,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $invoice->createdAt = new Carbon($iuguInvoice->created_at_iso);
         $invoice->paidAmount = $iuguInvoice->paid_cents;
         $invoice->refundedAmount = $iuguInvoice->refunded_cents;
+        $invoice->refunds = $this->parseRefunds($invoice);
         $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
 
         if (empty($invoice->paymentMethod)) {

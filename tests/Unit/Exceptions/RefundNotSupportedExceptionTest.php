@@ -51,6 +51,19 @@ class RefundNotSupportedExceptionTest extends TestCase
         $this->assertFalse($exception->manualRefundRequired);
     }
 
+    public function testAmountExceedsRefundableIsFixableByTheCaller(): void
+    {
+        $exception = RefundNotSupportedException::amountExceedsRefundable('stripe', 'credit_card', 11000, 10000);
+
+        $this->assertSame('amount_exceeds_refundable', $exception->reason);
+        $this->assertSame('credit_card', $exception->paymentMethod);
+        $this->assertFalse($exception->manualRefundRequired);
+        $this->assertNull($exception->capability);
+        $this->assertSame('stripe', $exception->gateway);
+        $this->assertStringContainsString('11000', $exception->getMessage());
+        $this->assertStringContainsString('10000', $exception->getMessage());
+    }
+
     public function testRefundWindowExpiredRequiresManualRefund(): void
     {
         $exception = RefundNotSupportedException::refundWindowExpired('iugu', 'pix', Carbon::parse('2026-05-01'), 90);

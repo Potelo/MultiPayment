@@ -8,6 +8,8 @@ use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\NotFoundException;
@@ -15,6 +17,7 @@ use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 
 class IuguGatewayRefundTest extends TestCase
@@ -100,15 +103,27 @@ class IuguGatewayRefundTest extends TestCase
             $this->paidPixInvoiceResponse(['status' => 'refunded', 'refunded_cents' => 10000, 'paid_cents' => 0]),
         ]);
 
-        $result = (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
+        $invoice = $this->invoiceWithId();
+        $result = (new IuguGateway($api))->refundInvoice($invoice);
 
         $this->assertCount(2, $api->calls);
         $this->assertSame('POST', $api->calls[1]['method']);
         $this->assertStringEndsWith('/invoices/inv_1/refund', $api->calls[1]['url']);
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
-        $this->assertSame(10000, $result->refundedAmount);
-        $this->assertNull($result->lastRefundId);
+
+        $this->assertInstanceOf(Refund::class, $result);
+        $this->assertNull($result->id, 'a Iugu não identifica o estorno');
+        $this->assertSame('inv_1', $result->invoiceId);
+        $this->assertSame(10000, $result->amount);
+        $this->assertSame(RefundStatus::SUCCEEDED, $result->status);
+        $this->assertSame('2026-09-02 12:00:00', $result->createdAt->toDateTimeString());
+        $this->assertSame('iugu', $result->gateway);
+        $this->assertNull($result->original);
+
+        $this->assertSame($invoice, $result->invoice());
+        $this->assertSame(InvoiceStatus::REFUNDED, $invoice->status);
+        $this->assertSame(10000, $invoice->refundedAmount);
+        $this->assertCount(2, $api->calls, 'invoice() não faz requisição');
     }
 
     /**
@@ -127,7 +142,8 @@ class IuguGatewayRefundTest extends TestCase
         $result = (new IuguGateway($api))->refundInvoice($invoice);
 
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
+        $this->assertSame(10000, $result->amount);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
     }
 
     public function testPartialCardRefundSendsThePartialValue(): void
@@ -143,16 +159,20 @@ class IuguGatewayRefundTest extends TestCase
 
         $this->assertSame('POST', $api->calls[1]['method']);
         $this->assertSame(['partial_value_refund_cents' => 2500], $api->calls[1]['data']);
-        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->status);
-        $this->assertSame(2500, $result->refundedAmount);
-        $this->assertSame(7500, $result->paidAmount);
+        $this->assertSame(2500, $result->amount);
+        $this->assertSame(RefundStatus::SUCCEEDED, $result->status);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->invoice()->status);
+        $this->assertSame(2500, $result->invoice()->refundedAmount);
+        $this->assertSame(7500, $result->invoice()->paidAmount);
+        $this->assertCount(1, $result->invoice()->refunds);
+        $this->assertSame(2500, $result->invoice()->refunds[0]->amount);
     }
 
     /**
-     * Fatura parcialmente estornada aceita novo estorno: a guarda `already_refunded` olha só
-     * `refunded`. Pedir exatamente o que resta vai como integral.
+     * Fatura parcialmente estornada aceita novo estorno até o restante (`paid_cents`, que a
+     * Iugu devolve líquido do já estornado). Pedir exatamente o que resta vai como integral.
      */
-    public function testPartiallyRefundedInvoiceAcceptsAnotherRefund(): void
+    public function testRefundingTheExactRemainderOfAPartiallyRefundedInvoiceGoesAsIntegral(): void
     {
         $api = new QueuedIuguApiRequest([
             $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
@@ -165,7 +185,121 @@ class IuguGatewayRefundTest extends TestCase
 
         $this->assertCount(2, $api->calls);
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
+        $this->assertSame(7500, $result->amount);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
+    }
+
+    /**
+     * O `Refund` devolvido traz o valor deste estorno; `Invoice::$refunds` traz o acumulado
+     * num único registro, porque a Iugu só informa `refunded_cents`.
+     */
+    public function testSecondPartialRefundWithinTheRemainderGoesToTheGateway(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 4500, 'paid_cents' => 5500]),
+        ]);
+        $invoice = $this->invoiceWithId();
+        $invoice->refundedAmount = 2000;
+
+        $result = (new IuguGateway($api))->refundInvoice($invoice);
+
+        $this->assertSame(['partial_value_refund_cents' => 2000], $api->calls[1]['data']);
+        $this->assertSame(2000, $result->amount);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->invoice()->status);
+        $this->assertSame(4500, $result->invoice()->refundedAmount);
+        $this->assertCount(1, $result->invoice()->refunds);
+        $this->assertNull($result->invoice()->refunds[0]->id);
+        $this->assertSame(4500, $result->invoice()->refunds[0]->amount);
+    }
+
+    public function testSecondPartialRefundAboveTheRemainderThrowsBeforeTheNetwork(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+        ]);
+        $invoice = $this->invoiceWithId();
+        $invoice->refundedAmount = 8000;
+
+        $exception = $this->refundExpectingRefusal($api, $invoice);
+
+        $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $exception->reason);
+        $this->assertSame(PaymentMethod::CREDIT_CARD->value, $exception->paymentMethod);
+        $this->assertFalse($exception->manualRefundRequired);
+        $this->assertNull($exception->capability);
+        $this->assertStringContainsString('8000', $exception->getMessage());
+        $this->assertStringContainsString('7500', $exception->getMessage());
+        $this->assertOnlyTheInvoiceWasRead($api);
+        $this->assertSame(8000, $invoice->refundedAmount);
+    }
+
+    /**
+     * Regressão: a leitura prévia parseia uma cópia, e a cópia precisa ser profunda, senão o
+     * `customer` do model do chamador recebe os dados da resposta mesmo quando a guarda dispara.
+     */
+    public function testRefusedRefundLeavesTheCallerNestedObjectsUntouched(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+        ]);
+        $invoice = $this->invoiceWithId();
+        $invoice->customer = new Customer();
+        $invoice->customer->name = 'Nome do chamador';
+        $invoice->refundedAmount = 8000;
+
+        $this->refundExpectingRefusal($api, $invoice);
+
+        $this->assertSame('Nome do chamador', $invoice->customer->name);
+        $this->assertNull($invoice->customer->id);
+    }
+
+    /**
+     * Model lido do gateway em `partially_refunded` carrega o acumulado em `refundedAmount`, e
+     * `refund()` sem alterar o valor reenvia o acumulado como novo estorno parcial. Para
+     * estornar o restante, o chamador limpa `refundedAmount` antes (documentado no README).
+     */
+    public function testRefundOnAPartiallyRefundedModelReadFromTheGatewayResendsTheAccumulatedAmount(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 5000, 'paid_cents' => 5000]),
+        ]);
+        $gateway = new IuguGateway($api);
+
+        $invoice = $gateway->getInvoice($this->invoiceWithId());
+        $result = $gateway->refundInvoice($invoice);
+
+        $this->assertSame(['partial_value_refund_cents' => 2500], $api->calls[1]['data']);
+        $this->assertSame(2500, $result->amount);
+        $this->assertSame(5000, $invoice->refundedAmount);
+    }
+
+    public function testFirstRefundAboveThePaidAmountThrowsBeforeTheNetwork(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->paidInvoiceResponse()]);
+        $invoice = $this->invoiceWithId();
+        $invoice->refundedAmount = 10001;
+
+        $exception = $this->refundExpectingRefusal($api, $invoice);
+
+        $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $exception->reason);
+        $this->assertOnlyTheInvoiceWasRead($api);
+    }
+
+    /**
+     * Num Pix, valor acima do pago é recusado com `amount_exceeds_refundable`, antes da guarda de
+     * Pix parcial, porque a orientação de repetir sem valor não resolveria esse pedido.
+     */
+    public function testPixRefundAboveThePaidAmountIsRefusedAsExceeding(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->paidPixInvoiceResponse()]);
+        $invoice = $this->invoiceWithId();
+        $invoice->refundedAmount = 15000;
+
+        $exception = $this->refundExpectingRefusal($api, $invoice);
+
+        $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $exception->reason);
+        $this->assertSame(PaymentMethod::PIX->value, $exception->paymentMethod);
     }
 
     /**
@@ -226,7 +360,7 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertCount(2, $api->calls);
         $this->assertSame('GET', $api->calls[0]['method']);
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
     }
 
     /**
@@ -295,7 +429,7 @@ class IuguGatewayRefundTest extends TestCase
         $result = (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
 
         $this->assertCount(2, $api->calls);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
     }
 
     /**
@@ -312,7 +446,7 @@ class IuguGatewayRefundTest extends TestCase
         $result = (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
 
         $this->assertCount(2, $api->calls);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
     }
 
     public function testRefundOnTheDayAfterTheWindowThrowsBeforeTheNetwork(): void
@@ -345,7 +479,50 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertCount(2, $api->calls);
         $this->assertSame('GET', $api->calls[0]['method']);
         $this->assertSame('POST', $api->calls[1]['method']);
-        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
+        $this->assertSame(10000, $result->amount, 'sem valor pedido, o valor vem do que a Iugu acrescentou a refunded_cents');
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->invoice()->status);
+    }
+
+    /**
+     * Regressão: model lido do gateway, já parcialmente estornado, com `refundedAmount` limpo
+     * pelo chamador para pedir o restante. Sem leitura prévia, o valor do `Refund` vem do
+     * `paid_cents` que o model trazia.
+     */
+    public function testIntegralRefundOfAPartiallyRefundedInvoiceReadFromTheGatewayReportsTheRemainder(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+            $this->paidInvoiceResponse(['status' => 'refunded', 'refunded_cents' => 10000, 'paid_cents' => 0]),
+        ]);
+        $gateway = new IuguGateway($api);
+
+        $invoice = $gateway->getInvoice($this->invoiceWithId());
+        $invoice->refundedAmount = null;
+        $result = $gateway->refundInvoice($invoice);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame([], $api->calls[1]['data']);
+        $this->assertSame(7500, $result->amount);
+        $this->assertSame(10000, $invoice->refundedAmount);
+        $this->assertSame(InvoiceStatus::REFUNDED, $invoice->status);
+    }
+
+    /**
+     * Regressão: estorno integral do restante numa fatura já parcialmente estornada, lida do
+     * gateway. O valor do `Refund` é só o que este estorno devolveu.
+     */
+    public function testIntegralRefundOfTheRemainderReportsOnlyWhatThisRefundReturned(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+            $this->paidInvoiceResponse(['status' => 'refunded', 'refunded_cents' => 10000, 'paid_cents' => 0]),
+        ]);
+
+        $result = (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
+
+        $this->assertSame([], $api->calls[1]['data']);
+        $this->assertSame(7500, $result->amount);
+        $this->assertSame(10000, $result->invoice()->refundedAmount);
     }
 
     public function testGatewayErrorOnRefundBecomesGatewayException(): void
@@ -375,7 +552,31 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertSame(PaymentMethod::CREDIT_CARD, $result->paymentMethod);
         $this->assertSame(10000, $result->paidAmount);
         $this->assertSame('2026-08-20', $result->paidAt->toDateString());
-        $this->assertNull($result->lastRefundId);
+        $this->assertSame([], $result->refunds);
+    }
+
+    /**
+     * A Iugu só informa `refunded_cents`, então a lista de estornos tem um único `Refund`, sem
+     * id e sem data, com o acumulado.
+     */
+    public function testGetInvoiceListsASingleSyntheticRefundWithTheAccumulatedAmount(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 3000, 'paid_cents' => 7000]),
+        ]);
+
+        $result = (new IuguGateway($api))->getInvoice($this->invoiceWithId());
+
+        $this->assertCount(1, $result->refunds);
+        $refund = $result->refunds[0];
+        $this->assertInstanceOf(Refund::class, $refund);
+        $this->assertNull($refund->id);
+        $this->assertSame('inv_1', $refund->invoiceId);
+        $this->assertSame(3000, $refund->amount);
+        $this->assertSame(RefundStatus::SUCCEEDED, $refund->status);
+        $this->assertNull($refund->createdAt);
+        $this->assertSame('iugu', $refund->gateway);
+        $this->assertNull($refund->invoice);
     }
 
     public function testGetInvoiceErrorBecomesGatewayException(): void

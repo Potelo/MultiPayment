@@ -19,6 +19,7 @@ use Stripe\Exception\AuthenticationException as StripeAuthenticationException;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Pix;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
@@ -28,6 +29,7 @@ use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Helpers\LogHelper;
@@ -65,9 +67,23 @@ class StripeGateway implements GatewayContract
 
     /**
      * Expand padrão em toda leitura/criação de PaymentIntent: sem latest_charge expandido,
-     * paidAmount/refundedAmount/fee ficam vazios no parse.
+     * paidAmount/refundedAmount/fee ficam vazios no parse, e sem `refunds` do charge (que a
+     * Stripe não inclui por padrão) a lista `Invoice::$refunds` seria reconstruída sem ids.
      */
-    private const PAYMENT_INTENT_EXPAND = ['latest_charge.balance_transaction'];
+    private const PAYMENT_INTENT_EXPAND = ['latest_charge.balance_transaction', 'latest_charge.refunds'];
+
+    /**
+     * Mapa de status do objeto Refund da Stripe para os genéricos do pacote. Lista oficial em
+     * https://docs.stripe.com/api/refunds/object#refund_object-status; `requires_action`
+     * (estorno aguardando ação do cliente) lê como pendente.
+     */
+    private const REFUND_STATUSES = [
+        'pending' => RefundStatus::PENDING,
+        'requires_action' => RefundStatus::PENDING,
+        'succeeded' => RefundStatus::SUCCEEDED,
+        'failed' => RefundStatus::FAILED,
+        'canceled' => RefundStatus::CANCELED,
+    ];
 
     /**
      * Status de dispute da Stripe que significam contestação em aberto: inquiry ou chargeback
@@ -884,27 +900,40 @@ class StripeGateway implements GatewayContract
     /**
      * @inheritDoc
      *
-     * As guardas de estorno usam só o que já está no model, sem leitura prévia: um PaymentIntent
-     * deste driver não pode ser boleto.
+     * As guardas de estorno precisam do método de pagamento, do status e, no estorno por valor,
+     * do quanto ainda pode ser estornado. Um model que traz só o `id` custa um GET a mais para
+     * ler a fatura antes do estorno; um model lido do gateway, pago e sem estorno anterior não
+     * paga esse GET. No estorno por valor sobre uma fatura fora de `PAID` a leitura acontece
+     * mesmo com o model preenchido, porque o restante estornável depende do acumulado que o
+     * gateway guarda. A leitura prévia acontece numa cópia: o model do chamador só é alterado se
+     * o estorno acontecer.
      *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice): Invoice
+    public function refundInvoice(Invoice $invoice): Refund
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
-        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
-            throw RefundNotSupportedException::boletoNoRefund('stripe');
+
+        // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
+        $requestedAmount = $invoice->refundedAmount ?: null;
+
+        $current = $invoice;
+        if (
+            empty($invoice->paymentMethod)
+            || empty($invoice->status)
+            || (!is_null($requestedAmount) && (is_null($invoice->paidAmount) || $invoice->status !== InvoiceStatus::PAID))
+        ) {
+            $current = $this->getInvoice(clone $invoice);
         }
-        if ($invoice->status === InvoiceStatus::REFUNDED) {
-            throw RefundNotSupportedException::alreadyRefunded('stripe', $invoice->paymentMethod?->value);
-        }
+
+        $this->assertInvoiceIsRefundable($current, $requestedAmount, $current !== $invoice);
 
         // mesma semântica da Iugu: refundedAmount preenchido = estorno parcial; vazio = total
         $stripeRefundData = ['payment_intent' => $invoice->id];
-        if (!empty($invoice->refundedAmount)) {
-            $stripeRefundData['amount'] = $invoice->refundedAmount;
+        if (!is_null($requestedAmount)) {
+            $stripeRefundData['amount'] = $requestedAmount;
         }
         $stripeRefundData = $this->mergeGatewayOptions($stripeRefundData, $invoice);
         $requestOptions = $this->extractIdempotencyKey($stripeRefundData);
@@ -913,11 +942,51 @@ class StripeGateway implements GatewayContract
             return $this->client->refunds->create($stripeRefundData, $requestOptions);
         });
 
-        // o refund não devolve o PaymentIntent — refetch para reparse com o charge atualizado
+        // o refund não devolve o PaymentIntent: refetch para reparse com o charge atualizado
         $invoice = $this->getInvoice($invoice);
-        $invoice->lastRefundId = $stripeRefund->id;
 
-        return $invoice;
+        $refund = $this->parseRefund($stripeRefund, $invoice->id);
+        $refund->invoice = $invoice;
+
+        return $refund;
+    }
+
+    /**
+     * Lança antes da rede quando a Stripe certamente recusaria o estorno: boleto não tem estorno
+     * pela API, fatura em `refunded` é terminal e o valor pedido não pode passar do que resta
+     * (`amount_captured` menos `amount_refunded` do charge).
+     *
+     * @param  Invoice  $invoice
+     * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno integral
+     * @param  bool  $freshlyRead  verdadeiro quando `$invoice` acabou de ser lida do gateway e
+     *                             `refundedAmount` é o acumulado; falso quando o model é do
+     *                             chamador, em `PAID`, sem estorno anterior
+     * @return void
+     * @throws RefundNotSupportedException
+     */
+    private function assertInvoiceIsRefundable(Invoice $invoice, ?int $requestedAmount, bool $freshlyRead): void
+    {
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
+            throw RefundNotSupportedException::boletoNoRefund('stripe');
+        }
+
+        if ($invoice->status === InvoiceStatus::REFUNDED) {
+            throw RefundNotSupportedException::alreadyRefunded('stripe', $invoice->paymentMethod?->value);
+        }
+
+        if (is_null($requestedAmount) || is_null($invoice->paidAmount)) {
+            return;
+        }
+
+        $refundable = $invoice->paidAmount - ($freshlyRead ? ($invoice->refundedAmount ?? 0) : 0);
+        if ($requestedAmount > $refundable) {
+            throw RefundNotSupportedException::amountExceedsRefundable(
+                'stripe',
+                $invoice->paymentMethod?->value,
+                $requestedAmount,
+                $refundable
+            );
+        }
     }
 
     /**
@@ -1001,6 +1070,7 @@ class StripeGateway implements GatewayContract
         $invoice->amount = $stripePaymentIntent->amount;
         $invoice->paidAmount = $paidCharge?->amount_captured;
         $invoice->refundedAmount = $paidCharge?->amount_refunded;
+        $invoice->refunds = $this->parseRefunds($paidCharge, $stripePaymentIntent->id);
         $invoice->paidAt = $paidCharge ? Carbon::createFromTimestamp($paidCharge->created) : null;
         $balanceTransaction = $paidCharge?->balance_transaction;
         // a balance transaction do cartão é assíncrona: pode vir nula logo após o confirm
@@ -1075,6 +1145,66 @@ class StripeGateway implements GatewayContract
         }
 
         return $invoice;
+    }
+
+    /**
+     * Monta a lista de estornos da fatura a partir de `refunds` do charge pago, um `Refund`
+     * por estorno. Sem charge pago ou sem estorno a lista é vazia. Numa resposta em que a
+     * lista não veio expandida mas `amount_refunded` é maior que zero, devolve um único
+     * `Refund` sem id com o acumulado, para a lista nunca contradizer `refundedAmount`.
+     *
+     * @param  object|null  $paidCharge
+     * @param  string  $invoiceId
+     * @return Refund[]
+     */
+    private function parseRefunds(?object $paidCharge, string $invoiceId): array
+    {
+        if (!$paidCharge || empty($paidCharge->amount_refunded)) {
+            return [];
+        }
+
+        // isset() passa pelo __isset e não loga "Undefined property" quando a chave falta
+        $stripeRefunds = isset($paidCharge->refunds) ? $paidCharge->refunds : null;
+        if (!is_object($stripeRefunds) || !isset($stripeRefunds->data)) {
+            $refund = new Refund();
+            $refund->invoiceId = $invoiceId;
+            $refund->amount = $paidCharge->amount_refunded;
+            $refund->status = RefundStatus::SUCCEEDED;
+            $refund->gateway = 'stripe';
+
+            return [$refund];
+        }
+
+        return array_map(
+            fn (object $stripeRefund) => $this->parseRefund($stripeRefund, $invoiceId),
+            $stripeRefunds->data
+        );
+    }
+
+    /**
+     * Converte o objeto Refund da Stripe em um `Refund` do MultiPayment. Status fora do mapa
+     * vira `UNKNOWN` com aviso no log.
+     *
+     * @param  object  $stripeRefund
+     * @param  string  $invoiceId
+     * @return Refund
+     */
+    private function parseRefund(object $stripeRefund, string $invoiceId): Refund
+    {
+        $refund = new Refund();
+        $refund->id = $stripeRefund->id;
+        $refund->invoiceId = $invoiceId;
+        $refund->amount = $stripeRefund->amount;
+        $refund->status = self::REFUND_STATUSES[$stripeRefund->status ?? '']
+            ?? RefundStatus::unknown((string) $stripeRefund->status, 'stripe');
+        $refund->reason = $stripeRefund->reason ?? null;
+        $refund->createdAt = !empty($stripeRefund->created)
+            ? Carbon::createFromTimestamp($stripeRefund->created)
+            : null;
+        $refund->gateway = 'stripe';
+        $refund->original = $stripeRefund;
+
+        return $refund;
     }
 
     /**

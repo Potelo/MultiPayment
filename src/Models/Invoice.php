@@ -89,14 +89,13 @@ class Invoice extends Model
     public ?int $refundedAmount = null;
 
     /**
-     * Id do estorno criado pelo gateway na última chamada de `refund()`, quando o gateway
-     * devolve um (Stripe: `re_...`; a Iugu não devolve id de estorno). Preenchido só pela
-     * operação de estorno, não pela leitura da fatura. Campo provisório: dá lugar a um objeto
-     * `Refund` numa versão futura.
+     * Estornos da fatura, preenchidos na leitura. No Stripe é um `Refund` por estorno feito,
+     * com id; na Iugu, que só informa o total estornado, é um único `Refund` sem id com o
+     * acumulado, ou lista vazia quando nada foi estornado.
      *
-     * @var string|null
+     * @var Refund[]|null
      */
-    public ?string $lastRefundId = null;
+    public ?array $refunds = null;
 
     /**
      * @var Customer|null
@@ -413,6 +412,26 @@ class Invoice extends Model
     }
 
     /**
+     * Copia também os objetos aninhados que os drivers preenchem na leitura (`customer` e seu
+     * `address`, `creditCard`, `bankSlip`, `pix`, `automaticPix`, `automaticPixCharge`), para
+     * que parsear a cópia não altere o model original.
+     *
+     * @return void
+     */
+    public function __clone(): void
+    {
+        foreach (['customer', 'creditCard', 'bankSlip', 'pix', 'automaticPix', 'automaticPixCharge'] as $property) {
+            if (is_object($this->{$property})) {
+                $this->{$property} = clone $this->{$property};
+            }
+        }
+
+        if (is_object($this->customer?->address)) {
+            $this->customer->address = clone $this->customer->address;
+        }
+    }
+
+    /**
      * Converte o argumento dos helpers estáticos obsoletos em `InvoiceStatus`, sem log para
      * string fora do enum.
      *
@@ -425,13 +444,15 @@ class Invoice extends Model
     }
 
     /**
-     * Refund the invoice
+     * Estorna a fatura: integral quando `refundedAmount` está vazio, parcial quando preenchido
+     * com o valor em centavos. Devolve o `Refund` criado e atualiza esta instância com o
+     * estado posterior ao estorno (`$refund->invoice()` é esta instância).
      *
-     * @return \Potelo\MultiPayment\Models\Invoice
+     * @return Refund
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
-    public function refund(): Invoice
+    public function refund(): Refund
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
         return $gateway->refundInvoice($this);

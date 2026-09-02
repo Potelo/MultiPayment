@@ -13,6 +13,8 @@ use Potelo\MultiPayment\Exceptions\CardDeclinedException;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 
 /**
@@ -312,9 +314,16 @@ class StripeGatewayTest extends TestCase
 
         $this->assertEquals(InvoiceStatus::PAID, $invoice->status);
 
-        $invoiceRefunded = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id);
+        $refund = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id);
+        $this->assertStringStartsWith('re_', $refund->id);
+        $this->assertEquals(9900, $refund->amount);
+        $this->assertContains($refund->status, [RefundStatus::PENDING, RefundStatus::SUCCEEDED]);
+
+        $invoiceRefunded = $refund->invoice();
         $this->assertEquals(InvoiceStatus::REFUNDED, $invoiceRefunded->status);
         $this->assertEquals(9900, $invoiceRefunded->refundedAmount);
+        $this->assertCount(1, $invoiceRefunded->refunds);
+        $this->assertEquals($refund->id, $invoiceRefunded->refunds[0]->id);
     }
 
     /**
@@ -337,10 +346,24 @@ class StripeGatewayTest extends TestCase
         });
         $this->assertEquals(InvoiceStatus::PAID, $invoicePaid->status);
 
-        $invoiceRefunded = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id, 2345);
+        $refund = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id, 2345);
+        $this->assertEquals(2345, $refund->amount);
+
+        $invoiceRefunded = $refund->invoice();
         $this->assertEquals(InvoiceStatus::PARTIALLY_REFUNDED, $invoiceRefunded->status);
         $this->assertEquals(2345, $invoiceRefunded->refundedAmount);
         $this->assertEquals(12345, $invoiceRefunded->paidAmount);
+        $this->assertCount(1, $invoiceRefunded->refunds);
+        $this->assertEquals($refund->id, $invoiceRefunded->refunds[0]->id);
+
+        // segundo estorno acima do restante é recusado sem chamar a Stripe
+        try {
+            MultiPayment::setGateway($gateway)->refundInvoice($invoice->id, 10001);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $e->reason);
+        }
+        $this->assertEquals(2345, MultiPayment::setGateway($gateway)->getInvoice($invoice->id)->refundedAmount);
     }
 
     /**

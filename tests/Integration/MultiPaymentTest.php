@@ -11,6 +11,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
+use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 
 class MultiPaymentTest extends TestCase
@@ -352,14 +354,22 @@ class MultiPaymentTest extends TestCase
         $invoice = $invoiceBuilder->create();
         sleep(3);
 
-        $refundedInvoice = $multiPayment->refundInvoice($invoice->id, $refundedAmount);
+        $refund = $multiPayment->refundInvoice($invoice->id, $refundedAmount);
 
         if (is_null($refundedAmount)) {
             $refundedAmount = $total;
         }
+        $this->assertInstanceOf(Refund::class, $refund);
+        $this->assertSame($refundedAmount, $refund->amount);
+        $this->assertSame(RefundStatus::SUCCEEDED, $refund->status);
+        $this->assertSame($invoice->id, $refund->invoiceId);
+
+        $refundedInvoice = $refund->invoice();
         $this->assertSame($status, $refundedInvoice->status);
         $this->assertEquals($refundedAmount, $refundedInvoice->refundedAmount);
         $this->assertEquals($total - $refundedAmount, $refundedInvoice->paidAmount);
+        $this->assertCount(1, $refundedInvoice->refunds);
+        $this->assertEquals($refundedAmount, $refundedInvoice->refunds[0]->amount);
 
         // na Iugu a guarda lê a fatura real antes: já estornada é recusada sem novo POST
         if ($gateway === 'iugu' && $status === InvoiceStatus::REFUNDED) {

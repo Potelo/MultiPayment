@@ -26,6 +26,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
+    - [Refund](#refund)
     - [Subscription](#subscription)
     - [Plan](#plan)
 
@@ -383,7 +384,7 @@ MultiPaymentException
 | `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
 | `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
 | `UnsupportedOperationException` | Operação fora das capabilities do gateway, antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented` ou `gateway_limitation`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` antes (ver [Capabilities](#capabilities)) |
-| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway (boleto, Pix parcial, já estornada, prazo vencido); herda de `UnsupportedOperationException` e refina `reason` | Ver [Estorno](#estorno) |
+| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway (boleto, Pix parcial, já estornada, valor acima do restante, prazo vencido); herda de `UnsupportedOperationException` e refina `reason` | Ver [Estorno](#estorno) |
 | `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição | Corrigir a chamada |
 | `ConfigurationException` | Gateway não configurado ou classe inválida | Corrigir a configuração |
 | `GatewayException` | Qualquer outra resposta de erro do gateway, e a classe pai das quatro de resposta acima; `getErrors()` traz o corpo de erro | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
@@ -745,9 +746,9 @@ $foundInvoice = $payment->getInvoice($invoiceId);
 ```php
 $payment = new \Potelo\MultiPayment\MultiPayment('stripe');
 
-// estorno total ou parcial (valor em centavos); guardas e exceção na seção "Estorno"
-$payment->refundInvoice($invoiceId);
-$payment->refundInvoice($invoiceId, 5000);
+// estorno total ou parcial (valor em centavos); devolve um Refund (seção "Estorno")
+$refund = $payment->refundInvoice($invoiceId);
+$refund = $payment->refundInvoice($invoiceId, 5000);
 
 // cancelamento de fatura pendente
 $payment->cancelInvoice($invoiceId);
@@ -762,22 +763,72 @@ $payment->chargeInvoiceWithCreditCard($invoiceId, null, $creditCardId);
 
 #### Estorno
 
-Sem valor, o estorno é integral; com valor em centavos, é parcial. O pacote recusa, **antes de
-chamar o gateway**, o estorno que a regra do gateway já garante que seria negado, e o faz com
-`RefundNotSupportedException` nos dois drivers, para a aplicação não precisar interpretar a
-mensagem da Iugu ou da Stripe.
+Sem valor, o estorno é integral; com valor em centavos, é parcial. A operação devolve um
+`Refund` (`Potelo\MultiPayment\Models\Refund`) com o que o gateway registrou do estorno, e a
+fatura relida depois dele fica em `$refund->invoice()`:
+
+| Campo | Conteúdo |
+|---|---|
+| `id` | Id do estorno no gateway. Stripe: `re_...`; Iugu: `null`, porque a Iugu não identifica estornos |
+| `invoiceId` | Id da fatura estornada |
+| `amount` | Valor deste estorno, em centavos |
+| `status` | `RefundStatus`: `PENDING`, `SUCCEEDED`, `FAILED`, `CANCELED` ou `UNKNOWN` (status que a lib não reconhece, com aviso no log). Na Iugu é sempre `SUCCEEDED`, porque a API só responde 200 com o estorno feito; na Stripe o estorno de cartão costuma nascer `PENDING` e virar `SUCCEEDED` depois |
+| `reason` | Motivo em texto, quando o gateway devolve um (Stripe: `duplicate`, `fraudulent`, `requested_by_customer`); a lib não o envia ao gateway |
+| `createdAt` | Data do estorno. Na Iugu é o momento da chamada |
+| `original` | Objeto de estorno do gateway (Stripe); `null` na Iugu |
+| `invoice()` | Fatura com o estado posterior ao estorno, já relida, sem requisição |
+
+```php
+use Potelo\MultiPayment\Enums\RefundStatus;
+
+$payment = new \Potelo\MultiPayment\MultiPayment('stripe');
+
+$refund = $payment->refundInvoice($invoiceId);         // integral
+$refund = $payment->refundInvoice($invoiceId, 5000);   // parcial
+
+$refund->id;        // 're_...' (Stripe) ou null (Iugu)
+$refund->amount;    // 5000
+$refund->status;    // RefundStatus::PENDING ou RefundStatus::SUCCEEDED
+
+$invoice = $refund->invoice();
+$invoice->status;   // InvoiceStatus::REFUNDED ou InvoiceStatus::PARTIALLY_REFUNDED
+```
+
+`$invoice->refund()` num model faz o mesmo e atualiza a própria instância: depois da chamada
+`$invoice->status` já é o novo status, e `$refund->invoice()` é a mesma instância. O valor
+pedido viaja em `$invoice->refundedAmount`, que a leitura da fatura preenche com o total já
+estornado: num model lido do gateway que já teve estorno parcial, defina `refundedAmount` antes
+de chamar `refund()` (o novo valor, ou `null` para estornar o restante), senão o acumulado é
+reenviado como um novo estorno parcial.
+
+**Histórico de estornos.** Toda fatura lida do gateway traz `$invoice->refunds`, uma lista de
+`Refund` (vazia quando nada foi estornado). Os dois gateways preenchem a lista de formas
+diferentes, e a conciliação precisa saber disso:
+
+- **Stripe**: um `Refund` por estorno feito, com `id`, `status` e `createdAt` próprios, lido
+  dos refunds do charge.
+- **Iugu**: a API só informa o total estornado (`refunded_cents`), então a lista tem no máximo
+  um `Refund`, sem `id` e sem `createdAt`, com o acumulado. Dois estornos parciais de 2.000 e
+  3.000 aparecem como um único registro de 5.000. O `Refund` devolvido por cada chamada de
+  `refundInvoice()` traz o valor daquela chamada.
+
+```php
+$invoice = $payment->getInvoice($invoiceId);
+
+foreach ($invoice->refunds as $refund) {
+    $ledger->record($invoice->id, $refund->id, $refund->amount, $refund->status, $refund->createdAt);
+}
+```
+
+**Recusa antes da requisição.** O pacote recusa, **antes de chamar o gateway**, o estorno que a
+regra do gateway já garante que seria negado, e o faz com `RefundNotSupportedException` nos
+dois drivers, para a aplicação não precisar interpretar a mensagem da Iugu ou da Stripe.
 
 ```php
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 
-$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
-
 try {
-    $invoice = $payment->refundInvoice($invoiceId);         // integral
-    $invoice = $payment->refundInvoice($invoiceId, 5000);   // parcial
-
-    $invoice->status;        // InvoiceStatus::REFUNDED ou InvoiceStatus::PARTIALLY_REFUNDED
-    $invoice->lastRefundId;  // id do estorno no gateway (Stripe: re_...; a Iugu não devolve id)
+    $refund = $payment->refundInvoice($invoiceId, 5000);
 } catch (RefundNotSupportedException $e) {
     // a lib recusou sem chamar o gateway; $e->reason diz por quê
     if ($e->manualRefundRequired) {
@@ -792,22 +843,30 @@ try {
 | `boleto_no_refund` | Fatura paga com boleto, nos dois gateways | `true` |
 | `pix_partial_not_supported` | Iugu: valor pedido diferente do valor pago numa fatura Pix. Repita sem valor para estornar o total | `false` |
 | `already_refunded` | Fatura já lida como `refunded` | `false` |
+| `amount_exceeds_refundable` | Valor pedido acima do que ainda pode ser estornado (o restante vai na mensagem). Repita com valor até o restante | `false` |
 | `refund_window_expired` | Iugu: depois do fim do 90º dia após `paidAt` | `true` |
 
-Na Iugu, as guardas precisam do método de pagamento, do status, da data de pagamento e, no
-estorno por valor, do valor pago. Chamar `refundInvoice($id)` só com o id custa **um GET a mais**
-para ler a fatura antes do estorno; chamar `$invoice->refund()` num model já lido do gateway e já
-pago não paga esse GET. Essa leitura não altera o model do chamador: ele só muda quando o
-estorno acontece. No Stripe não há leitura prévia: as guardas usam o que já está no model, e o
-estorno parcial de Pix é aceito.
+Uma fatura `partially_refunded` aceita novos estornos até zerar o restante; pedir exatamente
+o que resta é estorno integral. O restante é `paidAmount` na Iugu (que devolve `paid_cents`
+líquido do já estornado) e `paidAmount` menos `refundedAmount` na Stripe.
 
-`lastRefundId` é preenchido só pela operação de estorno (a leitura da fatura o deixa `null`) e é
-provisório: dá lugar a um objeto `Refund` numa versão futura.
+**Custo da leitura prévia.** As guardas precisam do método de pagamento, do status, na Iugu da
+data de pagamento e, no estorno por valor, do quanto ainda pode ser estornado. Chamar `refundInvoice($id)` só com o id
+custa **um GET a mais** para ler a fatura antes do estorno, nos dois gateways; chamar
+`$invoice->refund()` num model já lido do gateway e pago não paga esse GET. No Stripe, o estorno
+por valor sobre uma fatura fora de `PAID` (por exemplo `partially_refunded`) relê a fatura mesmo
+com o model preenchido, porque o restante estornável depende do acumulado que o gateway guarda.
+Essa leitura não altera o model do chamador: ele só muda quando o estorno acontece.
 
-> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, estorno de boleto, Pix parcial,
-> fatura já estornada e fora do prazo de 90 dias na Iugu iam até a API e voltavam como
-> `GatewayException` com a mensagem do gateway. Agora lançam `RefundNotSupportedException`, que herda de `UnsupportedOperationException` (e por ela de `MultiPaymentException`) e **não** de
-> `GatewayException`: um `catch (GatewayException $e)` sozinho deixa de capturar esses casos.
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `refundInvoice()` e
+> `$invoice->refund()` devolviam a `Invoice` atualizada; agora devolvem o `Refund`, e a fatura
+> fica em `$refund->invoice()` (ou na própria instância, no caso de `$invoice->refund()`). O
+> campo provisório `Invoice::$lastRefundId` foi removido: o id está em `$refund->id`. Na mesma
+> versão, estorno de boleto, Pix parcial, fatura já estornada, valor acima do restante e fora do
+> prazo de 90 dias na Iugu deixaram de ir até a API e voltar como `GatewayException`: lançam
+> `RefundNotSupportedException`, que herda de `UnsupportedOperationException` (e por ela de
+> `MultiPaymentException`), fora da árvore de `GatewayException`: um `catch (GatewayException $e)`
+> sozinho deixa de capturar esses casos.
 
 #### charge
 
@@ -925,6 +984,15 @@ $invoice->creditCard->cvv = '123';
 $invoice->creditCard->customer = $customer;
 $invoice->save('iugu');
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
+```
+#### Refund
+```php
+$invoice = $payment->getInvoice($invoiceId);
+$invoice->refundedAmount = 5000;       // vazio: estorno integral
+$refund = $invoice->refund();          // Refund; $invoice já reflete o estado posterior
+
+$refund->amount;                        // 5000
+$invoice->refunds;                      // Refund[] (ver "Estorno")
 ```
 #### Subscription
 ```php

@@ -10,10 +10,11 @@ use Potelo\MultiPayment\Enums\Capability;
  *
  * É lançada quando a regra do gateway já garante que a API recusaria o estorno: boleto não tem
  * estorno via API em nenhum gateway, Pix na Iugu só aceita estorno integral, fatura já estornada
- * não estorna de novo e a Iugu fecha a janela de estorno 90 dias após o pagamento. O motivo fica
- * em `$reason`, no vocabulário do pacote, para a aplicação ramificar sem ler a mensagem.
- * `$capability` aponta a capability recusada quando existe uma (`REFUND_BANK_SLIP`,
- * `PARTIAL_REFUND_PIX`) e fica nula para fatura já estornada e prazo vencido.
+ * não estorna de novo, o valor pedido não pode passar do restante estornável e a Iugu fecha a
+ * janela de estorno 90 dias após o pagamento. O motivo fica em `$reason`, no vocabulário do
+ * pacote, para a aplicação ramificar sem ler a mensagem. `$capability` aponta a capability
+ * recusada quando existe uma (`REFUND_BANK_SLIP`, `PARTIAL_REFUND_PIX`) e fica nula para
+ * fatura já estornada, valor acima do restante e prazo vencido.
  */
 class RefundNotSupportedException extends UnsupportedOperationException
 {
@@ -28,6 +29,9 @@ class RefundNotSupportedException extends UnsupportedOperationException
 
     /** O prazo que o gateway dá para estornar após o pagamento já passou; devolução manual. */
     public const REASON_REFUND_WINDOW_EXPIRED = 'refund_window_expired';
+
+    /** O valor pedido passa do que ainda pode ser estornado na fatura. */
+    public const REASON_AMOUNT_EXCEEDS_REFUNDABLE = 'amount_exceeds_refundable';
 
     /**
      * Método de pagamento da fatura (`credit_card`, `bank_slip`, `pix`), ou nulo quando o
@@ -47,7 +51,8 @@ class RefundNotSupportedException extends UnsupportedOperationException
     /**
      * Verdadeiro quando a devolução ao cliente precisa acontecer fora do gateway (boleto,
      * prazo vencido); falso quando não há o que devolver (`already_refunded`) ou o pedido
-     * pode ser corrigido (`pix_partial_not_supported`: repita sem valor parcial).
+     * pode ser corrigido (`pix_partial_not_supported`: repita sem valor parcial;
+     * `amount_exceeds_refundable`: repita com valor até o restante).
      *
      * @var bool
      */
@@ -156,6 +161,27 @@ class RefundNotSupportedException extends UnsupportedOperationException
             $paymentMethod,
             self::REASON_REFUND_WINDOW_EXPIRED,
             true,
+            null,
+            $gateway
+        );
+    }
+
+    /**
+     * O valor pedido passa do que ainda pode ser estornado na fatura.
+     *
+     * @param  string  $gateway
+     * @param  string|null  $paymentMethod
+     * @param  int  $requestedAmount  valor pedido, em centavos
+     * @param  int  $refundableAmount  valor que ainda pode ser estornado, em centavos
+     * @return static
+     */
+    public static function amountExceedsRefundable(string $gateway, ?string $paymentMethod, int $requestedAmount, int $refundableAmount): static
+    {
+        return new static(
+            "O valor pedido ({$requestedAmount} centavos) passa do que ainda pode ser estornado na fatura ({$refundableAmount} centavos) no gateway {$gateway}; repita com valor até o restante.",
+            $paymentMethod,
+            self::REASON_AMOUNT_EXCEEDS_REFUNDABLE,
+            false,
             null,
             $gateway
         );
