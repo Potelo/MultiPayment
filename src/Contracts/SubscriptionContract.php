@@ -69,13 +69,15 @@ interface SubscriptionContract
      * Cancela a assinatura.
      *
      * Com $atPeriodEnd, a assinatura segue cobrando até o fim do período corrente e só então é
-     * cancelada; gateway que não tem esse recurso lança GatewayException.
+     * cancelada; gateway que não tem esse recurso lança UnsupportedOperationException
+     * (CANCEL_AT_PERIOD_END).
      *
      * @param  Subscription  $subscription
      * @param  bool  $atPeriodEnd
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function cancelSubscription(Subscription $subscription, bool $atPeriodEnd = false): Subscription;
 

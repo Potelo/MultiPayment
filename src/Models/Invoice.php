@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
@@ -315,6 +316,11 @@ class Invoice extends Model
         if ($validate) {
             $this->validate();
         }
+        // resolvido e verificado antes de salvar o cliente, para nenhuma requisição sair
+        // quando o gateway não suporta a fatura; no update vale a regra do Model (o gateway
+        // gravado no model prevalece)
+        $gateway = ConfigurationHelper::resolveGateway($this->gatewayForSave($gateway));
+        $this->assertGatewaySupports($gateway);
         if (empty($this->customer->id)) {
             $this->customer->save($gateway, $validate);
         }
@@ -322,6 +328,52 @@ class Invoice extends Model
             $this->creditCard->customer = $this->customer;
         }
         parent::save($gateway, false);
+    }
+
+    /**
+     * Na criação, além do que o `Model` exige, a fatura precisa da capability de cada método
+     * selecionável em `availablePaymentMethods` (ou de cartão, quando só `creditCard` foi
+     * informado), de `MULTIPLE_PAYMENT_METHODS` quando há mais de um método, de
+     * `AUTOMATIC_PIX` quando `automaticPix` está preenchido e de `RAW_CARD_DATA` quando o
+     * cartão vem com os dados crus (sem `id` nem `token`). Valor fora de
+     * `PaymentMethod::selectable()` fica para a validação. Com `id` preenchido, só o que o
+     * `Model` exige.
+     *
+     * @return Capability[]
+     */
+    public function requiredCapabilities(): array
+    {
+        $capabilities = parent::requiredCapabilities();
+        if (!empty($this->id)) {
+            return $capabilities;
+        }
+
+        $methods = [];
+        foreach ((array) ($this->availablePaymentMethods ?? []) as $method) {
+            $case = $method instanceof PaymentMethod ? $method : (is_string($method) ? PaymentMethod::tryFrom($method) : null);
+            if (!is_null($case) && in_array($case, PaymentMethod::selectable(), true)) {
+                $methods[] = $case;
+            }
+        }
+
+        if (empty($methods) && !empty($this->creditCard)) {
+            $methods[] = PaymentMethod::CREDIT_CARD;
+        }
+
+        foreach ($methods as $method) {
+            $capabilities[] = Capability::forPaymentMethod($method);
+        }
+        if (count($methods) > 1) {
+            $capabilities[] = Capability::MULTIPLE_PAYMENT_METHODS;
+        }
+        if (!empty($this->automaticPix)) {
+            $capabilities[] = Capability::AUTOMATIC_PIX;
+        }
+        if (!empty($this->creditCard) && empty($this->creditCard->id) && empty($this->creditCard->token)) {
+            $capabilities[] = Capability::RAW_CARD_DATA;
+        }
+
+        return array_values(array_unique($capabilities, SORT_REGULAR));
     }
 
     /**

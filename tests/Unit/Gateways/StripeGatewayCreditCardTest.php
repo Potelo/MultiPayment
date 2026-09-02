@@ -12,6 +12,8 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class StripeGatewayCreditCardTest extends TestCase
@@ -48,10 +50,17 @@ class StripeGatewayCreditCardTest extends TestCase
         $creditCard->year = '2030';
         $creditCard->cvv = '123';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('does not accept raw card data');
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
 
-        (new StripeGateway())->createCreditCard($creditCard);
+        try {
+            (new StripeGateway())->createCreditCard($creditCard);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::RAW_CARD_DATA, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('Stripe.js', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     public function testCreateCreditCardRequiresCustomer(): void

@@ -3,11 +3,13 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -33,6 +35,31 @@ class Subscription extends Model
         'paymentMethod' => PaymentMethod::class,
         'availablePaymentMethods' => [PaymentMethod::class],
     ];
+
+    protected const REQUIRED_CAPABILITY = Capability::SUBSCRIPTIONS;
+
+    /**
+     * Além de `SUBSCRIPTIONS`, a assinatura precisa de `NATIVE_COUPONS` quando algum desconto é
+     * percentual ou limitado a mais de um ciclo.
+     *
+     * @return Capability[]
+     */
+    public function requiredCapabilities(): array
+    {
+        $capabilities = parent::requiredCapabilities();
+
+        foreach ($this->discounts ?? [] as $discount) {
+            if (
+                $discount instanceof SubscriptionDiscount
+                && (!is_null($discount->percentOff) || (!is_null($discount->cycles) && $discount->cycles > 1))
+            ) {
+                $capabilities[] = Capability::NATIVE_COUPONS;
+                break;
+            }
+        }
+
+        return $capabilities;
+    }
 
     /**
      * @var string|null
@@ -328,12 +355,18 @@ class Subscription extends Model
      * @return void
      * @throws GatewayException|\Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws UnsupportedOperationException
      */
     public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
     {
         if ($validate) {
             $this->validate();
         }
+
+        // resolvido e verificado antes de salvar o cliente, para nenhuma requisição sair
+        // quando o gateway não suporta assinatura; no update vale a regra do Model (o gateway
+        // gravado no model prevalece)
+        $gateway = $this->resolveSubscriptionGateway($this->gatewayForSave($gateway));
 
         if (empty($this->id) && !empty($this->customer) && empty($this->customer->id)) {
             $this->customer->save($gateway, $validate);
@@ -343,22 +376,25 @@ class Subscription extends Model
     }
 
     /**
-     * Resolve o gateway e garante que ele implementa as operações de assinatura.
+     * Resolve o gateway e garante que ele declara `Capability::SUBSCRIPTIONS` e implementa
+     * `SubscriptionContract`.
      *
      * @param  GatewayContract|string|null  $gateway
      *
      * @return GatewayContract&SubscriptionContract
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws UnsupportedOperationException
      * @throws GatewayException
      */
     private function resolveSubscriptionGateway(GatewayContract|string|null $gateway)
     {
         $resolved = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
+        $this->assertGatewaySupports($resolved);
 
         if (!$resolved instanceof SubscriptionContract) {
             throw new GatewayException(
-                'Gateway [' . get_class($resolved) . '] does not implement SubscriptionContract;'
-                . ' subscriptions are not yet implemented in this library for that gateway'
+                'Gateway [' . get_class($resolved) . '] declares the subscriptions capability'
+                . ' but does not implement SubscriptionContract'
             );
         }
 
@@ -375,6 +411,7 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws UnsupportedOperationException
      */
     public function suspend(GatewayContract|string|null $gateway = null): Subscription
     {
@@ -391,6 +428,7 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws UnsupportedOperationException
      */
     public function resume(GatewayContract|string|null $gateway = null): Subscription
     {
@@ -408,6 +446,7 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws UnsupportedOperationException
      */
     public function cancel(bool $atPeriodEnd = false, GatewayContract|string|null $gateway = null): Subscription
     {
@@ -429,6 +468,7 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws UnsupportedOperationException
      */
     public function changePlan(
         string $planId,
@@ -450,6 +490,7 @@ class Subscription extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     * @throws UnsupportedOperationException
      */
     public function previewPlanChange(
         string $planId,

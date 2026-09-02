@@ -15,6 +15,8 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -114,13 +116,18 @@ class StripeGatewayInvoiceTest extends TestCase
 
     public function testRejectsInvoiceWithMultiplePaymentMethods(): void
     {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = $this->creditCardInvoiceModel();
         $invoice->availablePaymentMethods = [PaymentMethod::CREDIT_CARD, PaymentMethod::PIX];
 
-        $this->expectException(ModelAttributeValidationException::class);
-        $this->expectExceptionMessage('exactly one payment method');
-
-        (new StripeGateway())->createInvoice($invoice);
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Fatura multi-método no Stripe deveria lançar UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::MULTIPLE_PAYMENT_METHODS, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     public function testRejectsBankSlipInvoiceAttributingTheLimitationToTheLibrary(): void
@@ -131,12 +138,13 @@ class StripeGatewayInvoiceTest extends TestCase
 
         try {
             (new StripeGateway())->createInvoice($invoice);
-            $this->fail('Boleto no Stripe deveria lançar GatewayException');
-        } catch (GatewayException $e) {
-            $this->assertStringContainsString('[createInvoice com boleto] no Stripe ainda não está implementada nesta lib', $e->getMessage());
-            $this->assertStringContainsString('Use a Iugu para boleto por enquanto', $e->getMessage());
-            $this->assertStringNotContainsStringIgnoringCase('não suporta', $e->getMessage());
-            $this->assertStringNotContainsStringIgnoringCase('does not support', $e->getMessage());
+            $this->fail('Boleto no Stripe deveria lançar UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::BANK_SLIP, $e->capability);
+            $this->assertSame('stripe', $e->gateway);
+            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
+            $this->assertStringContainsString('ainda não está implementada nesta lib', $e->getMessage());
+            $this->assertStringNotContainsStringIgnoringCase('não oferece', $e->getMessage());
         }
         $this->assertSame([], $httpClient->calls);
     }
@@ -240,10 +248,10 @@ class StripeGatewayInvoiceTest extends TestCase
 
         try {
             (new StripeGateway())->createInvoice($invoice);
-            $this->fail('Pix Automático no Stripe deveria lançar GatewayException');
-        } catch (GatewayException $e) {
-            $this->assertStringContainsString('A operação [createInvoice com Pix Automático] no Stripe ainda não está implementada nesta lib', $e->getMessage());
-            $this->assertStringContainsString('Use a Iugu para Pix Automático por enquanto', $e->getMessage());
+            $this->fail('Pix Automático no Stripe deveria lançar UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::AUTOMATIC_PIX, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
         }
         $this->assertSame([], $httpClient->calls);
     }
@@ -1205,10 +1213,14 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice = new Invoice();
         $invoice->id = 'pi_fake123';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('Only pending invoices can be duplicated on the stripe gateway; invoice [pi_fake123] is [paid]');
-
-        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+        try {
+            (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::INVOICE_DUPLICATION, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertSame('No Stripe só uma fatura Pix pendente pode ser duplicada; a fatura [pi_fake123] está [paid].', $e->getMessage());
+        }
     }
 
     public function testDuplicateRejectsNonPixInvoice(): void
@@ -1220,10 +1232,14 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice = new Invoice();
         $invoice->id = 'pi_fake123';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('Only pix invoices can be duplicated');
-
-        (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+        try {
+            (new StripeGateway())->duplicateInvoice($invoice, Carbon::now()->addDay());
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::INVOICE_DUPLICATION, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('a fatura [pi_fake123] não é Pix', $e->getMessage());
+        }
     }
 
     public function testDuplicateInvoiceRequiresId(): void

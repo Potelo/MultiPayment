@@ -15,6 +15,8 @@ use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
@@ -329,10 +331,19 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/does not support cancelling a subscription at the end/');
+        $api = new QueuedIuguApiRequest([]);
 
-        (new IuguGateway(new QueuedIuguApiRequest([])))->cancelSubscription($subscription, true);
+        try {
+            (new IuguGateway($api))->cancelSubscription($subscription, true);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::CANCEL_AT_PERIOD_END, $e->capability);
+            $this->assertSame('iugu', $e->gateway);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertFalse($e->isNotImplemented());
+            $this->assertStringContainsString('Suspenda a assinatura', $e->getMessage());
+        }
+        $this->assertCount(0, $api->calls);
     }
 
     public function testChangePlanWithoutChargeSendsSkipChargeAndTheNewBillingDate(): void
@@ -473,10 +484,17 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->fill(['plan_id' => 'plano', 'customer' => ['id' => 'cus_1']]);
         $subscription->discounts = [$discount];
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/does not support percentage discounts/');
+        $api = new QueuedIuguApiRequest([]);
 
-        (new IuguGateway(new QueuedIuguApiRequest([])))->createSubscription($subscription);
+        try {
+            (new IuguGateway($api))->createSubscription($subscription);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::NATIVE_COUPONS, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('use amountOff', $e->getMessage());
+        }
+        $this->assertCount(0, $api->calls);
     }
 
     /**
@@ -494,10 +512,17 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->fill(['plan_id' => 'plano', 'customer' => ['id' => 'cus_1']]);
         $subscription->discounts = [$discount];
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/cycles greater than 1/');
+        $api = new QueuedIuguApiRequest([]);
 
-        (new IuguGateway(new QueuedIuguApiRequest([])))->createSubscription($subscription);
+        try {
+            (new IuguGateway($api))->createSubscription($subscription);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::NATIVE_COUPONS, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('use cycles 1 ou nulo', $e->getMessage());
+        }
+        $this->assertCount(0, $api->calls);
     }
 
     public function testDiscountWithoutAmountOffIsRejectedByTheMapper(): void
@@ -746,10 +771,17 @@ class IuguGatewaySubscriptionTest extends TestCase
         $plan = new Plan();
         $plan->id = 'plan_1';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/no active flag/');
+        $api = new QueuedIuguApiRequest([]);
 
-        (new IuguGateway(new QueuedIuguApiRequest([])))->deactivatePlan($plan);
+        try {
+            (new IuguGateway($api))->deactivatePlan($plan);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::PLAN_DEACTIVATION, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('flag de ativo', $e->getMessage());
+        }
+        $this->assertCount(0, $api->calls);
     }
 
     public function testGatewayErrorsBecomeGatewayException(): void

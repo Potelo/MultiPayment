@@ -19,6 +19,7 @@ interface InvoiceContract
      *
      * @return Invoice
      * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function createInvoice(Invoice $invoice): Invoice;
 
@@ -72,6 +73,7 @@ interface InvoiceContract
      * @param  array  $gatewayOptions
      * @return Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice;
 

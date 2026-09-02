@@ -34,7 +34,8 @@
         "test": [
             "Composer\\Config::disableProcessTimeout",
             "phpunit"
-        ]
+        ],
+        "capabilities:table": "php scripts/capabilities-table.php"
     },
     "repositories": [
         {

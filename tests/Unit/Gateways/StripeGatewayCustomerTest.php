@@ -12,6 +12,8 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -274,17 +276,21 @@ class StripeGatewayCustomerTest extends TestCase
         $this->assertSame('123', $result->address->number);
     }
 
-    public function testUnimplementedOperationThrowsClearGatewayExceptionWithoutHittingTheApi(): void
+    public function testUnimplementedOperationThrowsUnsupportedOperationExceptionWithoutHittingTheApi(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
 
         try {
             (new StripeGateway())->rescheduleAutomaticPixPayment(new Invoice());
-            $this->fail('Pix Automático no Stripe deveria lançar GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Pix Automático no Stripe deveria lançar UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::AUTOMATIC_PIX, $e->capability);
+            $this->assertSame('stripe', $e->gateway);
+            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
+            $this->assertTrue($e->isNotImplemented());
             $this->assertSame(
-                'A operação [rescheduleAutomaticPixPayment] no Stripe ainda não está implementada nesta lib;'
-                . ' a Stripe suporta o recurso. Use a Iugu para Pix Automático por enquanto.',
+                'A capability [automatic_pix] ainda não está implementada nesta lib para o gateway stripe;'
+                . ' o gateway oferece o recurso.',
                 $e->getMessage()
             );
         }

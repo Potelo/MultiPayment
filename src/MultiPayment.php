@@ -3,7 +3,9 @@
 namespace Potelo\MultiPayment;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
@@ -50,6 +52,56 @@ class MultiPayment
     {
         $this->gateway = ConfigurationHelper::resolveGateway($gateway);
         return $this;
+    }
+
+    /**
+     * Devolve o driver do gateway informado, ou o desta instância quando nenhum é informado.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @return GatewayContract
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function gateway($gateway = null): GatewayContract
+    {
+        return is_null($gateway) ? $this->gateway : ConfigurationHelper::resolveGateway($gateway);
+    }
+
+    /**
+     * Diz se o gateway (o desta instância, por padrão) suporta a capability.
+     *
+     * @param  Capability  $capability
+     * @param  GatewayContract|string|null  $gateway
+     * @return bool
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function supports(Capability $capability, $gateway = null): bool
+    {
+        return $this->gateway($gateway)->supports($capability);
+    }
+
+    /**
+     * Capabilities que o gateway (o desta instância, por padrão) oferece e a lib implementa.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @return Capability[]
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function capabilities($gateway = null): array
+    {
+        return $this->gateway($gateway)->capabilities();
+    }
+
+    /**
+     * Capabilities que o gateway (o desta instância, por padrão) oferece mas a lib ainda não
+     * implementa.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @return Capability[]
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function notYetImplemented($gateway = null): array
+    {
+        return $this->gateway($gateway)->notYetImplemented();
     }
 
     /**
@@ -119,7 +171,7 @@ class MultiPayment
      * @param  int  $limit
      *
      * @return Subscription[]
-     * @throws GatewayException|GatewayNotAvailableException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
      */
     public function listSubscriptions(Customer|string $customer, int $page = 1, int $limit = 100): array
     {
@@ -129,7 +181,7 @@ class MultiPayment
             $customer = $customerModel;
         }
 
-        return $this->gatewayImplementing(SubscriptionContract::class)
+        return $this->gatewayImplementing(SubscriptionContract::class, Capability::SUBSCRIPTIONS)
             ->listSubscriptions($customer, $page, $limit);
     }
 
@@ -140,28 +192,34 @@ class MultiPayment
      * @param  int  $limit
      *
      * @return Plan[]
-     * @throws GatewayException|GatewayNotAvailableException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
      */
     public function listPlans(int $page = 1, int $limit = 100): array
     {
-        return $this->gatewayImplementing(PlanContract::class)->listPlans($page, $limit);
+        return $this->gatewayImplementing(PlanContract::class, Capability::PLANS)->listPlans($page, $limit);
     }
 
     /**
-     * Ensure this instance's gateway implements the given contract.
+     * Ensure this instance's gateway declares the capability and implements the contract behind it.
      *
      * @param  class-string  $contract
+     * @param  Capability  $capability
      *
      * @return GatewayContract
+     * @throws UnsupportedOperationException
      * @throws GatewayException
      */
-    private function gatewayImplementing(string $contract): GatewayContract
+    private function gatewayImplementing(string $contract, Capability $capability): GatewayContract
     {
+        if (!$this->gateway->supports($capability)) {
+            throw UnsupportedOperationException::forGateway($this->gateway, $capability);
+        }
+
         if (!$this->gateway instanceof $contract) {
             $contractName = substr(strrchr($contract, '\\'), 1);
             throw new GatewayException(
-                'Gateway [' . get_class($this->gateway) . "] does not implement {$contractName};"
-                . ' the operations of that contract are not yet implemented in this library for that gateway'
+                'Gateway [' . get_class($this->gateway) . "] declares the {$capability->value} capability"
+                . " but does not implement {$contractName}"
             );
         }
 

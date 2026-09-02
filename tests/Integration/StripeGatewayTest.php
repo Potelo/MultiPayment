@@ -6,6 +6,8 @@ use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
@@ -356,9 +358,12 @@ class StripeGatewayTest extends TestCase
             ->addItem('Assinatura mensal', 9900, 1)
             ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP]);
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('[createInvoice com boleto] no Stripe ainda não está implementada nesta lib');
-
-        $invoiceBuilder->create();
+        try {
+            $invoiceBuilder->create();
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::BANK_SLIP, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
+        }
     }
 }

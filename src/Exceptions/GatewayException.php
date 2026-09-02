@@ -44,7 +44,7 @@ class GatewayException extends MultiPaymentException
     }
 
     /**
-     * Method not found in gateway.
+     * Dispatch method missing in a gateway that declares the capability (driver error).
      *
      * @param  string  $gatewayClass
      * @param  string  $method

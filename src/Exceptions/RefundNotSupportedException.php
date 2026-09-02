@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Exceptions;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Enums\Capability;
 
 /**
  * Estorno recusado pela abstração antes de qualquer requisição ao gateway.
@@ -11,8 +12,10 @@ use Carbon\Carbon;
  * estorno via API em nenhum gateway, Pix na Iugu só aceita estorno integral, fatura já estornada
  * não estorna de novo e a Iugu fecha a janela de estorno 90 dias após o pagamento. O motivo fica
  * em `$reason`, no vocabulário do pacote, para a aplicação ramificar sem ler a mensagem.
+ * `$capability` aponta a capability recusada quando existe uma (`REFUND_BANK_SLIP`,
+ * `PARTIAL_REFUND_PIX`) e fica nula para fatura já estornada e prazo vencido.
  */
-class RefundNotSupportedException extends MultiPaymentException
+class RefundNotSupportedException extends UnsupportedOperationException
 {
     /** Boleto não tem estorno pela API do gateway; devolução manual. */
     public const REASON_BOLETO_NO_REFUND = 'boleto_no_refund';
@@ -35,7 +38,7 @@ class RefundNotSupportedException extends MultiPaymentException
     public ?string $paymentMethod;
 
     /**
-     * Motivo da recusa, uma das constantes `REASON_*`.
+     * Motivo da recusa, uma das constantes `REASON_*` desta classe.
      *
      * @var string
      */
@@ -58,19 +61,22 @@ class RefundNotSupportedException extends MultiPaymentException
      * @param  string  $reason
      * @param  bool  $manualRefundRequired
      * @param  \Throwable|null  $previous
+     * @param  string  $gateway
+     * @param  Capability|null  $capability
      */
     public function __construct(
         string $message,
         ?string $paymentMethod,
         string $reason,
         bool $manualRefundRequired = false,
-        ?\Throwable $previous = null
+        ?\Throwable $previous = null,
+        string $gateway = '',
+        ?Capability $capability = null
     ) {
         $this->paymentMethod = $paymentMethod;
-        $this->reason = $reason;
         $this->manualRefundRequired = $manualRefundRequired;
 
-        parent::__construct($message, $previous);
+        parent::__construct($message, $gateway, $capability, $reason, $previous);
     }
 
     /**
@@ -85,7 +91,10 @@ class RefundNotSupportedException extends MultiPaymentException
             "O gateway {$gateway} não estorna boleto pela API; faça a devolução manualmente ao cliente.",
             'bank_slip',
             self::REASON_BOLETO_NO_REFUND,
-            true
+            true,
+            null,
+            $gateway,
+            Capability::REFUND_BANK_SLIP
         );
     }
 
@@ -104,7 +113,11 @@ class RefundNotSupportedException extends MultiPaymentException
         return new static(
             "O gateway {$gateway} só estorna Pix integralmente (pedido: {$requestedAmount} centavos, pago: {$paid}); repita sem valor parcial.",
             'pix',
-            self::REASON_PIX_PARTIAL_NOT_SUPPORTED
+            self::REASON_PIX_PARTIAL_NOT_SUPPORTED,
+            false,
+            null,
+            $gateway,
+            Capability::PARTIAL_REFUND_PIX
         );
     }
 
@@ -120,7 +133,10 @@ class RefundNotSupportedException extends MultiPaymentException
         return new static(
             "A fatura já foi integralmente estornada no gateway {$gateway}.",
             $paymentMethod,
-            self::REASON_ALREADY_REFUNDED
+            self::REASON_ALREADY_REFUNDED,
+            false,
+            null,
+            $gateway
         );
     }
 
@@ -139,7 +155,9 @@ class RefundNotSupportedException extends MultiPaymentException
             "O gateway {$gateway} só estorna até {$windowDays} dias após o pagamento (pago em {$paidAt->toDateString()}); faça a devolução manualmente ao cliente.",
             $paymentMethod,
             self::REASON_REFUND_WINDOW_EXPIRED,
-            true
+            true,
+            null,
+            $gateway
         );
     }
 }

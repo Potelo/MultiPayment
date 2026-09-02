@@ -25,22 +25,27 @@ use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
+use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 {
+    use ChecksCapabilities;
+
     private const STATUS_PENDING = 'pending';
     private const STATUS_PAID = 'paid';
     private const STATUS_EXTERNALLY_PAID = 'externally_paid';
@@ -75,10 +80,44 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
-     * @throws ModelAttributeValidationException|ChargingException
+     */
+    public function capabilities(): array
+    {
+        return [
+            Capability::CREDIT_CARD,
+            Capability::PIX,
+            Capability::BANK_SLIP,
+            Capability::AUTOMATIC_PIX,
+            Capability::MULTIPLE_PAYMENT_METHODS,
+            Capability::RAW_CARD_DATA,
+            Capability::INSTALLMENTS,
+            Capability::PARTIAL_REFUND_CARD,
+            Capability::INVOICE_DUPLICATION,
+            Capability::SUBSCRIPTIONS,
+            Capability::PLANS,
+        ];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function notYetImplemented(): array
+    {
+        return [
+            Capability::DELAYED_CAPTURE,
+            Capability::IDEMPOTENCY,
+            Capability::SUBSCRIPTION_CREDITS,
+        ];
+    }
+
+    /**
+     * @inheritDoc
+     * @throws ModelAttributeValidationException|ChargingException|UnsupportedOperationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
+        $this->assertSupportsAll($invoice->requiredCapabilities());
+
         $iuguInvoiceData = [];
 
         $iuguInvoiceData['customer_id'] = $invoice->customer->id;
@@ -1482,10 +1521,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     public function cancelSubscription(Subscription $subscription, bool $atPeriodEnd = false): Subscription
     {
         if ($atPeriodEnd) {
-            throw new GatewayException(
-                'Iugu does not support cancelling a subscription at the end of the period. '
-                . 'Suspend it on the date instead.'
-            );
+            $this->assertSupports(Capability::CANCEL_AT_PERIOD_END, 'Suspenda a assinatura na data desejada.');
         }
 
         return $this->suspendSubscription($subscription);
@@ -1656,13 +1692,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @param  Plan  $plan
      *
      * @return Plan
-     * @throws GatewayException
+     * @throws UnsupportedOperationException
      */
     public function deactivatePlan(Plan $plan): Plan
     {
-        throw new GatewayException(
-            'Iugu plans have no active flag, so a plan cannot be deactivated. '
-            . 'Stop referencing it when creating subscriptions instead.'
+        throw UnsupportedOperationException::forGateway(
+            $this,
+            Capability::PLAN_DEACTIVATION,
+            'Planos da Iugu não têm flag de ativo; deixe de referenciar o plano ao criar assinaturas.'
         );
     }
 
@@ -1676,7 +1713,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @param  bool  $creating
      *
      * @return array
-     * @throws GatewayException|ModelAttributeValidationException
+     * @throws GatewayException|ModelAttributeValidationException|UnsupportedOperationException
      */
     private function subscriptionToIuguData(Subscription $subscription, bool $creating = true): array
     {
@@ -1815,13 +1852,15 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @param  SubscriptionDiscount  $discount
      *
      * @return array
-     * @throws GatewayException
+     * @throws UnsupportedOperationException|ModelAttributeValidationException
      */
     private function subscriptionDiscountToIuguData(SubscriptionDiscount $discount): array
     {
         if (!is_null($discount->percentOff)) {
-            throw new GatewayException(
-                'Iugu does not support percentage discounts on subscriptions. Use amountOff.'
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::NATIVE_COUPONS,
+                'A Iugu não tem desconto percentual em assinatura; use amountOff.'
             );
         }
 
@@ -1830,9 +1869,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
 
         if (!is_null($discount->cycles) && $discount->cycles > 1) {
-            throw new GatewayException(
-                'Iugu discounts last either one invoice or until removed, so cycles greater '
-                . 'than 1 cannot be represented. Use cycles 1 or null.'
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::NATIVE_COUPONS,
+                'Na Iugu o desconto vale para uma fatura ou até ser removido; use cycles 1 ou nulo.'
             );
         }
 

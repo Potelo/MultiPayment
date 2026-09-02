@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -27,6 +28,8 @@ class Plan extends Model
     protected const ENUM_CASTS = [
         'interval' => PlanInterval::class,
     ];
+
+    protected const REQUIRED_CAPABILITY = Capability::PLANS;
 
     /**
      * @var string|null

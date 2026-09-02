@@ -2,11 +2,13 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\AcceptsUnknownValue;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -24,6 +26,14 @@ abstract class Model implements \JsonSerializable
      * @var array<string, class-string<\BackedEnum>|array{0: class-string<\BackedEnum>}>
      */
     protected const ENUM_CASTS = [];
+
+    /**
+     * Capability que o gateway precisa declarar para operar este model, ou nulo quando qualquer
+     * gateway serve. `requiredCapabilities()` a devolve junto com as derivadas dos atributos.
+     *
+     * @var Capability|null
+     */
+    protected const REQUIRED_CAPABILITY = null;
 
     /**
      * Opções extras enviadas direto ao gateway. Cada driver mescla este array ao payload que
@@ -240,6 +250,7 @@ abstract class Model implements \JsonSerializable
      *
      * @return void
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws UnsupportedOperationException
      */
     public function save(GatewayContract|string|null $gateway = null, bool $validate = true): void
     {
@@ -247,21 +258,68 @@ abstract class Model implements \JsonSerializable
         if (property_exists($this, 'id') && !empty($this->id)) {
             $method = 'update';
             $validate = false;
-            // If gateway from the model is set, we will use it
-            $gateway = property_exists($this, 'gateway') && !empty($this->gateway) ? $this->gateway : $gateway;
         } else {
             $method = 'create';
         }
         $method = $method . $class;
+        $gateway = $this->gatewayForSave($gateway);
 
         if ($validate) {
             $this->validate();
         }
         $gatewayClass = ConfigurationHelper::resolveGateway($gateway);
+        $this->assertGatewaySupports($gatewayClass);
         if (!method_exists($gatewayClass, $method)) {
             throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
         }
         $gatewayClass->$method($this);
+    }
+
+    /**
+     * Gateway que `save()` usa: no update (com `id`), o gateway gravado no model prevalece sobre
+     * o informado; na criação, o informado prevalece e o do model é o segundo candidato. Nulo
+     * deixa `ConfigurationHelper` escolher o default.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @return GatewayContract|string|null
+     */
+    protected function gatewayForSave(GatewayContract|string|null $gateway): GatewayContract|string|null
+    {
+        $own = property_exists($this, 'gateway') && !empty($this->gateway) ? $this->gateway : null;
+
+        if (property_exists($this, 'id') && !empty($this->id)) {
+            return $own ?? $gateway;
+        }
+
+        return $gateway ?? $own;
+    }
+
+    /**
+     * Capabilities que o gateway precisa declarar para a operação em curso sobre este model:
+     * `REQUIRED_CAPABILITY`, quando definida, mais as que o model derivar dos seus atributos.
+     *
+     * @return Capability[]
+     */
+    public function requiredCapabilities(): array
+    {
+        return is_null(static::REQUIRED_CAPABILITY) ? [] : [static::REQUIRED_CAPABILITY];
+    }
+
+    /**
+     * Lança `UnsupportedOperationException` na primeira capability de `requiredCapabilities()`
+     * que o gateway não declara, antes de qualquer requisição.
+     *
+     * @param  GatewayContract  $gateway
+     * @return void
+     * @throws UnsupportedOperationException
+     */
+    protected function assertGatewaySupports(GatewayContract $gateway): void
+    {
+        foreach ($this->requiredCapabilities() as $capability) {
+            if (!$gateway->supports($capability)) {
+                throw UnsupportedOperationException::forGateway($gateway, $capability);
+            }
+        }
     }
 
     /**
@@ -380,11 +438,13 @@ abstract class Model implements \JsonSerializable
      * @return static
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws UnsupportedOperationException
      */
     public function get(GatewayContract|string|null $gateway = null): static
     {
         $method = 'get' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
+        $this->assertGatewaySupports($gateway);
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }
@@ -398,11 +458,13 @@ abstract class Model implements \JsonSerializable
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws UnsupportedOperationException
      */
     public function delete(GatewayContract|string|null $gateway = null): void
     {
         $method = 'delete' . static::getClassName();
         $gateway = ConfigurationHelper::resolveGateway($gateway);
+        $this->assertGatewaySupports($gateway);
         if (!method_exists($gateway, $method)) {
             throw GatewayException::methodNotFound(get_class($gateway), $method);
         }

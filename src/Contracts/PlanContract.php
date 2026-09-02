@@ -47,6 +47,7 @@ interface PlanContract
      *
      * @return Plan
      * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function deactivatePlan(Plan $plan): Plan;
 }

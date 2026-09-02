@@ -17,6 +17,8 @@ use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
@@ -30,6 +32,30 @@ class SubscriptionTest extends TestCase
         Mockery::close();
 
         parent::tearDown();
+    }
+
+    /**
+     * Gateway falso que declara assinaturas e implementa `SubscriptionContract`.
+     */
+    private static function subscriptionGateway(): GatewayContract
+    {
+        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway->shouldReceive('supports')->with(Capability::SUBSCRIPTIONS)->andReturn(true);
+
+        return $gateway;
+    }
+
+    /**
+     * Gateway falso que não declara capability alguma.
+     */
+    private static function gatewayWithoutCapabilities(): GatewayContract
+    {
+        $gateway = Mockery::mock(GatewayContract::class);
+        $gateway->shouldReceive('supports')->andReturn(false);
+        $gateway->shouldReceive('notYetImplemented')->andReturn([]);
+        $gateway->shouldReceive('__toString')->andReturn('falso');
+
+        return $gateway;
     }
 
     public function testFillBuildsNestedModelsAndParsesDates(): void
@@ -385,7 +411,7 @@ class SubscriptionTest extends TestCase
 
     public function testBuilderCreateDelegatesToTheGateway(): void
     {
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldReceive('createSubscription')
             ->once()
             ->andReturnUsing(function (Subscription $subscription) {
@@ -425,7 +451,7 @@ class SubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldReceive($gatewayMethod)
             ->once()
             ->with($subscription, ...$gatewayArgs)
@@ -455,7 +481,7 @@ class SubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $planChange = new SubscriptionPlanChange();
 
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldReceive('previewSubscriptionPlanChange')
             ->once()
             ->with($subscription, 'plano_anual')
@@ -468,7 +494,7 @@ class SubscriptionTest extends TestCase
     {
         $ordem = [];
 
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldReceive('createCustomer')
             ->once()
             ->andReturnUsing(function (Customer $customer) use (&$ordem) {
@@ -527,7 +553,7 @@ class SubscriptionTest extends TestCase
      */
     public function testUpdateDoesNotRequireCustomerOrPlanId(): void
     {
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldReceive('updateSubscription')->once()->andReturnUsing(fn($s) => $s);
         $gateway->shouldNotReceive('createCustomer');
 
@@ -543,18 +569,38 @@ class SubscriptionTest extends TestCase
     }
 
     /**
-     * Método de domínio recusa gateway sem SubscriptionContract com GatewayException, e não com
-     * Error do PHP.
+     * Método de domínio recusa gateway sem a capability de assinaturas com
+     * `UnsupportedOperationException`, sem chegar ao contract.
      */
-    public function testDomainMethodsRejectAGatewayWithoutTheSubscriptionContract(): void
+    public function testDomainMethodsRejectAGatewayWithoutTheSubscriptionsCapability(): void
+    {
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        try {
+            $subscription->suspend(self::gatewayWithoutCapabilities());
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
+            $this->assertSame('falso', $e->gateway);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+    }
+
+    /**
+     * Gateway que declara a capability sem implementar o contract é erro de driver e chega como
+     * `GatewayException`.
+     */
+    public function testGatewayDeclaringTheCapabilityWithoutTheContractIsADriverError(): void
     {
         $gateway = Mockery::mock(GatewayContract::class);
+        $gateway->shouldReceive('supports')->with(Capability::SUBSCRIPTIONS)->andReturn(true);
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
         $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/does not implement SubscriptionContract; subscriptions are not yet implemented in this library/');
+        $this->expectExceptionMessageMatches('/declares the subscriptions capability but does not implement SubscriptionContract/');
 
         $subscription->suspend($gateway);
     }
@@ -565,7 +611,7 @@ class SubscriptionTest extends TestCase
      */
     public function testUpdateStillValidatesItemsAndPaymentMethods(): void
     {
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldNotReceive('updateSubscription');
 
         $subscription = new Subscription();
@@ -582,7 +628,7 @@ class SubscriptionTest extends TestCase
 
     public function testUpdateStillValidatesAvailablePaymentMethods(): void
     {
-        $gateway = Mockery::mock(GatewayContract::class, SubscriptionContract::class);
+        $gateway = self::subscriptionGateway();
         $gateway->shouldNotReceive('updateSubscription');
 
         $subscription = new Subscription();
@@ -609,21 +655,24 @@ class SubscriptionTest extends TestCase
     }
 
     #[DataProvider('listOperationsProvider')]
-    public function testListOperationsRejectAGatewayWithoutTheContract(string $metodo, array $args, string $contract): void
+    public function testListOperationsRejectAGatewayWithoutTheCapability(string $metodo, array $args, Capability $capability): void
     {
-        $multiPayment = new \Potelo\MultiPayment\MultiPayment(Mockery::mock(GatewayContract::class));
+        $multiPayment = new \Potelo\MultiPayment\MultiPayment(self::gatewayWithoutCapabilities());
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches("/does not implement {$contract}; the operations of that contract are not yet implemented in this library/");
-
-        $multiPayment->{$metodo}(...$args);
+        try {
+            $multiPayment->{$metodo}(...$args);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame($capability, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
     }
 
     public static function listOperationsProvider(): array
     {
         return [
-            'assinaturas' => ['listSubscriptions', ['cus_1'], 'SubscriptionContract'],
-            'planos' => ['listPlans', [], 'PlanContract'],
+            'assinaturas' => ['listSubscriptions', ['cus_1'], Capability::SUBSCRIPTIONS],
+            'planos' => ['listPlans', [], Capability::PLANS],
         ];
     }
 }

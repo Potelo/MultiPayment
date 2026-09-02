@@ -23,19 +23,24 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class StripeGateway implements GatewayContract
 {
+    use ChecksCapabilities;
+
     /**
      * Versão da API Stripe usada pelo pacote. Fixada no código (em vez de herdar o default da
      * conta no Dashboard) para que upgrades de versão sejam decisão de código, não de configuração.
@@ -90,6 +95,42 @@ class StripeGateway implements GatewayContract
             'api_key' => Config::get('multi-payment.gateways.stripe.api_key'),
             'stripe_version' => self::STRIPE_API_VERSION,
         ]);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function capabilities(): array
+    {
+        return [
+            Capability::CREDIT_CARD,
+            Capability::PIX,
+            Capability::PARTIAL_REFUND_CARD,
+            Capability::PARTIAL_REFUND_PIX,
+            Capability::INVOICE_DUPLICATION,
+            Capability::IDEMPOTENCY,
+        ];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function notYetImplemented(): array
+    {
+        return [
+            Capability::BANK_SLIP,
+            Capability::AUTOMATIC_PIX,
+            Capability::MULTIPLE_PAYMENT_METHODS,
+            Capability::DELAYED_CAPTURE,
+            Capability::IDEMPOTENCY_ALL_ENDPOINTS,
+            Capability::SUBSCRIPTIONS,
+            Capability::PLANS,
+            Capability::PLAN_DEACTIVATION,
+            Capability::CANCEL_AT_PERIOD_END,
+            Capability::NATIVE_COUPONS,
+            Capability::PLAN_CHANGE_PRORATION,
+            Capability::MANAGES_RECURRENCE,
+        ];
     }
 
     /**
@@ -479,51 +520,19 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Exceção padrão para operações que a Stripe oferece mas este driver ainda não construiu;
-     * mais clara que o methodNotFound do despacho por convenção, que sugeriria erro de digitação.
-     *
-     * @param  string  $operation
-     * @param  string  $advice  orientação enquanto a operação não existe (ex.: usar a Iugu)
-     * @return GatewayException
-     */
-    private function operationNotImplemented(string $operation, string $advice = ''): GatewayException
-    {
-        $message = "A operação [{$operation}] no Stripe ainda não está implementada nesta lib;"
-            . ' a Stripe suporta o recurso.';
-        if ($advice !== '') {
-            $message .= ' ' . $advice;
-        }
-
-        return new GatewayException($message);
-    }
-
-    /**
      * @inheritDoc
-     * @throws ChargingException|ModelAttributeValidationException
+     * @throws ChargingException|ModelAttributeValidationException|UnsupportedOperationException
      */
     public function createInvoice(Invoice $invoice): Invoice
     {
-        // sem esta guarda a fatura seria criada como pix comum, descartando a recorrência
-        // silenciosamente, porque o Pix Automático no Stripe ainda não foi construído
-        if (!empty($invoice->automaticPix)) {
-            throw $this->operationNotImplemented(
-                'createInvoice com Pix Automático',
-                'Use a Iugu para Pix Automático por enquanto.'
-            );
-        }
+        $this->assertSupportsAll($invoice->requiredCapabilities());
 
         $paymentMethod = $this->invoicePaymentMethod($invoice);
 
         return match ($paymentMethod) {
             PaymentMethod::CREDIT_CARD => $this->createCreditCardInvoice($invoice),
             PaymentMethod::PIX => $this->createPixInvoice($invoice),
-            PaymentMethod::BANK_SLIP => throw $this->operationNotImplemented(
-                'createInvoice com boleto',
-                'Use a Iugu para boleto por enquanto.'
-            ),
-            default => throw $this->operationNotImplemented(
-                "createInvoice com o método de pagamento [{$paymentMethod->value}]"
-            ),
+            default => throw UnsupportedOperationException::forGateway($this, Capability::forPaymentMethod($paymentMethod)),
         };
     }
 
@@ -534,16 +543,16 @@ class StripeGateway implements GatewayContract
      *
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
      * @return PaymentMethod
-     * @throws ModelAttributeValidationException
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
     private function invoicePaymentMethod(Invoice $invoice): PaymentMethod
     {
         if (!empty($invoice->availablePaymentMethods)) {
             if (count($invoice->availablePaymentMethods) > 1) {
-                throw ModelAttributeValidationException::invalid(
-                    'Invoice',
-                    'availablePaymentMethods',
-                    'this library maps the invoice to a single PaymentIntent, so exactly one payment method per invoice is accepted for now'
+                throw UnsupportedOperationException::forGateway(
+                    $this,
+                    Capability::MULTIPLE_PAYMENT_METHODS,
+                    'Informe exatamente um método em availablePaymentMethods.'
                 );
             }
 
@@ -1095,7 +1104,7 @@ class StripeGateway implements GatewayContract
      * cancelada — se a criação falhar, o consumidor não fica sem fatura nenhuma.
      * Restrito a faturas pix pendentes (cartão é síncrono, não há o que duplicar).
      *
-     * @throws ModelAttributeValidationException
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
     public function duplicateInvoice(Invoice $invoice, Carbon $expiresAt, array $gatewayOptions = []): Invoice
     {
@@ -1112,12 +1121,18 @@ class StripeGateway implements GatewayContract
         $parsedOriginal = $this->parseInvoice($original, new Invoice());
 
         if ($parsedOriginal->status !== InvoiceStatus::PENDING) {
-            throw new GatewayException(
-                "Only pending invoices can be duplicated on the stripe gateway; invoice [{$invoice->id}] is [{$parsedOriginal->status->value}]"
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_DUPLICATION,
+                "No Stripe só uma fatura Pix pendente pode ser duplicada; a fatura [{$invoice->id}] está [{$parsedOriginal->status->value}]."
             );
         }
         if ($parsedOriginal->paymentMethod !== PaymentMethod::PIX) {
-            throw new GatewayException('Only pix invoices can be duplicated on the stripe gateway');
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_DUPLICATION,
+                "No Stripe só uma fatura Pix pendente pode ser duplicada; a fatura [{$invoice->id}] não é Pix."
+            );
         }
         if (empty($parsedOriginal->customer) || empty($parsedOriginal->customer->id)) {
             throw new GatewayException(
@@ -1192,7 +1207,7 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
-     * @throws ModelAttributeValidationException
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard
     {
@@ -1201,10 +1216,10 @@ class StripeGateway implements GatewayContract
         }
         if (empty($creditCard->token)) {
             // token-only: dados crus exigiriam a liberação de raw card data APIs pela
-            // Stripe e escopo PCI SAQ D — o cartão é tokenizado client-side
-            throw new GatewayException(
-                'The stripe gateway does not accept raw card data;'
-                . ' tokenize the card client-side with Stripe.js and provide the resulting id in the CreditCard token'
+            // Stripe e escopo PCI SAQ D; o cartão é tokenizado client-side
+            $this->assertSupports(
+                Capability::RAW_CARD_DATA,
+                'Tokenize o cartão no navegador com Stripe.js e informe o id resultante em CreditCard::$token.'
             );
         }
 
@@ -1346,7 +1361,7 @@ class StripeGateway implements GatewayContract
      */
     public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('rescheduleAutomaticPixPayment', 'Use a Iugu para Pix Automático por enquanto.');
+        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 
     /**
@@ -1354,7 +1369,7 @@ class StripeGateway implements GatewayContract
      */
     public function cancelAutomaticPixScheduledPayment(AutomaticPixCharge $charge): AutomaticPixCancellation
     {
-        throw $this->operationNotImplemented('cancelAutomaticPixScheduledPayment', 'Use a Iugu para Pix Automático por enquanto.');
+        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 
     /**
@@ -1362,7 +1377,7 @@ class StripeGateway implements GatewayContract
      */
     public function cancelAutomaticPixRecurrence(AutomaticPix $automaticPix): AutomaticPixCancellation
     {
-        throw $this->operationNotImplemented('cancelAutomaticPixRecurrence', 'Use a Iugu para Pix Automático por enquanto.');
+        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 
     /**
@@ -1370,7 +1385,7 @@ class StripeGateway implements GatewayContract
      */
     public function getAutomaticPixCancellation(AutomaticPixCancellation $cancellation): AutomaticPixCancellation
     {
-        throw $this->operationNotImplemented('getAutomaticPixCancellation', 'Use a Iugu para Pix Automático por enquanto.');
+        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 
     /**
@@ -1378,7 +1393,7 @@ class StripeGateway implements GatewayContract
      */
     public function listAutomaticPixCancellations(AutomaticPix $automaticPix, int $page = 1, int $limit = 100): array
     {
-        throw $this->operationNotImplemented('listAutomaticPixCancellations', 'Use a Iugu para Pix Automático por enquanto.');
+        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
     }
 
     /**

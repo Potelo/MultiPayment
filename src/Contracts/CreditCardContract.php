@@ -17,6 +17,7 @@ interface CreditCardContract
      *
      * @return CreditCard
      * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function createCreditCard(CreditCard $creditCard): CreditCard;
 
