@@ -446,6 +446,148 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->getInvoice();
     }
 
+    /**
+     * Status de dispute em aberto, conforme docs.stripe.com/api/disputes/object.
+     */
+    public static function openDisputeStatusProvider(): array
+    {
+        return [
+            ['warning_needs_response'],
+            ['warning_under_review'],
+            ['needs_response'],
+            ['under_review'],
+        ];
+    }
+
+    #[DataProvider('openDisputeStatusProvider')]
+    public function testGetInvoiceReportsOpenDisputeAsDisputed(string $disputeStatus): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->disputedCardPaymentIntentResponse(),
+            $this->disputeListResponse([$disputeStatus]),
+        ]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(Invoice::STATUS_DISPUTED, $result->status);
+        $this->assertNotSame(Invoice::STATUS_PAID, $result->status);
+        // o dinheiro continua contabilizado no charge até a resolução
+        $this->assertSame(12345, $result->paidAmount);
+
+        $this->assertCount(2, $httpClient->calls);
+        [$method, $url, $params] = $httpClient->calls[1];
+        $this->assertSame('get', $method);
+        $this->assertSame('/v1/disputes', parse_url($url, PHP_URL_PATH));
+        $this->assertSame(['charge' => 'ch_fake123', 'limit' => 100], $params);
+    }
+
+    public function testGetInvoiceReportsLostDisputeAsChargeback(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            $this->disputedCardPaymentIntentResponse(),
+            $this->disputeListResponse(['lost']),
+        ]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(Invoice::STATUS_CHARGEBACK, $result->status);
+        $this->assertNotSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertTrue(Invoice::isContested($result->status));
+        $this->assertFalse(Invoice::isSettled($result->status));
+    }
+
+    /**
+     * Status de dispute encerrada sem devolução ao cliente: a fatura volta ao status normal.
+     */
+    public static function closedDisputeStatusProvider(): array
+    {
+        return [
+            ['won'],
+            ['warning_closed'],
+            ['prevented'],
+        ];
+    }
+
+    #[DataProvider('closedDisputeStatusProvider')]
+    public function testGetInvoiceKeepsDerivedStatusWhenDisputeWasWonOrClosed(string $disputeStatus): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            $this->disputedCardPaymentIntentResponse(),
+            $this->disputeListResponse([$disputeStatus]),
+        ]);
+
+        $this->assertSame(Invoice::STATUS_PAID, $this->getInvoice()->status);
+    }
+
+    public static function disputeOverRefundProvider(): array
+    {
+        return [
+            'aberta sobre estorno parcial' => ['needs_response', 2345, false, Invoice::STATUS_DISPUTED],
+            'perdida sobre estorno total' => ['lost', 12345, true, Invoice::STATUS_CHARGEBACK],
+        ];
+    }
+
+    #[DataProvider('disputeOverRefundProvider')]
+    public function testGetInvoiceDisputeTakesPrecedenceOverRefund(string $disputeStatus, int $refunded, bool $fully, string $expected): void
+    {
+        $response = $this->disputedCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = $refunded;
+        $response['latest_charge']['refunded'] = $fully;
+        RecordingStripeHttpClient::withResponses([
+            $response,
+            $this->disputeListResponse([$disputeStatus]),
+        ]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame($expected, $result->status);
+        $this->assertSame($refunded, $result->refundedAmount);
+    }
+
+    public function testGetInvoiceFallsBackToDerivedStatusWhenDisputedChargeHasNoDisputes(): void
+    {
+        // a flag pode chegar antes da dispute aparecer na listagem; sem dispute a fatura
+        // segue a derivação normal
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $this->disputedCardPaymentIntentResponse(),
+            $this->disputeListResponse([]),
+        ]);
+
+        $this->assertSame(Invoice::STATUS_PAID, $this->getInvoice()->status);
+        $this->assertCount(2, $httpClient->calls);
+    }
+
+    public function testGetInvoiceOpenDisputeWinsOverAnEarlierWonOne(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            $this->disputedCardPaymentIntentResponse(),
+            $this->disputeListResponse(['won', 'needs_response']),
+        ]);
+
+        $this->assertSame(Invoice::STATUS_DISPUTED, $this->getInvoice()->status);
+    }
+
+    public function testGetInvoiceDoesNotListDisputesWhenChargeIsNotDisputed(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $this->assertSame(Invoice::STATUS_PAID, $this->getInvoice()->status);
+        $this->assertCount(1, $httpClient->calls);
+    }
+
+    public function testGetInvoiceDoesNotListDisputesForFailedCharge(): void
+    {
+        // charge failed marcado como disputed não existe na prática, mas o parse só consulta
+        // disputes de charge pago
+        $response = $this->disputedCardPaymentIntentResponse();
+        $response['status'] = 'requires_payment_method';
+        $response['latest_charge']['status'] = 'failed';
+        $httpClient = RecordingStripeHttpClient::withResponses([$response]);
+
+        $this->assertSame(Invoice::STATUS_PENDING, $this->getInvoice()->status);
+        $this->assertCount(1, $httpClient->calls);
+    }
+
     public function testChargeInvoiceWithCreditCardUpdatesIntentBeforeConfirming(): void
     {
         // PI sem customer + PaymentMethod salvo: o customer do dono do cartão é vinculado
@@ -1008,6 +1150,7 @@ class StripeGatewayInvoiceTest extends TestCase
                 'amount_captured' => 12345,
                 'amount_refunded' => 0,
                 'refunded' => false,
+                'disputed' => false,
                 'created' => 1786700010,
                 'payment_method_details' => [
                     'type' => 'card',
@@ -1020,6 +1163,45 @@ class StripeGatewayInvoiceTest extends TestCase
                     'currency' => 'brl',
                 ],
             ],
+        ];
+    }
+
+    private function disputedCardPaymentIntentResponse(): array
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['disputed'] = true;
+
+        return $response;
+    }
+
+    /**
+     * Resposta de GET /v1/disputes?charge=..., uma dispute por status informado.
+     *
+     * @param  string[]  $statuses
+     * @return array
+     */
+    private function disputeListResponse(array $statuses): array
+    {
+        $data = [];
+        foreach ($statuses as $index => $status) {
+            $data[] = [
+                'id' => "du_fake{$index}",
+                'object' => 'dispute',
+                'amount' => 12345,
+                'charge' => 'ch_fake123',
+                'payment_intent' => 'pi_fake123',
+                'currency' => 'brl',
+                'reason' => 'fraudulent',
+                'status' => $status,
+                'created' => 1786700020,
+            ];
+        }
+
+        return [
+            'object' => 'list',
+            'url' => '/v1/disputes',
+            'has_more' => false,
+            'data' => $data,
         ];
     }
 

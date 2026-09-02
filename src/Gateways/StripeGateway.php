@@ -48,6 +48,22 @@ class StripeGateway implements GatewayContract
      */
     private const PAYMENT_INTENT_EXPAND = ['latest_charge.balance_transaction'];
 
+    /**
+     * Status de dispute da Stripe que significam contestação em aberto: inquiry ou chargeback
+     * formal aguardando resposta ou em análise. Lista oficial dos oito status em
+     * https://docs.stripe.com/api/disputes/object#dispute_object-status; os demais são `won`,
+     * `lost`, `warning_closed` e `prevented`.
+     */
+    private const OPEN_DISPUTE_STATUSES = [
+        'warning_needs_response',
+        'warning_under_review',
+        'needs_response',
+        'under_review',
+    ];
+
+    /** Dispute resolvida a favor do cliente: a Stripe devolveu o valor. */
+    private const LOST_DISPUTE_STATUS = 'lost';
+
     /** Mapa de tipos de PaymentMethod da Stripe para os métodos genéricos do pacote. */
     private const PAYMENT_METHOD_TYPES = [
         'card' => Invoice::PAYMENT_METHOD_CREDIT_CARD,
@@ -779,7 +795,7 @@ class StripeGateway implements GatewayContract
      * @param  \Stripe\PaymentIntent  $stripePaymentIntent
      * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
      * @return \Potelo\MultiPayment\Models\Invoice
-     * @throws GatewayException
+     * @throws GatewayException|GatewayNotAvailableException
      */
     private function parseInvoice(StripePaymentIntent $stripePaymentIntent, ?Invoice $invoice = null): Invoice
     {
@@ -789,10 +805,11 @@ class StripeGateway implements GatewayContract
         // não pode alimentar paidAmount/refundedAmount
         $stripeCharge = is_object($stripePaymentIntent->latest_charge) ? $stripePaymentIntent->latest_charge : null;
         $paidCharge = ($stripeCharge && $stripeCharge->status === 'succeeded') ? $stripeCharge : null;
+        $disputeStatus = $paidCharge ? $this->disputeStatus($paidCharge) : null;
 
         $invoice->id = $stripePaymentIntent->id;
         $invoice->gateway = 'stripe';
-        $invoice->status = self::stripeStatusToMultiPayment($stripePaymentIntent, $paidCharge);
+        $invoice->status = self::stripeStatusToMultiPayment($stripePaymentIntent, $paidCharge, $disputeStatus);
         $invoice->amount = $stripePaymentIntent->amount;
         $invoice->paidAmount = $paidCharge?->amount_captured;
         $invoice->refundedAmount = $paidCharge?->amount_refunded;
@@ -873,16 +890,56 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Deriva o status genérico do par PaymentIntent + charge — estorno não muda o status
-     * do PaymentIntent na Stripe, então ele vem do charge.
+     * Deriva o status genérico de contestação de um charge pago. O Charge da Stripe só traz a
+     * flag `disputed`; a dispute não é expansível a partir dele, então um charge disputado
+     * custa um GET a mais em /v1/disputes. Contestação em aberto tem precedência sobre
+     * perdida; dispute ganha, encerrada sem virar chargeback (`warning_closed`) ou prevenida
+     * não altera o status da fatura.
+     *
+     * @param  object  $stripeCharge
+     * @return string|null  `Invoice::STATUS_DISPUTED`, `Invoice::STATUS_CHARGEBACK` ou null
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function disputeStatus(object $stripeCharge): ?string
+    {
+        // isset() passa pelo __isset e não loga "Undefined property" quando a chave falta
+        if (!isset($stripeCharge->disputed) || !$stripeCharge->disputed) {
+            return null;
+        }
+
+        $disputes = $this->stripeRequest(function () use ($stripeCharge) {
+            // uma página basta: um charge não acumula dezenas de disputes
+            return $this->client->disputes->all(['charge' => $stripeCharge->id, 'limit' => 100]);
+        });
+
+        $statuses = array_map(static fn ($dispute) => $dispute->status, $disputes->data ?? []);
+        if (!empty(array_intersect($statuses, self::OPEN_DISPUTE_STATUSES))) {
+            return Invoice::STATUS_DISPUTED;
+        }
+        if (in_array(self::LOST_DISPUTE_STATUS, $statuses, true)) {
+            return Invoice::STATUS_CHARGEBACK;
+        }
+
+        return null;
+    }
+
+    /**
+     * Deriva o status genérico do par PaymentIntent + charge. Estorno não muda o status do
+     * PaymentIntent na Stripe, então ele vem do charge. Contestação, quando existe, vence os
+     * dois: uma fatura disputada não lê como paga nem como estornada.
      *
      * @param  \Stripe\PaymentIntent  $stripePaymentIntent
      * @param  object|null  $paidCharge
+     * @param  string|null  $disputeStatus  resultado de disputeStatus() para o charge pago
      * @return string
      * @throws GatewayException
      */
-    private static function stripeStatusToMultiPayment(StripePaymentIntent $stripePaymentIntent, ?object $paidCharge): string
+    private static function stripeStatusToMultiPayment(StripePaymentIntent $stripePaymentIntent, ?object $paidCharge, ?string $disputeStatus = null): string
     {
+        if ($disputeStatus !== null) {
+            return $disputeStatus;
+        }
+
         if ($paidCharge && $paidCharge->amount_refunded > 0) {
             return $paidCharge->refunded
                 ? Invoice::STATUS_REFUNDED

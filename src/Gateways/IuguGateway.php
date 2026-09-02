@@ -198,14 +198,16 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             case self::STATUS_PAID:
             case self::STATUS_EXTERNALLY_PAID:
             case self::STATUS_AUTHORIZED:
-            case self::STATUS_IN_PROTEST:
                 return Invoice::STATUS_PAID;
+            case self::STATUS_IN_PROTEST:
+                return Invoice::STATUS_DISPUTED;
             case self::STATUS_CANCELED:
             case self::STATUS_EXPIRED:
                 return Invoice::STATUS_CANCELED;
             case self::STATUS_REFUNDED:
-            case self::STATUS_CHARGEBACK:
                 return Invoice::STATUS_REFUNDED;
+            case self::STATUS_CHARGEBACK:
+                return Invoice::STATUS_CHARGEBACK;
             case self::STATUS_PARTIALLY_REFUNDED:
                 return Invoice::STATUS_PARTIALLY_REFUNDED;
             default:

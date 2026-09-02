@@ -8,6 +8,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
 - [Configuração](#configuração)
 - [Gateways](#gateways)
   - [Suporte por gateway](#suporte-por-gateway)
+  - [Status da fatura](#status-da-fatura)
   - [Particularidades do Stripe](#particularidades-do-stripe)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
@@ -103,6 +104,41 @@ Também é possível utilizar o Facade:
 
 🚧 = ainda não implementado no gateway; hoje a chamada lança `GatewayException`.
 
+### Status da fatura
+
+`Invoice::$status` usa sempre o vocabulário do pacote; o status específico de cada gateway fica
+em `original`. Mapa atual:
+
+| Status genérico | Significado | Iugu | Stripe |
+|---|---|---|---|
+| `pending` | Aguardando pagamento | `pending`, `in_analysis`, `draft`, `partially_paid` | PaymentIntent em `processing`, `requires_action`, `requires_confirmation`, `requires_payment_method`, `requires_capture` |
+| `paid` | Valor recebido | `paid`, `externally_paid`, `authorized` | PaymentIntent `succeeded` sem estorno nem contestação |
+| `canceled` | Cancelada ou vencida sem pagamento | `canceled`, `expired` | PaymentIntent `canceled` |
+| `refunded` | Estorno voluntário, integral | `refunded` | charge com `refunded = true` |
+| `partially_refunded` | Estorno voluntário, parcial | `partially_refunded` | charge com `amount_refunded` menor que o total |
+| `disputed` | Contestação aberta sobre fatura paga, resolução pendente | `in_protest` | charge `disputed` com dispute em `warning_needs_response`, `warning_under_review`, `needs_response` ou `under_review` |
+| `chargeback` | Contestação perdida: valor devolvido ao cliente pelo gateway. Terminal | `chargeback` | dispute em `lost` |
+
+Dispute ganha (`won`), encerrada sem virar chargeback (`warning_closed`) ou prevenida
+(`prevented`) não altera o status: a fatura volta a ler como `paid` (ou como estornada, se
+houve estorno). Um status fora do mapa lança `GatewayException`. Estados próprios para captura
+tardia, vencimento e pagamento parcial estão planejados para uma versão futura.
+
+Para não comparar status um a um, a `Invoice` traz dois helpers estáticos:
+
+```php
+Invoice::isSettled($invoice->status);   // recebi o dinheiro? paid ou partially_refunded
+Invoice::isContested($invoice->status); // tem briga aberta? disputed ou chargeback
+```
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, fatura Iugu em `in_protest` lia como
+> `paid` e fatura em `chargeback` lia como `refunded`; no Stripe, charge contestado lia como
+> `paid`. A partir desta versão elas leem como `disputed` e `chargeback`. Quem compara com
+> `Invoice::STATUS_PAID` para decidir se recebeu **deixa de ver faturas em disputa como pagas**,
+> e quem compara com `STATUS_REFUNDED` deixa de confundir chargeback com estorno voluntário. Se
+> a aplicação precisava do comportamento antigo, use `Invoice::isSettled()` para "pago" e trate
+> `disputed` e `chargeback` explicitamente.
+
 ### Particularidades do Stripe
 
 - **Cartão é token-only.** O Stripe não aceita dados crus de cartão pela API (exigiria
@@ -130,6 +166,10 @@ Também é possível utilizar o Facade:
   como na Iugu (`secure_url`).
 - **`fee` é assíncrono para cartão**: pode vir `null` logo após a cobrança e preenchido em um
   `getInvoice` posterior.
+- **Contestação custa uma requisição a mais.** O charge da Stripe só traz a flag `disputed`;
+  quando ela é verdadeira, o pacote consulta `/v1/disputes` do charge para decidir entre
+  `disputed` e `chargeback` (ver [Status da fatura](#status-da-fatura)). Fatura sem contestação
+  não paga esse GET.
 - **Idempotência**: envie `gateway_adicional_options['idempotency_key']` na criação de
   faturas e estornos para repassar o cabeçalho `Idempotency-Key` da Stripe.
 

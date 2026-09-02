@@ -18,6 +18,19 @@ class Invoice extends Model
     public const STATUS_REFUNDED = 'refunded';
     public const STATUS_PARTIALLY_REFUNDED = 'partially_refunded';
 
+    /**
+     * Contestação aberta sobre uma fatura paga, com resolução pendente. Enquanto a disputa
+     * corre, o gateway pode ou não reter o valor (a Stripe retém no chargeback formal, não
+     * na inquiry). Se ganha, a fatura volta a `paid`; se perdida, vira `chargeback`.
+     */
+    public const STATUS_DISPUTED = 'disputed';
+
+    /**
+     * Contestação perdida: o valor foi devolvido ao cliente pelo gateway. Estado terminal,
+     * distinto de `refunded`, que é o estorno voluntário feito pela aplicação.
+     */
+    public const STATUS_CHARGEBACK = 'chargeback';
+
     public const PAYMENT_METHOD_CREDIT_CARD = 'credit_card';
     public const PAYMENT_METHOD_BANK_SLIP = 'bank_slip';
     public const PAYMENT_METHOD_PIX = 'pix';
@@ -283,6 +296,37 @@ class Invoice extends Model
             $this->creditCard->customer = $this->customer;
         }
         parent::save($gateway, false);
+    }
+
+    /**
+     * Responde "o dinheiro desta fatura foi recebido?" sem que o consumidor precise conhecer
+     * cada status: verdadeiro para `paid` e `partially_refunded`. Fatura em disputa não conta
+     * como recebida enquanto a contestação estiver aberta.
+     *
+     * @param  string  $status
+     * @return bool
+     */
+    public static function isSettled(string $status): bool
+    {
+        return in_array($status, [
+            self::STATUS_PAID,
+            self::STATUS_PARTIALLY_REFUNDED,
+        ], true);
+    }
+
+    /**
+     * Responde "existe contestação sobre esta fatura?": verdadeiro para `disputed` (aberta) e
+     * `chargeback` (perdida).
+     *
+     * @param  string  $status
+     * @return bool
+     */
+    public static function isContested(string $status): bool
+    {
+        return in_array($status, [
+            self::STATUS_DISPUTED,
+            self::STATUS_CHARGEBACK,
+        ], true);
     }
 
     /**

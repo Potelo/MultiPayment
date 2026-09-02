@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Tests\Unit\Gateways;
 
 use Carbon\Carbon;
-use Iugu_APIRequest;
 use PHPUnit\Framework\TestCase;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
@@ -1759,31 +1758,5 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
 
         $this->assertNull($gateway->getSubscription($subscription)->latestInvoice);
-    }
-}
-
-/**
- * Devolve uma resposta por chamada, na ordem, e guarda todas as chamadas feitas.
- */
-class QueuedIuguApiRequest extends Iugu_APIRequest
-{
-    public array $calls = [];
-
-    /**
-     * @param  array<int, object|array>  $responses
-     */
-    public function __construct(private array $responses)
-    {
-    }
-
-    public function request($method, $url, $data = [])
-    {
-        $this->calls[] = ['method' => $method, 'url' => $url, 'data' => $data];
-
-        if (empty($this->responses)) {
-            throw new \RuntimeException("Sem resposta enfileirada para {$method} {$url}");
-        }
-
-        return array_shift($this->responses);
     }
 }
