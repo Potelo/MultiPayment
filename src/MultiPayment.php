@@ -234,6 +234,7 @@ class MultiPayment
      *
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
     public function refundInvoice(string $id, ?int $partialValueCents = null): Invoice
     {

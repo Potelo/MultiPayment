@@ -31,6 +31,7 @@ use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
@@ -52,6 +53,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /** Faixa de `interval` aceita pela Iugu na criação de plano. */
     private const PLAN_INTERVAL_MIN = 1;
     private const PLAN_INTERVAL_MAX = 599;
+
+    /** Prazo, em dias após o pagamento, em que a Iugu ainda aceita estorno pela API. */
+    private const REFUND_WINDOW_DAYS = 90;
 
     private Iugu_APIRequest $apiRequest;
 
@@ -317,20 +321,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function getInvoice(Invoice $invoice): Invoice
     {
-        try {
-            $iuguInvoice = \Iugu_Invoice::fetch($invoice->id);
-        } catch (\IuguRequestException | IuguObjectNotFound $e) {
-            if (str_contains($e->getMessage(), '502 Bad Gateway')) {
-                throw new GatewayNotAvailableException($e->getMessage());
-            } else {
-                throw new GatewayException($e->getMessage());
-            }
-        } catch (\Exception $e) {
-            throw new GatewayException("Error getting invoice: {$e->getMessage()}");
-        }
-        if (!empty($iuguInvoice->errors)) {
-            throw new GatewayException('Error getting invoice', $iuguInvoice->errors);
-        }
+        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode((string) $invoice->id);
+        $iuguInvoice = $this->iuguRequest('GET', $url, [], 'getting invoice');
 
         return $this->parseInvoice($iuguInvoice, $invoice);
     }
@@ -361,23 +353,89 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * As guardas de estorno precisam do método de pagamento, do status, da data de pagamento e,
+     * no estorno por valor, do valor pago. Um model que traz só o `id` custa um GET a mais para
+     * ler a fatura antes do estorno; um model lido do gateway e já pago não paga esse GET. A
+     * leitura prévia acontece numa cópia: o model do chamador só é alterado se o estorno
+     * acontecer.
+     *
+     * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
     public function refundInvoice(Invoice $invoice): Invoice
     {
-        $iuguInvoice = new \Iugu_Invoice(['id' => $invoice->id]);
-
-        try {
-            $refunded = $iuguInvoice->refund($invoice->refundedAmount ?? null);
-            if (!$refunded) {
-                throw new GatewayException("Error refunding invoice", $iuguInvoice->errors ?? []);
-            }
-        } catch (GatewayException $e) {
-            throw $e;
-        } catch (\Exception $e) {
-            throw new GatewayException("Error refunding invoice: {$e->getMessage()}");
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
         }
 
+        // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
+        $requestedAmount = $invoice->refundedAmount ?: null;
+
+        $current = $invoice;
+        if (
+            empty($invoice->paymentMethod)
+            || empty($invoice->status)
+            || is_null($invoice->paidAt)
+            || (!is_null($requestedAmount) && is_null($invoice->paidAmount))
+        ) {
+            $current = $this->getInvoice(clone $invoice);
+        }
+
+        $this->assertInvoiceIsRefundable($current, $requestedAmount);
+
+        $data = [];
+        // valor igual ao pago é estorno integral e vai sem partial_value_refund_cents; assim o
+        // Pix, que só aceita integral, não é recusado por um "parcial" do valor cheio
+        if (!is_null($requestedAmount) && $requestedAmount !== $current->paidAmount) {
+            $data['partial_value_refund_cents'] = $requestedAmount;
+        }
+
+        $url = Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/refund';
+        $iuguInvoice = $this->iuguRequest('POST', $url, $data, 'refunding invoice');
+
         return $this->parseInvoice($iuguInvoice, $invoice);
+    }
+
+    /**
+     * Lança antes da rede quando a Iugu certamente recusaria o estorno: boleto não tem estorno
+     * pela API, fatura em `refunded` é terminal, Pix só estorna o valor integral e o prazo de
+     * estorno termina no fim do 90º dia após o pagamento.
+     *
+     * @param  Invoice  $invoice
+     * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno integral
+     * @return void
+     * @throws RefundNotSupportedException
+     */
+    private function assertInvoiceIsRefundable(Invoice $invoice, ?int $requestedAmount): void
+    {
+        if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_BANK_SLIP) {
+            throw RefundNotSupportedException::boletoNoRefund('iugu');
+        }
+
+        if ($invoice->status === Invoice::STATUS_REFUNDED) {
+            throw RefundNotSupportedException::alreadyRefunded('iugu', $invoice->paymentMethod);
+        }
+
+        if (
+            $invoice->paymentMethod === Invoice::PAYMENT_METHOD_PIX
+            && !is_null($requestedAmount)
+            && $requestedAmount !== $invoice->paidAmount
+        ) {
+            throw RefundNotSupportedException::pixPartialNotSupported('iugu', $requestedAmount, $invoice->paidAmount);
+        }
+
+        // a Iugu conta o prazo em dias; até o fim do 90º dia a chamada segue e a API decide
+        if (
+            !is_null($invoice->paidAt)
+            && $invoice->paidAt->copy()->addDays(self::REFUND_WINDOW_DAYS)->endOfDay()->isPast()
+        ) {
+            throw RefundNotSupportedException::refundWindowExpired(
+                'iugu',
+                $invoice->paymentMethod,
+                $invoice->paidAt,
+                self::REFUND_WINDOW_DAYS
+            );
+        }
     }
 
     /**

@@ -9,6 +9,7 @@ use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 
 class MultiPaymentTest extends TestCase
 {
@@ -357,6 +358,17 @@ class MultiPaymentTest extends TestCase
         $this->assertEquals($status, $refundedInvoice->status);
         $this->assertEquals($refundedAmount, $refundedInvoice->refundedAmount);
         $this->assertEquals($total - $refundedAmount, $refundedInvoice->paidAmount);
+
+        // na Iugu a guarda lê a fatura real antes: já estornada é recusada sem novo POST
+        if ($gateway === 'iugu' && $status === Invoice::STATUS_REFUNDED) {
+            try {
+                $multiPayment->refundInvoice($invoice->id);
+                $this->fail('Esperava RefundNotSupportedException');
+            } catch (RefundNotSupportedException $e) {
+                $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $e->reason);
+                $this->assertFalse($e->manualRefundRequired);
+            }
+        }
     }
 
     /**

@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -790,6 +791,7 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame(['payment_intent' => 'pi_fake123'], $params);
         $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
         $this->assertSame(12345, $result->refundedAmount);
+        $this->assertSame('re_fake123', $result->lastRefundId);
     }
 
     public function testRefundsInvoicePartially(): void
@@ -812,6 +814,7 @@ class StripeGatewayInvoiceTest extends TestCase
         );
         $this->assertSame(Invoice::STATUS_PARTIALLY_REFUNDED, $result->status);
         $this->assertSame(2345, $result->refundedAmount);
+        $this->assertSame('re_fake123', $result->lastRefundId);
     }
 
     public function testRefundInvoiceRequiresId(): void
@@ -819,6 +822,114 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->expectException(ModelAttributeValidationException::class);
 
         (new StripeGateway())->refundInvoice(new Invoice());
+    }
+
+    /**
+     * Boleto ainda não existe neste driver; a guarda já nasce coberta para quando entrar.
+     */
+    public function testBoletoRefundThrowsBeforeTheNetwork(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
+
+        try {
+            (new StripeGateway())->refundInvoice($invoice);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $e->reason);
+            $this->assertSame(Invoice::PAYMENT_METHOD_BANK_SLIP, $e->paymentMethod);
+            $this->assertTrue($e->manualRefundRequired);
+        }
+
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    public function testAlreadyRefundedInvoiceThrowsBeforeTheNetwork(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
+        $invoice->status = Invoice::STATUS_REFUNDED;
+
+        try {
+            (new StripeGateway())->refundInvoice($invoice);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $e->reason);
+            $this->assertSame(Invoice::PAYMENT_METHOD_CREDIT_CARD, $e->paymentMethod);
+            $this->assertFalse($e->manualRefundRequired);
+        }
+
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * Pix parcial é permitido na Stripe: a guarda da Iugu não pode vazar para cá.
+     */
+    public function testPartialPixRefundGoesToTheGateway(): void
+    {
+        $refunded = $this->paidPixPaymentIntentResponse();
+        $refunded['latest_charge']['amount_refunded'] = 2345;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['id' => 're_fake123', 'object' => 'refund', 'status' => 'succeeded', 'amount' => 2345],
+            $refunded,
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->paymentMethod = Invoice::PAYMENT_METHOD_PIX;
+        $invoice->refundedAmount = 2345;
+        $result = (new StripeGateway())->refundInvoice($invoice);
+
+        $this->assertCount(2, $httpClient->calls);
+        $this->assertSame('post', $httpClient->calls[0][0]);
+        $this->assertSame('/v1/refunds', parse_url($httpClient->calls[0][1], PHP_URL_PATH));
+        $this->assertSame(['payment_intent' => 'pi_fake123', 'amount' => 2345], $httpClient->calls[0][2]);
+        $this->assertSame(Invoice::STATUS_PARTIALLY_REFUNDED, $result->status);
+        $this->assertSame(2345, $result->refundedAmount);
+        $this->assertSame('re_fake123', $result->lastRefundId);
+    }
+
+    /**
+     * Fatura parcialmente estornada aceita novo estorno: a guarda `already_refunded` olha só
+     * `refunded`.
+     */
+    public function testPartiallyRefundedInvoiceAcceptsAnotherRefund(): void
+    {
+        $refunded = $this->paidCardPaymentIntentResponse();
+        $refunded['latest_charge']['amount_refunded'] = 12345;
+        $refunded['latest_charge']['refunded'] = true;
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['id' => 're_fake456', 'object' => 'refund', 'status' => 'succeeded', 'amount' => 10000],
+            $refunded,
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $invoice->status = Invoice::STATUS_PARTIALLY_REFUNDED;
+        $invoice->refundedAmount = 10000;
+        $result = (new StripeGateway())->refundInvoice($invoice);
+
+        $this->assertSame('post', $httpClient->calls[0][0]);
+        $this->assertSame('/v1/refunds', parse_url($httpClient->calls[0][1], PHP_URL_PATH));
+        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame('re_fake456', $result->lastRefundId);
+    }
+
+    public function testGetInvoiceDoesNotFillLastRefundId(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['latest_charge']['amount_refunded'] = 12345;
+        $response['latest_charge']['refunded'] = true;
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertNull($result->lastRefundId);
     }
 
     public function testDuplicatesPendingPixInvoiceCancelingTheOriginal(): void

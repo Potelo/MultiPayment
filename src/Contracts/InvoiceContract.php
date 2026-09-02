@@ -35,10 +35,15 @@ interface InvoiceContract
     /**
      * Refund an invoice
      *
+     * Full refund when `refundedAmount` is empty; partial when set. The gateway throws
+     * `RefundNotSupportedException` before any request when its own rules already guarantee
+     * the refusal (bank slip, partial Pix on Iugu, invoice already refunded, window expired).
+     *
      * @param  Invoice  $invoice
      *
      * @return Invoice
      * @throws GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
     public function refundInvoice(Invoice $invoice): Invoice;
 

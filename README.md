@@ -18,6 +18,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [CustomerBuilder](#customerbuilder)
     - [getInvoice](#getinvoice)
     - [Outras operações de fatura](#outras-operações-de-fatura)
+    - [Estorno](#estorno)
     - [charge](#charge)
   - [Models](#models)
     - [Customer](#customer)
@@ -89,7 +90,9 @@ Também é possível utilizar o Facade:
 | Fatura com pix | ✅ | ✅ |
 | Fatura com boleto | ✅ | ❌ lança `GatewayException` |
 | Fatura multi-método (`available_payment_methods` com mais de um) | ✅ | ❌ exatamente 1 método por fatura |
-| Estorno total e parcial | ✅ | ✅ |
+| Estorno de cartão (total e parcial) | ✅ | ✅ |
+| Estorno de Pix | ✅ somente integral; parcial lança `RefundNotSupportedException` | ✅ total e parcial |
+| Estorno de boleto | ❌ lança `RefundNotSupportedException` (devolução manual) | ❌ lança `RefundNotSupportedException` (devolução manual) |
 | Cancelamento | ✅ | ✅ |
 | Duplicar fatura (`duplicateInvoice`) | ✅ | ✅ somente pix pendente |
 | Cobrar fatura pendente com cartão | ✅ | ✅ (inclusive pix expirado) |
@@ -396,7 +399,7 @@ $foundInvoice = $payment->getInvoice($invoiceId);
 ```php
 $payment = new \Potelo\MultiPayment\MultiPayment('stripe');
 
-// estorno total ou parcial (valor em centavos)
+// estorno total ou parcial (valor em centavos); guardas e exceção na seção "Estorno"
 $payment->refundInvoice($invoiceId);
 $payment->refundInvoice($invoiceId, 5000);
 
@@ -410,6 +413,55 @@ $payment->duplicateInvoice($invoiceId, \Carbon\Carbon::now()->addDays(3));
 $payment->chargeInvoiceWithCreditCard($invoiceId, 'pm_...');
 $payment->chargeInvoiceWithCreditCard($invoiceId, null, $creditCardId);
 ```
+
+#### Estorno
+
+Sem valor, o estorno é integral; com valor em centavos, é parcial. O pacote recusa, **antes de
+chamar o gateway**, o estorno que a regra do gateway já garante que seria negado, e o faz com
+`RefundNotSupportedException` nos dois drivers, para a aplicação não precisar interpretar a
+mensagem da Iugu ou da Stripe.
+
+```php
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
+
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
+
+try {
+    $invoice = $payment->refundInvoice($invoiceId);         // integral
+    $invoice = $payment->refundInvoice($invoiceId, 5000);   // parcial
+
+    $invoice->status;        // refunded ou partially_refunded
+    $invoice->lastRefundId;  // id do estorno no gateway (Stripe: re_...; a Iugu não devolve id)
+} catch (RefundNotSupportedException $e) {
+    // a lib recusou sem chamar o gateway; $e->reason diz por quê
+    if ($e->manualRefundRequired) {
+        // boleto ou prazo vencido: o dinheiro só volta por fora do gateway
+        ManualRefund::dispatch($invoiceId, $e->paymentMethod, $e->reason);
+    }
+}
+```
+
+| `$e->reason` | Quando | `$e->manualRefundRequired` |
+|---|---|---|
+| `boleto_no_refund` | Fatura paga com boleto, nos dois gateways | `true` |
+| `pix_partial_not_supported` | Iugu: valor pedido diferente do valor pago numa fatura Pix. Repita sem valor para estornar o total | `false` |
+| `already_refunded` | Fatura já lida como `refunded` | `false` |
+| `refund_window_expired` | Iugu: depois do fim do 90º dia após `paidAt` | `true` |
+
+Na Iugu, as guardas precisam do método de pagamento, do status, da data de pagamento e, no
+estorno por valor, do valor pago. Chamar `refundInvoice($id)` só com o id custa **um GET a mais**
+para ler a fatura antes do estorno; chamar `$invoice->refund()` num model já lido do gateway e já
+pago não paga esse GET. Essa leitura não altera o model do chamador: ele só muda quando o
+estorno acontece. No Stripe não há leitura prévia: as guardas usam o que já está no model, e o
+estorno parcial de Pix é aceito.
+
+`lastRefundId` é preenchido só pela operação de estorno (a leitura da fatura o deixa `null`) e é
+provisório: dá lugar a um objeto `Refund` numa versão futura.
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, estorno de boleto, Pix parcial,
+> fatura já estornada e fora do prazo de 90 dias na Iugu iam até a API e voltavam como
+> `GatewayException` com a mensagem do gateway. Agora lançam `RefundNotSupportedException`, que herda de `MultiPaymentException` e **não** de
+> `GatewayException`: um `catch (GatewayException $e)` sozinho deixa de capturar esses casos.
 
 #### charge
 

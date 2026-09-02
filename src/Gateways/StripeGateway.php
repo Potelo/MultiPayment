@@ -26,6 +26,7 @@ use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 class StripeGateway implements GatewayContract
@@ -708,12 +709,22 @@ class StripeGateway implements GatewayContract
 
     /**
      * @inheritDoc
-     * @throws ModelAttributeValidationException
+     *
+     * As guardas de estorno usam só o que já está no model, sem leitura prévia: um PaymentIntent
+     * deste driver não pode ser boleto.
+     *
+     * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
     public function refundInvoice(Invoice $invoice): Invoice
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+        if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_BANK_SLIP) {
+            throw RefundNotSupportedException::boletoNoRefund('stripe');
+        }
+        if ($invoice->status === Invoice::STATUS_REFUNDED) {
+            throw RefundNotSupportedException::alreadyRefunded('stripe', $invoice->paymentMethod);
         }
 
         // mesma semântica da Iugu: refundedAmount preenchido = estorno parcial; vazio = total
@@ -724,12 +735,15 @@ class StripeGateway implements GatewayContract
         $stripeRefundData = $this->mergeGatewayAdicionalOptions($stripeRefundData, $invoice);
         $requestOptions = $this->extractIdempotencyKey($stripeRefundData);
 
-        $this->stripeRequest(function () use ($stripeRefundData, $requestOptions) {
+        $stripeRefund = $this->stripeRequest(function () use ($stripeRefundData, $requestOptions) {
             return $this->client->refunds->create($stripeRefundData, $requestOptions);
         });
 
         // o refund não devolve o PaymentIntent — refetch para reparse com o charge atualizado
-        return $this->getInvoice($invoice);
+        $invoice = $this->getInvoice($invoice);
+        $invoice->lastRefundId = $stripeRefund->id;
+
+        return $invoice;
     }
 
     /**

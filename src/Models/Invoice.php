@@ -66,6 +66,16 @@ class Invoice extends Model
     public ?int $refundedAmount = null;
 
     /**
+     * Id do estorno criado pelo gateway na última chamada de `refund()`, quando o gateway
+     * devolve um (Stripe: `re_...`; a Iugu não devolve id de estorno). Preenchido só pela
+     * operação de estorno, não pela leitura da fatura. Campo provisório: dá lugar a um objeto
+     * `Refund` numa versão futura.
+     *
+     * @var string|null
+     */
+    public ?string $lastRefundId = null;
+
+    /**
      * @var Customer|null
      */
     public ?Customer $customer = null;
@@ -334,6 +344,7 @@ class Invoice extends Model
      *
      * @return \Potelo\MultiPayment\Models\Invoice
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
      */
     public function refund(): Invoice
     {
