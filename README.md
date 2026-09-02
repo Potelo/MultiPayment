@@ -99,7 +99,7 @@ Também é possível utilizar o Facade:
 | Cancelar assinatura ao fim do período (`cancel(atPeriodEnd: true)`) | ❌ lança `GatewayException` | 🚧 em desenvolvimento |
 | Troca de plano e simulação (`changePlan`, `previewPlanChange`) | ✅ | 🚧 em desenvolvimento |
 | Desconto na assinatura | ✅ somente valor fixo (`amountOff`), com `cycles` 1 ou `null` | 🚧 em desenvolvimento |
-| Plano (criar, buscar, listar) | ✅ intervalos `week` e `month` | 🚧 em desenvolvimento |
+| Plano (criar, buscar, listar) | ✅ (`year` é enviado como 12 meses) | 🚧 em desenvolvimento |
 | Desativar plano (`deactivatePlan`) | ❌ lança `GatewayException` | 🚧 em desenvolvimento |
 
 🚧 = ainda não implementado no gateway; hoje a chamada lança `GatewayException`.
@@ -270,7 +270,7 @@ $plan = new Plan();
 $plan->name = 'Mensal';
 $plan->identifier = 'plano_mensal';
 $plan->amount = 10000; // centavos
-$plan->interval = Plan::INTERVAL_MONTH; // week ou month; a Iugu não aceita year
+$plan->interval = Plan::INTERVAL_MONTH; // week, month ou year
 $plan->intervalCount = 1;
 $plan->save('iugu');
 
@@ -314,7 +314,13 @@ Particularidades da Iugu:
   ao fim do período, suspenda na data.
 - **Desconto é sempre valor fixo.** `percentOff` lança `GatewayException`, e `cycles` só aceita
   `1` (uma fatura) ou `null` (até ser removido).
-- **Planos são semanais ou mensais.** `Plan::INTERVAL_YEAR` lança `GatewayException`.
+- **Plano anual é 12 meses.** A Iugu só tem intervalos em semanas e meses, então
+  `Plan::INTERVAL_YEAR` é enviado como `12 * intervalCount` meses. Na leitura vale a heurística
+  inversa: todo plano em meses cujo intervalo é múltiplo de 12 volta como `year` com
+  `intervalCount` dividido por 12 (um plano criado direto na Iugu com 24 meses lê como 2 anos).
+  Quem precisar do valor cru lê `original`. A Iugu aceita intervalo de 1 a 599, então um plano
+  anual vai até `intervalCount` 49; acima disso o driver lança `GatewayException` antes de
+  chamar a API.
 - **Planos não são desativáveis.** `deactivatePlan` lança `GatewayException`.
 - **`nextBillingAt` e `trialEndsAt` são o mesmo campo** (`expires_at`); informar os dois com
   datas diferentes lança `GatewayException`. Ao prorrogar um trial lido do gateway, zere

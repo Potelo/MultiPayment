@@ -554,17 +554,183 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('BRL', $created->currency);
     }
 
-    public function testYearlyPlanIsRejected(): void
+    /**
+     * A Iugu não tem intervalo anual: `year` vai como múltiplo de 12 meses e volta como `year`.
+     */
+    #[DataProvider('intervalRoundTripProvider')]
+    public function testCreatePlanTranslatesTheIntervalBothWays(
+        string $interval,
+        int $intervalCount,
+        int $iuguInterval,
+        string $iuguIntervalType
+    ): void {
+        $api = new QueuedIuguApiRequest([
+            (object) [
+                'id' => 'plan_1',
+                'identifier' => 'plano',
+                'name' => 'Plano',
+                'interval' => $iuguInterval,
+                'interval_type' => $iuguIntervalType,
+                'prices' => [(object) ['value_cents' => 100000, 'currency' => 'BRL']],
+            ],
+        ]);
+
+        $plan = new Plan();
+        $plan->name = 'Plano';
+        $plan->identifier = 'plano';
+        $plan->amount = 100000;
+        $plan->interval = $interval;
+        $plan->intervalCount = $intervalCount;
+
+        $created = (new IuguGateway($api))->createPlan($plan);
+
+        $this->assertSame([
+            'name' => 'Plano',
+            'identifier' => 'plano',
+            'interval' => $iuguInterval,
+            'interval_type' => $iuguIntervalType,
+            'value_cents' => 100000,
+        ], $api->calls[0]['data']);
+        $this->assertSame($interval, $created->interval);
+        $this->assertSame($intervalCount, $created->intervalCount);
+    }
+
+    public static function intervalRoundTripProvider(): array
     {
+        return [
+            'anual' => [Plan::INTERVAL_YEAR, 1, 12, 'months'],
+            'bianual' => [Plan::INTERVAL_YEAR, 2, 24, 'months'],
+            'mensal' => [Plan::INTERVAL_MONTH, 1, 1, 'months'],
+            'semestral' => [Plan::INTERVAL_MONTH, 6, 6, 'months'],
+            'quinzenal' => [Plan::INTERVAL_WEEK, 2, 2, 'weeks'],
+        ];
+    }
+
+    public function testYearlyPlanWithoutIntervalCountIsSentAsTwelveMonths(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['id' => 'plan_1', 'identifier' => 'anual', 'name' => 'Anual', 'interval' => 12, 'interval_type' => 'months', 'value_cents' => 100000],
+        ]);
+
         $plan = new Plan();
         $plan->name = 'Anual';
+        $plan->identifier = 'anual';
         $plan->amount = 100000;
         $plan->interval = Plan::INTERVAL_YEAR;
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/only supports weekly and monthly plans/');
+        $created = (new IuguGateway($api))->createPlan($plan);
 
-        (new IuguGateway(new QueuedIuguApiRequest([])))->createPlan($plan);
+        $this->assertSame(12, $api->calls[0]['data']['interval']);
+        $this->assertSame('months', $api->calls[0]['data']['interval_type']);
+        $this->assertSame(Plan::INTERVAL_YEAR, $created->interval);
+        $this->assertSame(1, $created->intervalCount);
+    }
+
+    /**
+     * A heurística de leitura vale também para o model que o chamador mandou: um plano criado
+     * como 12 meses sai do createPlan como 1 ano.
+     */
+    public function testTwelveMonthPlanIsReadBackAsYearly(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['id' => 'plan_1', 'identifier' => 'doze', 'name' => 'Doze', 'interval' => 12, 'interval_type' => 'months', 'value_cents' => 100000],
+        ]);
+
+        $plan = new Plan();
+        $plan->name = 'Doze';
+        $plan->identifier = 'doze';
+        $plan->amount = 100000;
+        $plan->interval = Plan::INTERVAL_MONTH;
+        $plan->intervalCount = 12;
+
+        $created = (new IuguGateway($api))->createPlan($plan);
+
+        $this->assertSame(12, $api->calls[0]['data']['interval']);
+        $this->assertSame(Plan::INTERVAL_YEAR, $created->interval);
+        $this->assertSame(1, $created->intervalCount);
+        $this->assertSame(12, $created->original->interval);
+    }
+
+    #[DataProvider('invalidIntervalProvider')]
+    public function testInvalidIntervalIsRejectedBeforeTheRequest(string $interval, int $intervalCount, string $message): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+
+        $plan = new Plan();
+        $plan->name = 'Plano';
+        $plan->amount = 100000;
+        $plan->interval = $interval;
+        $plan->intervalCount = $intervalCount;
+
+        try {
+            (new IuguGateway($api))->createPlan($plan);
+            $this->fail('Expected GatewayException');
+        } catch (GatewayException $e) {
+            $this->assertMatchesRegularExpression($message, $e->getMessage());
+        }
+
+        $this->assertCount(0, $api->calls);
+    }
+
+    public static function invalidIntervalProvider(): array
+    {
+        return [
+            'intervalo desconhecido' => ['day', 1, '/does not support the `day` plan interval/'],
+            'anual acima do teto da Iugu' => [Plan::INTERVAL_YEAR, 50, '/from 1 to 599 months, 600 given/'],
+            'mensal acima do teto da Iugu' => [Plan::INTERVAL_MONTH, 600, '/from 1 to 599 months, 600 given/'],
+        ];
+    }
+
+    public function testGetPlanKeepsTheLocalIntervalWhenTheResponseOmitsIt(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['id' => 'plan_1', 'name' => 'Plano', 'interval_type' => 'days', 'value_cents' => 10000],
+        ]);
+
+        $plan = new Plan();
+        $plan->id = 'plan_1';
+        $plan->interval = Plan::INTERVAL_YEAR;
+        $plan->intervalCount = 1;
+
+        $found = (new IuguGateway($api))->getPlan($plan);
+
+        $this->assertSame(Plan::INTERVAL_YEAR, $found->interval);
+        $this->assertSame(1, $found->intervalCount);
+    }
+
+    /**
+     * Na leitura, múltiplo de 12 meses vira `year`; o resto mantém o tipo da Iugu.
+     */
+    #[DataProvider('iuguIntervalParseProvider')]
+    public function testGetPlanParsesTheIuguInterval(
+        int|string $iuguInterval,
+        string $iuguIntervalType,
+        string $interval,
+        int $intervalCount
+    ): void {
+        $api = new QueuedIuguApiRequest([
+            (object) ['id' => 'plan_1', 'identifier' => 'plano', 'name' => 'Plano', 'interval' => $iuguInterval, 'interval_type' => $iuguIntervalType, 'value_cents' => 10000],
+        ]);
+
+        $plan = new Plan();
+        $plan->id = 'plan_1';
+
+        $found = (new IuguGateway($api))->getPlan($plan);
+
+        $this->assertSame($interval, $found->interval);
+        $this->assertSame($intervalCount, $found->intervalCount);
+    }
+
+    public static function iuguIntervalParseProvider(): array
+    {
+        return [
+            '12 meses vira 1 ano' => [12, 'months', Plan::INTERVAL_YEAR, 1],
+            '24 meses vira 2 anos' => [24, 'months', Plan::INTERVAL_YEAR, 2],
+            '6 meses continua mensal' => [6, 'months', Plan::INTERVAL_MONTH, 6],
+            '1 mês continua mensal' => [1, 'months', Plan::INTERVAL_MONTH, 1],
+            '12 semanas continua semanal' => [12, 'weeks', Plan::INTERVAL_WEEK, 12],
+            '12 como string vira 1 ano' => ['12', 'months', Plan::INTERVAL_YEAR, 1],
+        ];
     }
 
     public function testDeactivatePlanIsRejected(): void
@@ -970,6 +1136,8 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertStringContainsString('limit=10', $api->calls[0]['url']);
         $this->assertStringContainsString('start=20', $api->calls[0]['url']);
         $this->assertCount(1, $plans);
+        $this->assertSame(Plan::INTERVAL_MONTH, $plans[0]->interval);
+        $this->assertNull($plans[0]->intervalCount);
     }
 
     #[DataProvider('methodsThatRequireSubscriptionIdProvider')]

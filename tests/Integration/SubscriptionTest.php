@@ -62,14 +62,18 @@ class SubscriptionTest extends TestCase
         parent::tearDown();
     }
 
-    private function createPlan(int $amount, string $sufixo): Plan
-    {
+    private function createPlan(
+        int $amount,
+        string $sufixo,
+        string $interval = Plan::INTERVAL_MONTH,
+        int $intervalCount = 1
+    ): Plan {
         $plan = new Plan();
         $plan->name = 'MultiPayment teste ' . $sufixo;
         $plan->identifier = 'multipayment-teste-' . $sufixo . '-' . now()->format('YmdHisu');
         $plan->amount = $amount;
-        $plan->interval = Plan::INTERVAL_MONTH;
-        $plan->intervalCount = 1;
+        $plan->interval = $interval;
+        $plan->intervalCount = $intervalCount;
         $plan->save(self::GATEWAY);
         $this->criados['plans'][] = $plan->id;
 
@@ -126,6 +130,30 @@ class SubscriptionTest extends TestCase
         $this->assertCount(1, $segunda);
         $this->assertInstanceOf(Plan::class, $primeira[0]);
         $this->assertNotSame($primeira[0]->id, $segunda[0]->id);
+    }
+
+    /**
+     * A Iugu não tem intervalo anual; o plano anual deve ser aceito como 12 meses e voltar como
+     * `year` tanto na resposta da criação quanto numa leitura posterior.
+     *
+     * @return void
+     */
+    public function testShouldCreateAYearlyPlanAsTwelveMonths(): void
+    {
+        $plan = $this->createPlan(120000, 'anual', Plan::INTERVAL_YEAR);
+
+        $this->assertNotEmpty($plan->id);
+        $this->assertSame(Plan::INTERVAL_YEAR, $plan->interval);
+        $this->assertSame(1, $plan->intervalCount);
+        $this->assertSame(12, $plan->original->interval);
+        $this->assertSame('months', $plan->original->interval_type);
+
+        $lido = new Plan();
+        $lido->id = $plan->id;
+        $lido = $lido->get(self::GATEWAY);
+
+        $this->assertSame(Plan::INTERVAL_YEAR, $lido->interval);
+        $this->assertSame(1, $lido->intervalCount);
     }
 
     /**

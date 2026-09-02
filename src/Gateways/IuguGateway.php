@@ -49,6 +49,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private const STATUS_CHARGEBACK = 'chargeback';
     private const STATUS_AUTHORIZED = 'authorized';
 
+    /** Faixa de `interval` aceita pela Iugu na criação de plano. */
+    private const PLAN_INTERVAL_MIN = 1;
+    private const PLAN_INTERVAL_MAX = 599;
+
     private Iugu_APIRequest $apiRequest;
 
     /**
@@ -2140,13 +2144,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     private function planToIuguData(Plan $plan): array
     {
-        $data = [
-            'name' => $plan->name,
-            'identifier' => $plan->identifier ?? $plan->name,
-            'interval' => $plan->intervalCount ?? 1,
-            'interval_type' => $this->multiPaymentToIuguInterval($plan->interval),
-            'value_cents' => $plan->amount,
-        ];
+        $data = array_merge(
+            [
+                'name' => $plan->name,
+                'identifier' => $plan->identifier ?? $plan->name,
+            ],
+            $this->intervalToIuguData($plan->interval, $plan->intervalCount ?? 1),
+            ['value_cents' => $plan->amount]
+        );
 
         if (!empty($plan->currency)) {
             $data['currency'] = $plan->currency;
@@ -2156,22 +2161,66 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Converte o intervalo genérico no `interval_type` da Iugu.
+     * Converte o intervalo genérico no par `interval` e `interval_type` da Iugu.
+     *
+     * A Iugu só tem `weeks` e `months`, então o intervalo anual é enviado como múltiplo de 12
+     * meses. A leitura inversa fica em `iuguIntervalToMultiPayment()`.
      *
      * @param  string|null  $interval
+     * @param  int  $intervalCount
      *
-     * @return string
+     * @return array{interval: int, interval_type: string}
      * @throws GatewayException
      */
-    private function multiPaymentToIuguInterval(?string $interval): string
+    private function intervalToIuguData(?string $interval, int $intervalCount): array
     {
-        return match ($interval) {
-            Plan::INTERVAL_WEEK => 'weeks',
-            Plan::INTERVAL_MONTH => 'months',
+        $data = match ($interval) {
+            Plan::INTERVAL_WEEK => ['interval' => $intervalCount, 'interval_type' => 'weeks'],
+            Plan::INTERVAL_MONTH => ['interval' => $intervalCount, 'interval_type' => 'months'],
+            Plan::INTERVAL_YEAR => ['interval' => 12 * $intervalCount, 'interval_type' => 'months'],
             default => throw new GatewayException(
-                "Iugu only supports weekly and monthly plans, `{$interval}` given."
+                "Iugu driver does not support the `{$interval}` plan interval; "
+                . 'use week, month or year (sent as 12 months).'
             ),
         };
+
+        // a Iugu aceita interval de 1 a 599; a tradução de ano pode estourar o teto
+        if ($data['interval'] < self::PLAN_INTERVAL_MIN || $data['interval'] > self::PLAN_INTERVAL_MAX) {
+            throw new GatewayException(
+                "Iugu accepts a plan interval from " . self::PLAN_INTERVAL_MIN . ' to '
+                . self::PLAN_INTERVAL_MAX . " {$data['interval_type']}, {$data['interval']} given."
+            );
+        }
+
+        return $data;
+    }
+
+    /**
+     * Converte o par `interval_type` e `interval` da Iugu no intervalo genérico e na contagem.
+     *
+     * Heurística de leitura: como `year` vai para a Iugu como múltiplo de 12 meses, todo plano
+     * em `months` cujo `interval` é múltiplo de 12 volta como `year` com `intervalCount` igual
+     * a `interval / 12`. Um plano criado direto na Iugu com 24 meses é lido como 2 anos; quem
+     * precisar do valor cru lê `original`.
+     *
+     * @param  string|null  $intervalType
+     * @param  int|null  $interval
+     *
+     * @return array{0: string|null, 1: int|null}
+     */
+    private function iuguIntervalToMultiPayment(?string $intervalType, ?int $interval): array
+    {
+        if ($intervalType === 'months' && $interval > 0 && $interval % 12 === 0) {
+            return [Plan::INTERVAL_YEAR, intdiv($interval, 12)];
+        }
+
+        $genericInterval = match ($intervalType) {
+            'weeks' => Plan::INTERVAL_WEEK,
+            'months' => Plan::INTERVAL_MONTH,
+            default => null,
+        };
+
+        return [$genericInterval, $interval];
     }
 
     /**
@@ -2190,12 +2239,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $plan->id = $iuguPlan->id ?? $plan->id;
         $plan->identifier = $iuguPlan->identifier ?? $plan->identifier;
         $plan->name = $iuguPlan->name ?? $plan->name;
-        $plan->intervalCount = $iuguPlan->interval ?? $plan->intervalCount;
-        $plan->interval = match ($iuguPlan->interval_type ?? null) {
-            'weeks' => Plan::INTERVAL_WEEK,
-            'months' => Plan::INTERVAL_MONTH,
-            default => $plan->interval,
-        };
+        [$interval, $intervalCount] = $this->iuguIntervalToMultiPayment(
+            $iuguPlan->interval_type ?? null,
+            isset($iuguPlan->interval) ? (int) $iuguPlan->interval : null
+        );
+        $plan->interval = $interval ?? $plan->interval;
+        $plan->intervalCount = $intervalCount ?? $plan->intervalCount;
 
         // o create recebe value_cents, mas a resposta traz os valores em prices[], um por moeda
         if (isset($iuguPlan->value_cents)) {
