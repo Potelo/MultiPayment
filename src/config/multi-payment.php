@@ -69,6 +69,8 @@ return [
             'api_key' => env('IUGU_APIKEY'),
             'customer_column' => 'iugu_id',
             'class' => \Potelo\MultiPayment\Gateways\IuguGateway::class,
+            // máximo de parcelas habilitado na conta; a lib o publica em restriction(INSTALLMENTS)
+            'max_installments' => env('IUGU_MAX_INSTALLMENTS', 12),
         ],
         'stripe' => [
             'api_key' => env('STRIPE_APIKEY'),

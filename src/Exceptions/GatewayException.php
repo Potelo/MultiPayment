@@ -46,6 +46,8 @@ class GatewayException extends MultiPaymentException
     /**
      * Dispatch method missing in a gateway that declares the capability (driver error).
      *
+     * @deprecated desde 2026-09-02, use `ConfigurationException::GatewayMethodNotFound()`: a falta
+     *             do método é erro de configuração do driver, sem resposta do gateway.
      * @param  string  $gatewayClass
      * @param  string  $method
      *

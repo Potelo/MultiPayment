@@ -152,10 +152,14 @@ class StripeGatewayCreditCardTest extends TestCase
         $creditCard = $this->creditCardModel();
         $creditCard->id = 'pm_fake123';
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('does not belong to customer');
-
-        (new StripeGateway())->getCreditCard($creditCard);
+        try {
+            (new StripeGateway())->getCreditCard($creditCard);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertStringContainsString('does not belong to customer', $e->getMessage());
+            $this->assertSame(Capability::CREDIT_CARD, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
     }
 
     public function testGetCreditCardSkipsOwnershipCheckWhenCustomerOmitted(): void

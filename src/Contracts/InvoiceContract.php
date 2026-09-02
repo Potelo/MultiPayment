@@ -36,22 +36,35 @@ interface InvoiceContract
     public function getInvoice(Invoice $invoice): Invoice;
 
     /**
-     * Refund an invoice
-     *
-     * Full refund when `refundedAmount` is empty; partial when set. The gateway throws
-     * `RefundNotSupportedException` before any request when its own rules already guarantee
-     * the refusal (bank slip, partial Pix on Iugu, invoice already refunded, amount above the
-     * refundable remainder, window expired). Returns the created `Refund`, with the invoice
-     * re-read after the refund in `$refund->invoice`; the given model is updated in place.
+     * Estorna uma fatura: o restante estornável quando `$amount` é nulo, ou o valor informado em
+     * centavos (zero ou negativo lança `ModelAttributeValidationException`). O driver lança
+     * `RefundNotSupportedException` antes de qualquer requisição quando a regra do gateway já
+     * garante a recusa (boleto, Pix parcial na Iugu, fatura já estornada, valor acima do
+     * restante, prazo vencido). Devolve o `Refund` criado, com a fatura relida em
+     * `$refund->invoice`; o model recebido é atualizado no lugar.
      *
      * @param  Invoice  $invoice
-     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
+     * @param  int|null  $amount  valor em centavos; nulo estorna o restante
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Refund
-     * @throws GatewayException
+     * @throws GatewayException|GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
-    public function refundInvoice(Invoice $invoice, ?string $idempotencyKey = null): Refund;
+    public function refundInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Refund;
+
+    /**
+     * Valor que ainda pode ser estornado na fatura, em centavos: zero para fatura não paga ou
+     * já integralmente estornada. Lê a fatura (um GET) quando o model não traz o valor pago.
+     *
+     * @param  Invoice  $invoice
+     * @return int
+     * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException  fatura que o driver não estorna
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException  `id` ausente
+     */
+    public function refundableAmount(Invoice $invoice): int;
 
     /**
      * Charge an invoice with a credit card

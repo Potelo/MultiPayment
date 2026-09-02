@@ -22,6 +22,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
  * @property PaymentMethod|null $paymentMethod Método com que a fatura foi (ou será) paga.
  * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela fatura.
  * @property InvoiceOriginType|null $originType Objeto do gateway de onde a fatura foi lida (`PAYMENT_INTENT` ou `INVOICE`); `original` guarda esse objeto.
+ * @property-read int|null $refundedAmount Total já estornado, em centavos, preenchido na leitura. Escrever nela é o caminho antigo de pedir um estorno parcial, obsoleto desde 2026-09-02: use `refund(amount:)`.
  * @property Carbon|null $expiresAt Obsoleto desde 2026-09-02, use `$dueDate`. Alias que lê e escreve a mesma data, com aviso de deprecação.
  */
 class Invoice extends Model
@@ -63,6 +64,8 @@ class Invoice extends Model
         'originType' => InvoiceOriginType::class,
     ];
 
+    protected const MAGIC_PROPERTIES = ['refundedAmount'];
+
     /**
      * @var string|null
      */
@@ -89,9 +92,21 @@ class Invoice extends Model
     public ?int $paidAmount = null;
 
     /**
+     * Total já estornado, em centavos, como o gateway informa na leitura (`refunded_cents` na
+     * Iugu, `amount_refunded` do charge na Stripe). Só os drivers escrevem aqui, por
+     * `setRefundedAmountFromGateway()`.
+     *
      * @var int|null
      */
-    public ?int $refundedAmount = null;
+    protected ?int $refundedAmount = null;
+
+    /**
+     * Valor escrito em `refundedAmount` de fora do model pelo caminho antigo de pedir estorno
+     * parcial, ainda não enviado ao gateway; nulo quando `refundedAmount` só reflete a leitura.
+     *
+     * @var int|null
+     */
+    private ?int $requestedRefundAmount = null;
 
     /**
      * Estornos da fatura, preenchidos na leitura. No Stripe é um `Refund` por estorno feito,
@@ -239,6 +254,13 @@ class Invoice extends Model
             self::warnExpiresAtDeprecated();
             $data['due_date'] = $data['due_date'] ?? $data['expires_at'];
             unset($data['expires_at']);
+        }
+
+        foreach (['refunded_amount', 'refundedAmount'] as $key) {
+            if (array_key_exists($key, $data)) {
+                $this->__set('refundedAmount', $data[$key]);
+                unset($data[$key]);
+            }
         }
 
         foreach (['due_date' => 'dueDate', 'pix_expires_at' => 'pixExpiresAt'] as $key => $attribute) {
@@ -585,14 +607,20 @@ class Invoice extends Model
             return $this->dueDate;
         }
 
+        if ($name === 'refundedAmount') {
+            return $this->refundedAmount;
+        }
+
         $value = &parent::__get($name);
 
         return $value;
     }
 
     /**
-     * Resolve a escrita no nome antigo `expiresAt` para `dueDate`, com aviso de deprecação; os
-     * demais nomes seguem o `Model`.
+     * Resolve a escrita no nome antigo `expiresAt` para `dueDate`, com aviso de deprecação, e a
+     * escrita em `refundedAmount`, que é o caminho antigo de pedir um estorno parcial: o valor
+     * fica guardado como pedido para o próximo `refund()` sem valor, com aviso de deprecação.
+     * Os demais nomes seguem o `Model`.
      *
      * @param  string  $name
      * @param  mixed  $value
@@ -607,11 +635,23 @@ class Invoice extends Model
             return;
         }
 
+        if ($name === 'refundedAmount') {
+            trigger_error(
+                'Invoice::$refundedAmount é só de leitura desde 2026-09-02; passe o valor do estorno em refund(amount:) ou refundInvoice($id, $amount)',
+                E_USER_DEPRECATED
+            );
+            $this->refundedAmount = is_null($value) ? null : (int) $value;
+            $this->requestedRefundAmount = $this->refundedAmount ?: null;
+
+            return;
+        }
+
         parent::__set($name, $value);
     }
 
     /**
-     * Mantém `isset()` e `empty()` funcionando sobre o nome antigo `expiresAt`.
+     * Mantém `isset()` e `empty()` funcionando sobre o nome antigo `expiresAt` e sobre
+     * `refundedAmount`.
      *
      * @param  string  $name
      * @return bool
@@ -622,7 +662,64 @@ class Invoice extends Model
             return isset($this->dueDate);
         }
 
+        if ($name === 'refundedAmount') {
+            return isset($this->refundedAmount);
+        }
+
         return parent::__isset($name);
+    }
+
+    /**
+     * Grava o total já estornado informado pelo gateway e apaga o valor pedido pelo caminho
+     * antigo (`requestedRefundAmount()` volta a nulo). É a escrita que os drivers fazem ao
+     * parsear a fatura.
+     *
+     * @internal usado pelos drivers ao parsear a fatura
+     * @param  int|null  $refundedAmount  total estornado, em centavos
+     * @return void
+     */
+    public function setRefundedAmountFromGateway(?int $refundedAmount): void
+    {
+        $this->refundedAmount = $refundedAmount;
+        $this->requestedRefundAmount = null;
+    }
+
+    /**
+     * Valor de estorno parcial pedido pelo caminho antigo (escrita em `refundedAmount`) e ainda
+     * não enviado ao gateway; nulo quando `refundedAmount` só reflete a leitura do gateway.
+     * Enquanto não é nulo, `refundedAmount` não é o total já estornado.
+     *
+     * @internal usado pelos drivers
+     * @return int|null
+     */
+    public function requestedRefundAmount(): ?int
+    {
+        return $this->requestedRefundAmount;
+    }
+
+    /**
+     * Resolve o valor de um estorno como os drivers o usam: o argumento, senão o valor pedido
+     * pelo caminho antigo (`requestedRefundAmount()`), senão nulo, que é estorno do restante.
+     * Zero ou negativo lança `ModelAttributeValidationException`.
+     *
+     * @internal usado pelos drivers
+     * @param  int|null  $amount  valor em centavos
+     * @return int|null
+     * @throws ModelAttributeValidationException
+     */
+    public function resolveRefundAmount(?int $amount): ?int
+    {
+        $amount ??= $this->requestedRefundAmount;
+
+        if (!is_null($amount) && $amount <= 0) {
+            throw ModelAttributeValidationException::invalid(
+                $this->getClassName(),
+                'amount',
+                'The refund amount must be a positive number of cents; omit it to refund the remainder.'
+            );
+        }
+
+        return $amount;
     }
 
     /**
@@ -671,19 +768,42 @@ class Invoice extends Model
     }
 
     /**
-     * Estorna a fatura: integral quando `refundedAmount` está vazio, parcial quando preenchido
-     * com o valor em centavos. Devolve o `Refund` criado e atualiza esta instância com o
-     * estado posterior ao estorno (`$refund->invoice()` é esta instância).
+     * Estorna a fatura: o restante estornável quando `$amount` é nulo, ou o valor informado em
+     * centavos. Devolve o `Refund` criado e atualiza esta instância com o estado posterior ao
+     * estorno (`$refund->invoice()` é esta instância). Zero ou negativo lança
+     * `ModelAttributeValidationException` antes da requisição.
      *
+     * @param  int|null  $amount  valor em centavos; nulo estorna o restante
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      * @return Refund
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws ModelAttributeValidationException
      */
-    public function refund(?string $idempotencyKey = null): Refund
+    public function refund(?int $amount = null, ?string $idempotencyKey = null): Refund
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
-        return $gateway->refundInvoice($this, $idempotencyKey);
+        return $gateway->refundInvoice($this, $amount, $idempotencyKey);
+    }
+
+    /**
+     * Valor que ainda pode ser estornado na fatura, em centavos, calculado pelo driver: zero para
+     * fatura não paga ou já integralmente estornada. Lê a fatura (um GET) quando o model não traz
+     * o valor pago. É o teto aritmético de `refund()`; as guardas de boleto, Pix parcial e prazo
+     * continuam valendo.
+     *
+     * @return int
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException  fatura que o driver não estorna (fatura de assinatura no Stripe)
+     * @throws ModelAttributeValidationException  `id` ausente
+     */
+    public function refundableAmount(): int
+    {
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+        return $gateway->refundableAmount($this);
     }
 
     /**

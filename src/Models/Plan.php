@@ -86,8 +86,8 @@ class Plan extends Model
     public $original = null;
 
     /**
-     * Cria o plano no gateway. Plano com `id` preenchido lança `GatewayException`: plano não é
-     * atualizável.
+     * Cria o plano no gateway. Plano com `id` preenchido lança
+     * `ModelAttributeValidationException` antes da requisição: plano não é atualizável.
      *
      * @param  GatewayContract|string|null  $gateway
      * @param  bool  $validate
@@ -100,7 +100,9 @@ class Plan extends Model
     public function save(GatewayContract|string|null $gateway = null, bool $validate = true, ?string $idempotencyKey = null): void
     {
         if (!empty($this->id)) {
-            throw new GatewayException(
+            throw ModelAttributeValidationException::invalid(
+                'Plan',
+                'id',
                 'A plan cannot be updated. Create a new plan instead.'
             );
         }

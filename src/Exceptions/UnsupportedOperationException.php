@@ -20,7 +20,7 @@ class UnsupportedOperationException extends MultiPaymentException
 
     /**
      * Capability recusada, ou nulo quando a recusa vem de uma regra que nenhuma capability
-     * descreve (por exemplo, fatura já estornada).
+     * descreve.
      *
      * @var Capability|null
      */
@@ -34,8 +34,7 @@ class UnsupportedOperationException extends MultiPaymentException
     public string $gateway;
 
     /**
-     * Motivo da recusa: `gateway_limitation` ou `not_implemented`. Uma subclasse pode
-     * trazer um motivo mais específico no lugar deles (`RefundNotSupportedException`).
+     * Motivo da recusa: `gateway_limitation` ou `not_implemented`.
      *
      * @var string
      */

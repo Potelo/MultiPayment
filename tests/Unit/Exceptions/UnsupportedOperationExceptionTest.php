@@ -7,7 +7,6 @@ use PHPUnit\Framework\TestCase;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
-use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 
 class UnsupportedOperationExceptionTest extends TestCase
@@ -80,62 +79,4 @@ class UnsupportedOperationExceptionTest extends TestCase
         $this->assertStringEndsWith(' Detalhe.', $limitation->getMessage());
     }
 
-    public function testRefundNotSupportedIsAnUnsupportedOperationWithItsOwnReason(): void
-    {
-        $exception = RefundNotSupportedException::boletoNoRefund('iugu');
-
-        $this->assertInstanceOf(UnsupportedOperationException::class, $exception);
-        $this->assertSame(Capability::REFUND_BANK_SLIP, $exception->capability);
-        $this->assertSame('iugu', $exception->gateway);
-        $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $exception->reason);
-        $this->assertSame('bank_slip', $exception->paymentMethod);
-        $this->assertTrue($exception->manualRefundRequired);
-        $this->assertFalse($exception->isNotImplemented());
-    }
-
-    public function testRefundNotSupportedCapabilityPerReason(): void
-    {
-        $this->assertSame(
-            Capability::PARTIAL_REFUND_PIX,
-            RefundNotSupportedException::pixPartialNotSupported('iugu', 500, 1000)->capability
-        );
-        $this->assertNull(RefundNotSupportedException::alreadyRefunded('stripe', 'pix')->capability);
-        $this->assertNull(
-            RefundNotSupportedException::refundWindowExpired('iugu', 'pix', \Carbon\Carbon::parse('2026-05-01'), 90)->capability
-        );
-        $this->assertSame('stripe', RefundNotSupportedException::alreadyRefunded('stripe', 'pix')->gateway);
-    }
-
-    /**
-     * O construtor de cinco argumentos continua aceito; gateway e capability ficam vazios.
-     */
-    public function testRefundNotSupportedKeepsThePreviousConstructorSignature(): void
-    {
-        $previous = new \RuntimeException('sdk');
-        $exception = new RefundNotSupportedException('msg', 'pix', RefundNotSupportedException::REASON_ALREADY_REFUNDED, false, $previous);
-
-        $this->assertSame($previous, $exception->getPrevious());
-        $this->assertSame('', $exception->gateway);
-        $this->assertNull($exception->capability);
-        $this->assertSame('already_refunded', $exception->reason);
-    }
-
-    public function testRefundNotSupportedIsCaughtByBothNames(): void
-    {
-        $caught = [];
-
-        try {
-            throw RefundNotSupportedException::boletoNoRefund('stripe');
-        } catch (RefundNotSupportedException $e) {
-            $caught[] = 'refund';
-        }
-
-        try {
-            throw RefundNotSupportedException::boletoNoRefund('stripe');
-        } catch (UnsupportedOperationException $e) {
-            $caught[] = 'unsupported';
-        }
-
-        $this->assertSame(['refund', 'unsupported'], $caught);
-    }
 }

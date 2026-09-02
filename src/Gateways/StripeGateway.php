@@ -36,6 +36,7 @@ use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Helpers\LogHelper;
+use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
 use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
@@ -155,6 +156,7 @@ class StripeGateway implements GatewayContract
             Capability::PARTIAL_REFUND_CARD,
             Capability::PARTIAL_REFUND_PIX,
             Capability::INVOICE_DUPLICATION,
+            Capability::INVOICE_CANCELLATION,
             Capability::IDEMPOTENCY,
             Capability::IDEMPOTENCY_ALL_ENDPOINTS,
         ];
@@ -177,6 +179,34 @@ class StripeGateway implements GatewayContract
             Capability::NATIVE_COUPONS,
             Capability::PLAN_CHANGE_PRORATION,
             Capability::MANAGES_RECURRENCE,
+        ];
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * `CREDIT_CARD`: a conta brasileira só aceita crédito Visa e Mastercard, e outra bandeira
+     * é recusada na cobrança com `DeclineCode::BRAND_NOT_SUPPORTED`. `INVOICE_DUPLICATION`:
+     * só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a fatura de assinatura
+     * (`in_`) só é anulada depois de finalizada pela Stripe; rascunho é recusado.
+     */
+    public function restrictions(): array
+    {
+        return [
+            Capability::CREDIT_CARD->value => new CapabilityRestriction(
+                description: 'Na conta brasileira só cartão de crédito Visa e Mastercard; outra bandeira é'
+                    . ' recusada na cobrança com DeclineCode::BRAND_NOT_SUPPORTED.',
+                allowedBrands: ['visa', 'mastercard'],
+            ),
+            Capability::INVOICE_DUPLICATION->value => new CapabilityRestriction(
+                description: 'Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, outro estado'
+                    . ' ou fatura de assinatura são recusados.',
+                allowedPaymentMethods: [PaymentMethod::PIX],
+            ),
+            Capability::INVOICE_CANCELLATION->value => new CapabilityRestriction(
+                description: 'A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada'
+                    . ' pela Stripe; rascunho é recusado.',
+            ),
         ];
     }
 
@@ -1036,29 +1066,32 @@ class StripeGateway implements GatewayContract
      * estorno já feito, então o driver envia o refund e deixa a Stripe repetir a resposta
      * original; se ela recusar, a recusa da guarda é a que sobe.
      *
+     * O valor vem de `$amount`; sem ele, do caminho antigo de escrever `refundedAmount` antes
+     * de estornar (`Invoice::resolveRefundAmount()`); sem os dois, estorna o restante. No
+     * estorno por valor a fatura é relida quando o model não traz o valor pago ou quando o
+     * acumulado estornado que ele traz não é confiável (escrito pelo caminho antigo, ou ausente
+     * numa fatura fora de `PAID`).
+     *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice, ?string $idempotencyKey = null): Refund
+    public function refundInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Refund
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
         $this->assertPaymentIntentOrigin($invoice, 'refundInvoice');
+        $requestedAmount = $invoice->resolveRefundAmount($amount);
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
-
-        // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
-        $requestedAmount = $invoice->refundedAmount ?: null;
 
         $current = $invoice;
         if (
             empty($invoice->paymentMethod)
             || empty($invoice->status)
-            || (!is_null($requestedAmount) && (is_null($invoice->paidAmount) || $invoice->status !== InvoiceStatus::PAID))
+            || (!is_null($requestedAmount) && !self::hasReliableRefundableAmount($invoice))
         ) {
             $current = $this->getInvoice(clone $invoice);
         }
 
-        // mesma semântica da Iugu: refundedAmount preenchido = estorno parcial; vazio = total
         $stripeRefundData = ['payment_intent' => $invoice->id];
         if (!is_null($requestedAmount)) {
             $stripeRefundData['amount'] = $requestedAmount;
@@ -1066,7 +1099,7 @@ class StripeGateway implements GatewayContract
         $stripeRefundData = $this->mergeGatewayOptions($stripeRefundData, $invoice);
 
         try {
-            $this->assertInvoiceIsRefundable($current, $requestedAmount, $current !== $invoice);
+            $this->assertInvoiceIsRefundable($current, $requestedAmount);
             $stripeRefund = $this->stripeRequest(function () use ($stripeRefundData, $idempotencyKey) {
                 return $this->client->refunds->create($stripeRefundData, self::stripeOptions($idempotencyKey));
             });
@@ -1112,19 +1145,67 @@ class StripeGateway implements GatewayContract
     }
 
     /**
+     * @inheritDoc
+     *
+     * Na Stripe o restante é `amount_captured` menos `amount_refunded` do charge
+     * (`Invoice::$paidAmount` menos `Invoice::$refundedAmount`, porque o valor pago vem bruto); a
+     * fatura é lida quando o model não traz o valor pago ou o acumulado estornado confiável. A
+     * fatura de assinatura (`in_`) é recusada como em `refundInvoice()`, antes da leitura.
+     *
+     * @throws UnsupportedOperationException
+     */
+    public function refundableAmount(Invoice $invoice): int
+    {
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+        $this->assertPaymentIntentOrigin($invoice, 'refundableAmount');
+
+        $current = self::hasReliableRefundableAmount($invoice) ? $invoice : $this->getInvoice(clone $invoice);
+
+        return self::stripeRefundableAmount($current);
+    }
+
+    /**
+     * Restante estornável de uma fatura já lida: `paidAmount` menos `refundedAmount`; zero
+     * quando nada foi pago.
+     *
+     * @param  Invoice  $invoice
+     * @return int
+     */
+    private static function stripeRefundableAmount(Invoice $invoice): int
+    {
+        return max(0, (int) ($invoice->paidAmount ?? 0) - (int) ($invoice->refundedAmount ?? 0));
+    }
+
+    /**
+     * Diz se o model traz o que basta para calcular o restante estornável sem reler a fatura:
+     * valor pago presente e `refundedAmount` sendo o acumulado do gateway, ou seja, sem valor
+     * pedido pelo caminho antigo e preenchido sempre que a fatura está fora de `PAID`.
+     *
+     * @param  Invoice  $invoice
+     * @return bool
+     */
+    private static function hasReliableRefundableAmount(Invoice $invoice): bool
+    {
+        if (is_null($invoice->paidAmount) || !is_null($invoice->requestedRefundAmount())) {
+            return false;
+        }
+
+        return !is_null($invoice->refundedAmount) || $invoice->status === InvoiceStatus::PAID;
+    }
+
+    /**
      * Lança antes da rede quando a Stripe certamente recusaria o estorno: boleto não tem estorno
      * pela API, fatura em `refunded` é terminal e o valor pedido não pode passar do que resta
      * (`amount_captured` menos `amount_refunded` do charge).
      *
-     * @param  Invoice  $invoice
-     * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno integral
-     * @param  bool  $freshlyRead  verdadeiro quando `$invoice` acabou de ser lida do gateway e
-     *                             `refundedAmount` é o acumulado; falso quando o model é do
-     *                             chamador, em `PAID`, sem estorno anterior
+     * @param  Invoice  $invoice  fatura com `paidAmount` e `refundedAmount` confiáveis
+     * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno do restante
      * @return void
      * @throws RefundNotSupportedException
      */
-    private function assertInvoiceIsRefundable(Invoice $invoice, ?int $requestedAmount, bool $freshlyRead): void
+    private function assertInvoiceIsRefundable(Invoice $invoice, ?int $requestedAmount): void
     {
         if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
             throw RefundNotSupportedException::boletoNoRefund('stripe');
@@ -1138,7 +1219,7 @@ class StripeGateway implements GatewayContract
             return;
         }
 
-        $refundable = $invoice->paidAmount - ($freshlyRead ? ($invoice->refundedAmount ?? 0) : 0);
+        $refundable = self::stripeRefundableAmount($invoice);
         if ($requestedAmount > $refundable) {
             throw RefundNotSupportedException::amountExceedsRefundable(
                 'stripe',
@@ -1195,8 +1276,11 @@ class StripeGateway implements GatewayContract
             if (!empty($paymentIntentCustomer)
                 && !empty($stripePaymentMethod->customer)
                 && $stripePaymentMethod->customer !== $paymentIntentCustomer) {
-                throw new GatewayException(
-                    "Credit card [{$paymentMethodId}] does not belong to customer [{$paymentIntentCustomer}]"
+                throw UnsupportedOperationException::restricted(
+                    (string) $this,
+                    Capability::CREDIT_CARD,
+                    "Credit card [{$paymentMethodId}] does not belong to customer [{$paymentIntentCustomer}];"
+                    . ' the Stripe PaymentMethod is bound to one customer and cannot pay another customer\'s invoice.'
                 );
             }
 
@@ -1264,7 +1348,7 @@ class StripeGateway implements GatewayContract
         $invoice->status = $this->deriveStatus(null, $stripePaymentIntent, $paidCharge);
         $invoice->amount = $stripePaymentIntent->amount;
         $invoice->paidAmount = $paidCharge?->amount_captured;
-        $invoice->refundedAmount = $paidCharge?->amount_refunded;
+        $invoice->setRefundedAmountFromGateway($paidCharge?->amount_refunded);
         $invoice->refunds = $this->parseRefunds($paidCharge, $stripePaymentIntent->id);
         $invoice->paidAt = $paidCharge ? Carbon::createFromTimestamp($paidCharge->created) : null;
         $invoice->fee = self::chargeFee($paidCharge);
@@ -1328,7 +1412,7 @@ class StripeGateway implements GatewayContract
         $amountPaid = $stripeInvoice->amount_paid ?? 0;
         $invoice->paidAmount = $paidCharge?->amount_captured
             ?? ($stripeInvoice->status === 'paid' || $amountPaid > 0 ? $amountPaid : null);
-        $invoice->refundedAmount = $paidCharge?->amount_refunded;
+        $invoice->setRefundedAmountFromGateway($paidCharge?->amount_refunded);
         $invoice->refunds = $this->parseRefunds($paidCharge, $stripeInvoice->id);
         $paidAt = $stripeInvoice->status_transitions->paid_at ?? $paidCharge?->created;
         $invoice->paidAt = !empty($paidAt) ? Carbon::createFromTimestamp($paidAt) : null;
@@ -1928,7 +2012,9 @@ class StripeGateway implements GatewayContract
             );
         }
         if (empty($parsedOriginal->customer) || empty($parsedOriginal->customer->id)) {
-            throw new GatewayException(
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_DUPLICATION,
                 "Invoice [{$invoice->id}] has no customer on the stripe gateway and cannot be duplicated"
             );
         }
@@ -2010,20 +2096,23 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Anula um Invoice da Stripe. A fatura é lida antes: `draft` lança `GatewayException`
-     * orientando a esperar a finalização; nos demais estados a Stripe decide, e `paid` ou
-     * `void` recusam com `ValidationException`, como o PaymentIntent já pago ou cancelado.
+     * Anula um Invoice da Stripe. A fatura é lida antes: `draft` lança
+     * `UnsupportedOperationException::restricted()` (`INVOICE_CANCELLATION`) orientando a
+     * esperar a finalização; nos demais estados a Stripe decide, e `paid` ou `void` recusam
+     * com `ValidationException`, como o PaymentIntent já pago ou cancelado.
      *
      * @param  Invoice  $invoice
      * @param  string|null  $idempotencyKey
      * @return Invoice
-     * @throws GatewayException|GatewayNotAvailableException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
      */
     private function voidStripeInvoice(Invoice $invoice, ?string $idempotencyKey): Invoice
     {
         $current = $this->retrieveStripeInvoice($invoice->id);
         if ($current->status === 'draft') {
-            throw new GatewayException(
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_CANCELLATION,
                 "A fatura [{$invoice->id}] ainda é um rascunho na Stripe e não pode ser cancelada;"
                 . ' aguarde a finalização dela pela Stripe.'
             );
@@ -2163,14 +2252,17 @@ class StripeGateway implements GatewayContract
      * @param  \Stripe\PaymentMethod  $stripePaymentMethod
      * @param  \Potelo\MultiPayment\Models\CreditCard  $creditCard
      * @return void
-     * @throws GatewayException
+     * @throws UnsupportedOperationException
      */
     private function assertCardBelongsToCustomer(StripePaymentMethod $stripePaymentMethod, CreditCard $creditCard): void
     {
         $customerId = $creditCard->customer->id ?? null;
         if (!empty($customerId) && $stripePaymentMethod->customer !== $customerId) {
-            throw new GatewayException(
-                "Credit card [{$stripePaymentMethod->id}] does not belong to customer [{$customerId}]"
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::CREDIT_CARD,
+                "Credit card [{$stripePaymentMethod->id}] does not belong to customer [{$customerId}];"
+                . ' the Stripe PaymentMethod is bound to one customer.'
             );
         }
     }

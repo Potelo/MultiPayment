@@ -9,6 +9,7 @@ use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ConfigurationException;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Idempotency\IdempotencyKey;
@@ -551,9 +552,8 @@ class Subscription extends Model
      * @param  GatewayContract|string|null  $gateway
      *
      * @return GatewayContract&SubscriptionContract
-     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws ConfigurationException  driver que declara a capability sem implementar o contract
      * @throws UnsupportedOperationException
-     * @throws GatewayException
      */
     private function resolveSubscriptionGateway(GatewayContract|string|null $gateway)
     {
@@ -561,10 +561,7 @@ class Subscription extends Model
         $this->assertGatewaySupports($resolved);
 
         if (!$resolved instanceof SubscriptionContract) {
-            throw new GatewayException(
-                'Gateway [' . get_class($resolved) . '] declares the subscriptions capability'
-                . ' but does not implement SubscriptionContract'
-            );
+            throw ConfigurationException::GatewayMissingContract($resolved, Capability::SUBSCRIPTIONS, SubscriptionContract::class);
         }
 
         return $resolved;

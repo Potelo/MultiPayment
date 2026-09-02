@@ -187,7 +187,7 @@ class IuguGatewayIdempotencyTest extends TestCase
                 'PUT', '/invoices/inv_1/cancel',
             ],
             'refundInvoice (operação inteira guardada: nem a leitura prévia se repete)' => [
-                fn (IuguGateway $g, string $key) => $g->refundInvoice(self::invoiceWithId(), $key),
+                fn (IuguGateway $g, string $key) => $g->refundInvoice(self::invoiceWithId(), null, $key),
                 [$paidCardInvoice, $refundedInvoice],
                 'POST', '/invoices/inv_1/refund',
             ],
@@ -333,11 +333,45 @@ class IuguGatewayIdempotencyTest extends TestCase
         $api = new QueuedIuguApiRequest([$paid, $refunded]);
         $gateway = new IuguGateway($api, new InMemoryIdempotencyStore());
 
-        $first = $gateway->refundInvoice(self::invoiceWithId(), 'chave-1');
-        $second = $gateway->refundInvoice(self::invoiceWithId(), 'chave-1');
+        $first = $gateway->refundInvoice(self::invoiceWithId(), null, 'chave-1');
+        $second = $gateway->refundInvoice(self::invoiceWithId(), null, 'chave-1');
 
         $this->assertCount(2, $api->calls);
         $this->assertSame(10000, $first->amount);
+        $this->assertSame($first, $second);
+    }
+
+    /**
+     * O caminho antigo (valor escrito em `refundedAmount`) também vale com chave: o valor é
+     * resolvido antes de a operação entrar na store, e o retry devolve o mesmo `Refund`.
+     */
+    #[IgnoreDeprecations]
+    public function testRefundWithAKeyStillHonoursTheLegacyRefundedAmount(): void
+    {
+        $paid = self::pendingInvoiceResponse([
+            'status' => 'paid',
+            'paid_at' => '2026-08-20T10:00:00-03:00',
+            'paid_cents' => 10000,
+            'payment_method' => 'iugu_credit_card',
+        ]);
+        $partiallyRefunded = self::pendingInvoiceResponse([
+            'status' => 'partially_refunded',
+            'paid_at' => '2026-08-20T10:00:00-03:00',
+            'paid_cents' => 7500,
+            'refunded_cents' => 2500,
+            'payment_method' => 'iugu_credit_card',
+        ]);
+        $api = new QueuedIuguApiRequest([$paid, $partiallyRefunded]);
+        $gateway = new IuguGateway($api, new InMemoryIdempotencyStore());
+        $invoice = self::invoiceWithId();
+        $invoice->refundedAmount = 2500;
+
+        $first = $gateway->refundInvoice($invoice, null, 'chave-legada');
+        $second = $gateway->refundInvoice(self::invoiceWithId(), null, 'chave-legada');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame(['partial_value_refund_cents' => 2500], $api->calls[1]['data']);
+        $this->assertSame(2500, $first->amount);
         $this->assertSame($first, $second);
     }
 

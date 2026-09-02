@@ -347,4 +347,96 @@ class InvoiceTest extends TestCase
         $this->assertSame('2026-10-01', $invoice->dueDate->format('Y-m-d'));
         $this->assertNull($invoice->pixExpiresAt);
     }
+
+    /**
+     * `refundedAmount` é só de leitura: os drivers a preenchem por `setRefundedAmountFromGateway()`,
+     * que não marca o valor como pedido de estorno.
+     */
+    public function testRefundedAmountWrittenByTheDriverIsNotARefundRequest(): void
+    {
+        $invoice = new Invoice();
+        $invoice->setRefundedAmountFromGateway(3000);
+
+        $this->assertSame(3000, $invoice->refundedAmount);
+        $this->assertTrue(isset($invoice->refundedAmount));
+        $this->assertNull($invoice->requestedRefundAmount());
+        $this->assertNull($invoice->resolveRefundAmount(null));
+        $this->assertSame(500, $invoice->resolveRefundAmount(500));
+        $this->assertSame(['refunded_amount' => 3000], $invoice->toArray());
+        $this->assertSame(3000, json_decode(json_encode($invoice), true)['refundedAmount']);
+    }
+
+    /**
+     * Escrever em `refundedAmount` é o caminho antigo de pedir estorno parcial: o valor fica
+     * como pedido, com aviso de deprecação, e o argumento de `refund()` prevalece sobre ele.
+     */
+    public function testWritingRefundedAmountIsTheDeprecatedWayOfRequestingAPartialRefund(): void
+    {
+        $invoice = new Invoice();
+
+        $this->expectUserDeprecationMessage('Invoice::$refundedAmount é só de leitura desde 2026-09-02; passe o valor do estorno em refund(amount:) ou refundInvoice($id, $amount)');
+        $invoice->refundedAmount = 2500;
+
+        $this->assertSame(2500, $invoice->refundedAmount);
+        $this->assertSame(2500, $invoice->requestedRefundAmount());
+        $this->assertSame(2500, $invoice->resolveRefundAmount(null));
+        $this->assertSame(1000, $invoice->resolveRefundAmount(1000));
+
+        $invoice->setRefundedAmountFromGateway(2500);
+        $this->assertNull($invoice->requestedRefundAmount(), 'a leitura do gateway apaga o pedido');
+    }
+
+    #[DataProvider('refundedAmountKeyProvider')]
+    public function testFillWithRefundedAmountFollowsTheDeprecatedPathInBothSpellings(string $key): void
+    {
+        $invoice = new Invoice();
+
+        $this->expectUserDeprecationMessage('Invoice::$refundedAmount é só de leitura desde 2026-09-02; passe o valor do estorno em refund(amount:) ou refundInvoice($id, $amount)');
+        $invoice->fill(['id' => 'inv_1', $key => 700]);
+
+        $this->assertSame('inv_1', $invoice->id);
+        $this->assertSame(700, $invoice->refundedAmount);
+        $this->assertSame(700, $invoice->requestedRefundAmount());
+    }
+
+    public static function refundedAmountKeyProvider(): array
+    {
+        return ['snake_case' => ['refunded_amount'], 'camelCase' => ['refundedAmount']];
+    }
+
+    /**
+     * A propriedade privada que guarda o pedido do caminho antigo é estado interno: a chave é
+     * desconhecida para `fill()`, como qualquer outra fora de `fillableKeys()`.
+     */
+    public function testFillRejectsTheKeyOfThePrivateRequestedRefundAmount(): void
+    {
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches('/`requested_refund_amount` key is unknown/');
+
+        (new Invoice())->fill(['requested_refund_amount' => 123]);
+    }
+
+    #[IgnoreDeprecations]
+    public function testZeroWrittenInRefundedAmountMeansNoPartialRequest(): void
+    {
+        $invoice = new Invoice();
+        $invoice->refundedAmount = 0;
+
+        $this->assertSame(0, $invoice->refundedAmount);
+        $this->assertNull($invoice->requestedRefundAmount());
+    }
+
+    public function testResolveRefundAmountRejectsZeroAndNegative(): void
+    {
+        $invoice = new Invoice();
+
+        foreach ([0, -1] as $amount) {
+            try {
+                $invoice->resolveRefundAmount($amount);
+                $this->fail("Esperava ModelAttributeValidationException para {$amount}");
+            } catch (ModelAttributeValidationException $e) {
+                $this->assertStringContainsString('positive', $e->getMessage());
+            }
+        }
+    }
 }

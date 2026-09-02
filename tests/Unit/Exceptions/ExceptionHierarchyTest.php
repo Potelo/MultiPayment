@@ -77,6 +77,16 @@ class ExceptionHierarchyTest extends TestCase
         ];
     }
 
+    /**
+     * `RefundNotSupportedException` herda direto de `MultiPaymentException` e fica fora da árvore
+     * de `UnsupportedOperationException`.
+     */
+    public function testRefundNotSupportedExceptionStaysOutsideUnsupportedOperationException(): void
+    {
+        $this->assertFalse(is_subclass_of(RefundNotSupportedException::class, UnsupportedOperationException::class));
+        $this->assertSame(MultiPaymentException::class, get_parent_class(RefundNotSupportedException::class));
+    }
+
     public function testChargingExceptionIsTheDeprecatedNameOfCardDeclinedException(): void
     {
         $this->assertSame(CardDeclinedException::class, get_parent_class(ChargingException::class));

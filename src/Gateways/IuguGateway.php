@@ -34,6 +34,7 @@ use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Helpers\LogHelper;
+use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
@@ -88,6 +89,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /** Prazo, em dias após o pagamento, em que a Iugu ainda aceita estorno pela API. */
     private const REFUND_WINDOW_DAYS = 90;
 
+    /**
+     * Máximo de parcelas declarado em `restriction(INSTALLMENTS)` quando a configuração
+     * `multi-payment.gateways.iugu.max_installments` não informa o da conta; é o teto da Iugu.
+     */
+    private const DEFAULT_MAX_INSTALLMENTS = 12;
+
     /** Prefixo das chaves deste driver na `IdempotencyStore`. */
     private const IDEMPOTENCY_STORE_PREFIX = 'iugu:';
 
@@ -125,6 +132,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             Capability::INSTALLMENTS,
             Capability::PARTIAL_REFUND_CARD,
             Capability::INVOICE_DUPLICATION,
+            Capability::INVOICE_CANCELLATION,
             Capability::IDEMPOTENCY,
             Capability::SUBSCRIPTIONS,
             Capability::PLANS,
@@ -139,6 +147,29 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         return [
             Capability::DELAYED_CAPTURE,
             Capability::SUBSCRIPTION_CREDITS,
+        ];
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * `INSTALLMENTS`: o número de parcelas vai em `gatewayOptions['months']`, até o máximo da
+     * conta (`multi-payment.gateways.iugu.max_installments`, 12 por padrão), e a lib não lê as
+     * parcelas da fatura paga.
+     */
+    public function restrictions(): array
+    {
+        // variável de ambiente vazia chega como string vazia; vale o padrão da Iugu
+        $maxInstallments = (int) Config::get('multi-payment.gateways.iugu.max_installments')
+            ?: self::DEFAULT_MAX_INSTALLMENTS;
+
+        return [
+            Capability::INSTALLMENTS->value => new CapabilityRestriction(
+                description: "O número de parcelas vai em gatewayOptions['months'], até {$maxInstallments}"
+                    . ' (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments);'
+                    . ' a lib não lê as parcelas da fatura paga.',
+                maxInstallments: $maxInstallments,
+            ),
         ];
     }
 
@@ -651,24 +682,57 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * seguinte com a mesma chave devolve o `Refund` da primeira sem reler a fatura, que a essa
      * altura já estaria estornada e faria a guarda recusar o retry.
      *
+     * O valor vem de `$amount`; sem ele, do caminho antigo de escrever `refundedAmount` antes
+     * de estornar (`Invoice::resolveRefundAmount()`); sem os dois, estorna o restante.
+     *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
-    public function refundInvoice(Invoice $invoice, ?string $idempotencyKey = null): Refund
+    public function refundInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Refund
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
+        $requestedAmount = $invoice->resolveRefundAmount($amount);
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         if (is_null($idempotencyKey)) {
-            return $this->performIuguRefund($invoice);
+            return $this->performIuguRefund($invoice, $requestedAmount);
         }
 
         return $this->rememberIuguOperation(
             $idempotencyKey,
             'POST ' . Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/refund',
-            fn () => $this->performIuguRefund($invoice)
+            fn () => $this->performIuguRefund($invoice, $requestedAmount)
         );
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Na Iugu o restante é `paid_cents`, que a API devolve líquido do que já foi estornado
+     * (`Invoice::$paidAmount`); a fatura é lida quando o model não o traz.
+     */
+    public function refundableAmount(Invoice $invoice): int
+    {
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+
+        $current = is_null($invoice->paidAmount) ? $this->getInvoice(clone $invoice) : $invoice;
+
+        return self::iuguRefundableAmount($current);
+    }
+
+    /**
+     * Restante estornável de uma fatura já lida: `paid_cents`, líquido do estornado; zero
+     * quando nada foi pago.
+     *
+     * @param  Invoice  $invoice
+     * @return int
+     */
+    private static function iuguRefundableAmount(Invoice $invoice): int
+    {
+        return max(0, (int) ($invoice->paidAmount ?? 0));
     }
 
     /**
@@ -676,14 +740,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * `POST /refund`, devolvendo o `Refund` montado pela lib.
      *
      * @param  Invoice  $invoice
+     * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno do restante
      * @return Refund
      * @throws RefundNotSupportedException
      */
-    private function performIuguRefund(Invoice $invoice): Refund
+    private function performIuguRefund(Invoice $invoice, ?int $requestedAmount): Refund
     {
-        // guardado antes da leitura: parseInvoice() sobrescreve refundedAmount com o já estornado
-        $requestedAmount = $invoice->refundedAmount ?: null;
-
         $current = $invoice;
         if (
             empty($invoice->paymentMethod)
@@ -742,12 +804,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw RefundNotSupportedException::alreadyRefunded('iugu', $invoice->paymentMethod?->value);
         }
 
-        if (!is_null($requestedAmount) && !is_null($invoice->paidAmount) && $requestedAmount > $invoice->paidAmount) {
+        if (!is_null($requestedAmount) && !is_null($invoice->paidAmount) && $requestedAmount > self::iuguRefundableAmount($invoice)) {
             throw RefundNotSupportedException::amountExceedsRefundable(
                 'iugu',
                 $invoice->paymentMethod?->value,
                 $requestedAmount,
-                $invoice->paidAmount
+                self::iuguRefundableAmount($invoice)
             );
         }
 
@@ -954,10 +1016,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('AutomaticPix', 'id');
         }
         if ($page < 1) {
-            throw new GatewayException('Automatic Pix cancellation page must be at least 1');
+            throw ModelAttributeValidationException::invalid('AutomaticPix', 'page', 'Automatic Pix cancellation page must be at least 1');
         }
         if ($limit < 1 || $limit > 100) {
-            throw new GatewayException('Automatic Pix cancellation limit must be between 1 and 100');
+            throw ModelAttributeValidationException::invalid('AutomaticPix', 'limit', 'Automatic Pix cancellation limit must be between 1 and 100');
         }
 
         $query = http_build_query(['limit' => $limit, 'page' => $page], '', '&', PHP_QUERY_RFC3986);
@@ -1320,7 +1382,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $invoice->original = $iuguInvoice;
         $invoice->createdAt = !empty($iuguInvoice->created_at_iso) ? new Carbon($iuguInvoice->created_at_iso) : null;
         $invoice->paidAmount = $iuguInvoice->paid_cents ?? null;
-        $invoice->refundedAmount = $iuguInvoice->refunded_cents ?? null;
+        $invoice->setRefundedAmountFromGateway($iuguInvoice->refunded_cents ?? null);
         $invoice->refunds = $this->parseRefunds($invoice);
         $invoice->dueDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         // a Iugu não documenta a expiração do QR Code na fatura; quando vier, ela vale, senão
@@ -1518,7 +1580,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         // a cobrança devolve só o id; a leitura da fatura é outra requisição e falha como tal
         $invoiceId = $iuguCharge->invoice_id ?? null;
         if (empty($invoiceId)) {
-            throw new GatewayException('Error getting charged invoice: the charge response has no invoice_id');
+            throw $this->iuguResponseException('Error getting charged invoice: the charge response has no invoice_id', null);
         }
 
         return $this->fetchIuguInvoice((string) $invoiceId, 'getting charged invoice');
@@ -2188,11 +2250,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
 
         if ($page < 1) {
-            throw new GatewayException('Subscription page must be at least 1');
+            throw ModelAttributeValidationException::invalid('Subscription', 'page', 'Subscription page must be at least 1');
         }
 
         if ($limit < 1 || $limit > 100) {
-            throw new GatewayException('Subscription limit must be between 1 and 100');
+            throw ModelAttributeValidationException::invalid('Subscription', 'limit', 'Subscription limit must be between 1 and 100');
         }
 
         $query = http_build_query([
@@ -2254,11 +2316,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     public function listPlans(int $page = 1, int $limit = 100): array
     {
         if ($page < 1) {
-            throw new GatewayException('Plan page must be at least 1');
+            throw ModelAttributeValidationException::invalid('Plan', 'page', 'Plan page must be at least 1');
         }
 
         if ($limit < 1 || $limit > 100) {
-            throw new GatewayException('Plan limit must be between 1 and 100');
+            throw ModelAttributeValidationException::invalid('Plan', 'limit', 'Plan limit must be between 1 and 100');
         }
 
         $query = http_build_query([
@@ -2334,7 +2396,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             && !empty($trialEndsAt)
             && !$subscription->nextBillingAt->isSameDay($trialEndsAt)
         ) {
-            throw new GatewayException(
+            throw ModelAttributeValidationException::invalid(
+                'Subscription',
+                'nextBillingAt',
                 'Iugu stores the trial end and the next billing date in the same field, so '
                 . 'nextBillingAt and trialEndsAt (or trialDays) cannot hold different dates.'
             );
@@ -3059,14 +3123,15 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * Converte o intervalo genérico no par `interval` e `interval_type` da Iugu.
      *
      * A Iugu só tem `weeks` e `months`, então o intervalo anual é enviado como múltiplo de 12
-     * meses e o diário lança `GatewayException`. A leitura inversa fica em
+     * meses; o diário, o intervalo ausente e a contagem fora da faixa da Iugu lançam
+     * `ModelAttributeValidationException` antes da requisição. A leitura inversa fica em
      * `iuguIntervalToMultiPayment()`.
      *
      * @param  PlanInterval|null  $interval
      * @param  int  $intervalCount
      *
      * @return array{interval: int, interval_type: string}
-     * @throws GatewayException
+     * @throws ModelAttributeValidationException
      */
     private function intervalToIuguData(?PlanInterval $interval, int $intervalCount): array
     {
@@ -3074,7 +3139,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             PlanInterval::WEEK => ['interval' => $intervalCount, 'interval_type' => 'weeks'],
             PlanInterval::MONTH => ['interval' => $intervalCount, 'interval_type' => 'months'],
             PlanInterval::YEAR => ['interval' => 12 * $intervalCount, 'interval_type' => 'months'],
-            default => throw new GatewayException(
+            default => throw ModelAttributeValidationException::invalid(
+                'Plan',
+                'interval',
                 'Iugu driver does not support the `' . ($interval?->value ?? 'null') . '` plan interval; '
                 . 'use week, month or year (sent as 12 months).'
             ),
@@ -3082,7 +3149,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         // a Iugu aceita interval de 1 a 599; a tradução de ano pode estourar o teto
         if ($data['interval'] < self::PLAN_INTERVAL_MIN || $data['interval'] > self::PLAN_INTERVAL_MAX) {
-            throw new GatewayException(
+            throw ModelAttributeValidationException::invalid(
+                'Plan',
+                'intervalCount',
                 "Iugu accepts a plan interval from " . self::PLAN_INTERVAL_MIN . ' to '
                 . self::PLAN_INTERVAL_MAX . " {$data['interval_type']}, {$data['interval']} given."
             );

@@ -7,6 +7,8 @@ use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Contracts\PlanContract;
@@ -75,6 +77,7 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::PARTIAL_REFUND_PIX->name =>       [self::LIMITATION,     self::SUPPORTED],
             Capability::REFUND_BANK_SLIP->name =>         [self::LIMITATION,     self::LIMITATION],
             Capability::INVOICE_DUPLICATION->name =>      [self::SUPPORTED,      self::SUPPORTED],
+            Capability::INVOICE_CANCELLATION->name =>     [self::SUPPORTED,      self::SUPPORTED],
             Capability::IDEMPOTENCY->name =>              [self::SUPPORTED,      self::SUPPORTED],
             Capability::IDEMPOTENCY_ALL_ENDPOINTS->name => [self::LIMITATION,    self::SUPPORTED],
             Capability::SUBSCRIPTIONS->name =>            [self::SUPPORTED,      self::NOT_IMPLEMENTED],
@@ -146,15 +149,118 @@ class GatewayCapabilitiesTest extends TestCase
         $this->assertStringContainsString($table, $readme, 'README desatualizado: rode `composer capabilities:table` e cole a saída na seção Capabilities');
     }
 
-    public function testTableHasOneRowPerCapabilityAndOneColumnPerGateway(): void
+    public function testTableHasOneRowPerCapabilityOneColumnPerGatewayAndARestrictionsColumn(): void
     {
         $table = CapabilitiesTable::markdown(['iugu' => self::driver('iugu'), 'stripe' => self::driver('stripe')]);
         $lines = explode("\n", trim($table));
 
-        $this->assertSame('| Capability | Significado | Iugu | Stripe |', $lines[0]);
-        $this->assertSame('|---|---|---|---|', $lines[1]);
+        $this->assertSame('| Capability | Significado | Iugu | Stripe | Restrições |', $lines[0]);
+        $this->assertSame('|---|---|---|---|---|', $lines[1]);
         $this->assertCount(count(Capability::cases()) + 2, $lines);
-        $this->assertStringStartsWith('| `CREDIT_CARD` | Fatura paga com cartão de crédito. | sim | sim |', $lines[2]);
+        $this->assertStringStartsWith('| `CREDIT_CARD` | Fatura paga com cartão de crédito. | sim | sim | Stripe: ', $lines[2]);
+        $this->assertStringEndsWith('| sim | sim |  |', $lines[3], 'PIX não tem restrição em nenhum gateway');
+    }
+
+    /**
+     * Cada restrição declarada aparece na coluna com o nome do gateway; capability sem restrição
+     * deixa a célula vazia.
+     */
+    public function testRestrictionsCellListsEveryGatewayThatRestrictsTheCapability(): void
+    {
+        $gateways = ['iugu' => self::driver('iugu'), 'stripe' => self::driver('stripe')];
+
+        $this->assertSame('', CapabilitiesTable::restrictionsCell($gateways, Capability::PIX));
+        $this->assertStringStartsWith('Iugu: ', CapabilitiesTable::restrictionsCell($gateways, Capability::INSTALLMENTS));
+        $this->assertStringStartsWith('Stripe: ', CapabilitiesTable::restrictionsCell($gateways, Capability::INVOICE_DUPLICATION));
+    }
+
+    #[DataProvider('restrictionProvider')]
+    public function testDriverDeclaresTheExpectedRestriction(string $gateway, Capability $capability, ?array $expected): void
+    {
+        $restriction = self::driver($gateway)->restriction($capability);
+
+        if (is_null($expected)) {
+            $this->assertNull($restriction);
+
+            return;
+        }
+
+        $this->assertNotNull($restriction);
+        $this->assertNotSame('', $restriction->description);
+        $this->assertSame($expected['payment_methods'] ?? null, $restriction->allowedPaymentMethods);
+        $this->assertSame($expected['brands'] ?? null, $restriction->allowedBrands);
+        $this->assertSame($expected['max_installments'] ?? null, $restriction->maxInstallments);
+    }
+
+    public static function restrictionProvider(): array
+    {
+        return [
+            'iugu parcelamento' => ['iugu', Capability::INSTALLMENTS, ['max_installments' => 12]],
+            'iugu cartão sem restrição' => ['iugu', Capability::CREDIT_CARD, null],
+            'iugu duplicação sem restrição' => ['iugu', Capability::INVOICE_DUPLICATION, null],
+            'stripe bandeiras' => ['stripe', Capability::CREDIT_CARD, ['brands' => ['visa', 'mastercard']]],
+            'stripe duplicação só pix' => ['stripe', Capability::INVOICE_DUPLICATION, ['payment_methods' => [PaymentMethod::PIX]]],
+            'stripe cancelamento de rascunho' => ['stripe', Capability::INVOICE_CANCELLATION, []],
+            'stripe pix sem restrição' => ['stripe', Capability::PIX, null],
+        ];
+    }
+
+    /**
+     * Uma restrição só faz sentido sobre uma capability suportada: célula "não implementado" ou
+     * "limitação do gateway" não pode ter restrição.
+     */
+    #[DataProvider('driverProvider')]
+    public function testRestrictionsOnlyCoverSupportedCapabilities(string $gateway): void
+    {
+        $driver = self::driver($gateway);
+
+        foreach ($driver->restrictions() as $value => $restriction) {
+            $capability = Capability::from($value);
+            $this->assertTrue($driver->supports($capability), "{$gateway} restringe {$capability->name} sem suportá-la");
+            $this->assertEquals($restriction, $driver->restriction($capability));
+        }
+    }
+
+    /**
+     * O máximo de parcelas da Iugu vem da configuração da conta, com 12 como padrão.
+     */
+    public function testIuguMaxInstallmentsComesFromTheConfiguration(): void
+    {
+        Facade::getFacadeApplication()['config']->set('multi-payment.gateways.iugu.max_installments', 6);
+
+        $restriction = self::driver('iugu')->restriction(Capability::INSTALLMENTS);
+
+        $this->assertSame(6, $restriction->maxInstallments);
+        $this->assertStringContainsString('até 6', $restriction->description);
+    }
+
+    #[DataProvider('driverProvider')]
+    public function testSupportsAllRequiresEveryCapability(string $gateway): void
+    {
+        $driver = self::driver($gateway);
+
+        $this->assertTrue($driver->supportsAll());
+        $this->assertTrue($driver->supportsAll(Capability::CREDIT_CARD, Capability::PIX));
+        $this->assertFalse($driver->supportsAll(Capability::CREDIT_CARD, Capability::REFUND_BANK_SLIP));
+    }
+
+    /**
+     * A fachada expõe `supportsAll()`, `restriction()` e `restrictions()` do gateway.
+     */
+    public function testTheFacadeExposesSupportsAllAndTheRestrictions(): void
+    {
+        Facade::getFacadeApplication()['config']->set('multi-payment.gateways.iugu.class', IuguGateway::class);
+        Facade::getFacadeApplication()['config']->set('multi-payment.gateways.stripe.class', StripeGateway::class);
+
+        $payment = new MultiPayment('stripe');
+
+        $this->assertTrue($payment->supportsAll(Capability::CREDIT_CARD, Capability::PIX));
+        $this->assertFalse($payment->supportsAll(Capability::CREDIT_CARD, Capability::BANK_SLIP));
+        $this->assertSame(['visa', 'mastercard'], $payment->restriction(Capability::CREDIT_CARD)->allowedBrands);
+        $this->assertNull($payment->restriction(Capability::PIX));
+        $this->assertSame(12, $payment->restriction(Capability::INSTALLMENTS, 'iugu')->maxInstallments);
+        $this->assertArrayHasKey(Capability::INVOICE_DUPLICATION->value, $payment->restrictions());
+        $this->assertArrayHasKey(Capability::INSTALLMENTS->value, $payment->restrictions('iugu'));
     }
 
     private static function driver(string $gateway): GatewayContract&DeclaresCapabilities

@@ -168,7 +168,7 @@ class RefundTest extends TestCase
                 (new MultiPayment('iugu'))->refundInvoice('inv_1', $value);
                 $this->fail("Esperava ModelAttributeValidationException para {$value}");
             } catch (ModelAttributeValidationException $e) {
-                $this->assertStringContainsString('refundedAmount', $e->getMessage());
+                $this->assertStringContainsString('amount', $e->getMessage());
             }
         }
 

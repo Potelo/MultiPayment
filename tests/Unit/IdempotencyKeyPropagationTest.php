@@ -81,8 +81,9 @@ class IdempotencyKeyPropagationTest extends TestCase
         ], array_column($this->calls, 0));
         [$refund, $cancel, $charge, $duplicate, $reschedule] = array_column($this->calls, 1);
         $this->assertSame('inv_1', $refund[0]->id);
-        $this->assertSame(500, $refund[0]->refundedAmount);
-        $this->assertSame('k-refund', $refund[1]);
+        $this->assertSame(500, $refund[1]);
+        $this->assertSame('k-refund', $refund[2]);
+        $this->assertNull($refund[0]->refundedAmount, 'o valor vai como argumento; refundedAmount é só de leitura');
         $this->assertSame(['inv_1', 'k-cancel'], [$cancel[0]->id, $cancel[1]]);
         $this->assertSame(['tok_1', 'k-charge'], [$charge[0]->creditCard->token, $charge[1]]);
         $this->assertSame($expiresAt, $duplicate[1]);

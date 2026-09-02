@@ -7,6 +7,7 @@ use Carbon\Carbon;
 use PHPUnit\Framework\TestCase;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\InvoiceItem;
@@ -19,6 +20,7 @@ use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ConfigurationException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -671,7 +673,7 @@ class SubscriptionTest extends TestCase
 
     /**
      * Gateway que declara a capability sem implementar o contract é erro de driver e chega como
-     * `GatewayException`.
+     * `ConfigurationException`, sem `httpStatus`.
      */
     public function testGatewayDeclaringTheCapabilityWithoutTheContractIsADriverError(): void
     {
@@ -681,7 +683,7 @@ class SubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ConfigurationException::class);
         $this->expectExceptionMessageMatches('/declares the subscriptions capability but does not implement SubscriptionContract/');
 
         $subscription->suspend($gateway);
@@ -722,6 +724,37 @@ class SubscriptionTest extends TestCase
         $subscription->save($gateway);
     }
 
+    /**
+     * Gateway que declara a capability mas não tem o método do despacho por convenção é erro
+     * de driver e chega como `ConfigurationException`, sem requisição.
+     */
+    public function testGatewayWithoutTheDispatchMethodIsAConfigurationError(): void
+    {
+        $gateway = Mockery::mock(GatewayContract::class);
+        $gateway->shouldReceive('supports')->with(Capability::PLANS)->andReturn(true);
+
+        $plan = new Plan();
+        $plan->name = 'Mensal';
+        $plan->amount = 10000;
+        $plan->interval = PlanInterval::MONTH;
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessageMatches('/does not have method \[createPlan\]/');
+
+        $plan->save($gateway);
+    }
+
+    public function testTheFacadeRejectsAGatewayDeclaringTheCapabilityWithoutTheContractAsAConfigurationError(): void
+    {
+        $gateway = Mockery::mock(GatewayContract::class);
+        $gateway->shouldReceive('supports')->with(Capability::PLANS)->andReturn(true);
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessageMatches('/declares the plans capability but does not implement PlanContract/');
+
+        (new MultiPayment($gateway))->listPlans();
+    }
+
     public function testPlanWithIdCannotBeSavedAgain(): void
     {
         $plan = new Plan();
@@ -730,7 +763,7 @@ class SubscriptionTest extends TestCase
         $plan->amount = 10000;
         $plan->interval = PlanInterval::MONTH;
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches('/cannot be updated/');
 
         $plan->save(Mockery::mock(GatewayContract::class));

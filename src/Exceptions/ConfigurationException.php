@@ -2,10 +2,43 @@
 
 namespace Potelo\MultiPayment\Exceptions;
 
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 
 class ConfigurationException extends MultiPaymentException
 {
+    /**
+     * O driver declara a capability em `capabilities()` mas não implementa o contract que a
+     * operação exige (erro de driver, sem requisição).
+     *
+     * @param  GatewayContract  $gateway
+     * @param  Capability  $capability
+     * @param  class-string  $contract
+     * @return self
+     */
+    public static function GatewayMissingContract(GatewayContract $gateway, Capability $capability, string $contract): self
+    {
+        $contractName = substr(strrchr($contract, '\\'), 1) ?: $contract;
+
+        return new static(
+            'Gateway [' . get_class($gateway) . "] declares the {$capability->value} capability"
+            . " but does not implement {$contractName}"
+        );
+    }
+
+    /**
+     * O driver passou na verificação de capability mas não tem o método que o despacho por
+     * convenção de nome esperava (erro de driver, sem requisição).
+     *
+     * @param  string  $gatewayClass
+     * @param  string  $method
+     * @return self
+     */
+    public static function GatewayMethodNotFound(string $gatewayClass, string $method): self
+    {
+        return new static("Gateway [{$gatewayClass}] does not have method [{$method}]");
+    }
+
     /**
      * The gateway does not implement the interface.
      *

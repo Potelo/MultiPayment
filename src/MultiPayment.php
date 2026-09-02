@@ -24,6 +24,8 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
 use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\NotFoundException;
+use Potelo\MultiPayment\Exceptions\ConfigurationException;
+use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -104,6 +106,45 @@ class MultiPayment
     public function notYetImplemented($gateway = null): array
     {
         return $this->gateway($gateway)->notYetImplemented();
+    }
+
+    /**
+     * Diz se o gateway desta instância suporta todas as capabilities informadas. Para outro
+     * gateway, use `gateway($nome)->supportsAll(...)`.
+     *
+     * @param  Capability  ...$capabilities
+     * @return bool
+     */
+    public function supportsAll(Capability ...$capabilities): bool
+    {
+        return $this->gateway->supportsAll(...$capabilities);
+    }
+
+    /**
+     * Restrição que o gateway (o desta instância, por padrão) impõe a uma capability que
+     * suporta, ou nulo quando ela vale em todos os casos.
+     *
+     * @param  Capability  $capability
+     * @param  GatewayContract|string|null  $gateway
+     * @return CapabilityRestriction|null
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function restriction(Capability $capability, $gateway = null): ?CapabilityRestriction
+    {
+        return $this->gateway($gateway)->restriction($capability);
+    }
+
+    /**
+     * Restrições do gateway (o desta instância, por padrão), com o valor da capability como
+     * chave.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @return array<string, CapabilityRestriction>
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function restrictions($gateway = null): array
+    {
+        return $this->gateway($gateway)->restrictions();
     }
 
     /**
@@ -214,7 +255,7 @@ class MultiPayment
      *
      * @return GatewayContract
      * @throws UnsupportedOperationException
-     * @throws GatewayException
+     * @throws ConfigurationException  driver que declara a capability sem implementar o contract
      */
     private function gatewayImplementing(string $contract, Capability $capability): GatewayContract
     {
@@ -223,11 +264,7 @@ class MultiPayment
         }
 
         if (!$this->gateway instanceof $contract) {
-            $contractName = substr(strrchr($contract, '\\'), 1);
-            throw new GatewayException(
-                'Gateway [' . get_class($this->gateway) . "] declares the {$capability->value} capability"
-                . " but does not implement {$contractName}"
-            );
+            throw ConfigurationException::GatewayMissingContract($this->gateway, $capability, $contract);
         }
 
         return $this->gateway;
@@ -342,37 +379,41 @@ class MultiPayment
     }
 
     /**
-     * Estorna uma fatura pelo id: integral sem valor, parcial com o valor em centavos.
+     * Estorna uma fatura pelo id: o restante estornável sem valor, ou o valor em centavos.
      * Devolve o `Refund` criado; a fatura relida após o estorno está em `$refund->invoice()`.
      *
      * @param  string  $id
-     * @param  int|null  $partialValueCents
+     * @param  int|null  $partialValueCents  valor em centavos; nulo estorna o restante
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return \Potelo\MultiPayment\Models\Refund
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\RefundNotSupportedException
-     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException  valor parcial zero ou negativo
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException  valor zero ou negativo
      */
     public function refundInvoice(string $id, ?int $partialValueCents = null, ?string $idempotencyKey = null): Refund
     {
-        if (!is_null($partialValueCents) && $partialValueCents <= 0) {
-            throw ModelAttributeValidationException::invalid(
-                'Invoice',
-                'refundedAmount',
-                'The partial refund value must be a positive amount in cents; omit it for a full refund.'
-            );
-        }
-
         $invoice = new Invoice();
         $invoice->id = $id;
         $invoice->gateway = $this->gateway;
 
-        if (!is_null($partialValueCents)) {
-            $invoice->refundedAmount = $partialValueCents;
-        }
+        return $invoice->refund($partialValueCents, $idempotencyKey);
+    }
 
-        return $invoice->refund($idempotencyKey);
+    /**
+     * Valor que ainda pode ser estornado na fatura, em centavos; lê a fatura no gateway.
+     *
+     * @param  string  $id
+     * @return int
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     */
+    public function refundableAmount(string $id): int
+    {
+        $invoice = new Invoice();
+        $invoice->id = $id;
+        $invoice->gateway = $this->gateway;
+
+        return $invoice->refundableAmount();
     }
 
     /**

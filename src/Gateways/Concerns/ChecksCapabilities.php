@@ -3,11 +3,13 @@
 namespace Potelo\MultiPayment\Gateways\Concerns;
 
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 
 /**
- * Implementa `supports()` de `DeclaresCapabilities` sobre as listas do driver e oferece as
- * guardas que os drivers chamam antes de qualquer requisição.
+ * Implementa `supports()`, `supportsAll()` e `restriction()` de `DeclaresCapabilities` sobre
+ * as listas do driver e oferece as guardas que os drivers chamam antes de qualquer requisição.
+ * `restrictions()` devolve lista vazia; o driver que tem restrição a sobrescreve.
  */
 trait ChecksCapabilities
 {
@@ -27,6 +29,36 @@ trait ChecksCapabilities
     public function supports(Capability $capability): bool
     {
         return in_array($capability, $this->capabilities(), true);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function supportsAll(Capability ...$capabilities): bool
+    {
+        foreach ($capabilities as $capability) {
+            if (!$this->supports($capability)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function restrictions(): array
+    {
+        return [];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function restriction(Capability $capability): ?CapabilityRestriction
+    {
+        return $this->restrictions()[$capability->value] ?? null;
     }
 
     /**

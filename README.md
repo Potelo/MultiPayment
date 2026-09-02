@@ -72,6 +72,7 @@ MULTIPAYMENT_DEFAULT=iugu
 #iugu  
 IUGU_ID=
 IUGU_APIKEY=
+IUGU_MAX_INSTALLMENTS=12   # opcional; máximo de parcelas habilitado na conta (ver Capabilities)
 
 #stripe
 STRIPE_APIKEY=
@@ -112,7 +113,14 @@ Cada driver declara o que suporta em dois níveis, pelo contract `DeclaresCapabi
 `capabilities()` lista o que o gateway oferece e a lib implementa; `notYetImplemented()` lista o
 que o gateway oferece mas a lib ainda não construiu (planejado para uma versão futura). O que não
 aparece em nenhuma das duas listas é limitação do gateway. `supports(Capability $c)` responde
-sobre a primeira lista. Os valores são o enum `Potelo\MultiPayment\Enums\Capability`.
+sobre a primeira lista e `supportsAll(Capability ...$c)` exige todas de uma vez. Os valores são
+o enum `Potelo\MultiPayment\Enums\Capability`.
+
+Uma capability suportada pode valer só numa parte dos casos. `restriction(Capability $c)` devolve
+um `CapabilityRestriction` (`Potelo\MultiPayment\Capabilities\CapabilityRestriction`) com a
+`description` da restrição e, quando ela é enumerável, `allowedPaymentMethods`, `allowedBrands`
+ou `maxInstallments`; nulo quando a capability vale em todos os casos. `restrictions()` lista
+todas, com o valor da capability como chave.
 
 Consulte a capability **antes** de montar a interface de checkout ou de escolher o gateway, em
 vez de capturar a exceção depois:
@@ -126,8 +134,17 @@ if (!MultiPayment::gateway('stripe')->supports(Capability::BANK_SLIP)) {
 }
 
 MultiPayment::supports(Capability::INSTALLMENTS, 'iugu');  // true
+MultiPayment::supportsAll(Capability::PIX, Capability::INVOICE_DUPLICATION);   // no gateway da instância
 MultiPayment::capabilities('stripe');                       // Capability[] que a lib implementa
 MultiPayment::notYetImplemented('stripe');                  // Capability[] planejadas
+
+// restrições dentro de um "sim", consultáveis antes de tokenizar ou de exibir a opção
+$brands = MultiPayment::restriction(Capability::CREDIT_CARD, 'stripe');
+if ($brands && !$brands->allowsBrand($binLookup->brand)) {
+    $gateway = 'iugu';                                   // Elo, Hipercard e Amex vão para a Iugu
+}
+MultiPayment::restriction(Capability::INSTALLMENTS, 'iugu')->maxInstallments;   // 12 por padrão
+MultiPayment::restriction(Capability::PIX, 'iugu');                             // null: vale em todos os casos
 ```
 
 Toda operação fora das capabilities do gateway lança `UnsupportedOperationException` **antes de
@@ -137,46 +154,55 @@ gateway oferece e a lib ainda não implementou; `gateway_limitation` quando o ga
 oferece). Ver [Tratamento de erros](#tratamento-de-erros).
 
 A matriz abaixo é gerada a partir das declarações dos drivers com `composer capabilities:table`;
-o teste `GatewayCapabilitiesTest` falha quando o README fica defasado em relação ao código.
+o teste `GatewayCapabilitiesTest` falha quando o README fica defasado em relação ao código. A
+coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 
-| Capability | Significado | Iugu | Stripe |
-|---|---|---|---|
-| `CREDIT_CARD` | Fatura paga com cartão de crédito. | sim | sim |
-| `PIX` | Fatura paga com Pix avulso, com QR Code de pagamento único. | sim | sim |
-| `BANK_SLIP` | Fatura paga com boleto bancário. | sim | não implementado |
-| `AUTOMATIC_PIX` | Recorrência de Pix Automático criada junto com a fatura, com reagendamento e cancelamento pela lib. | sim | não implementado |
-| `MULTIPLE_PAYMENT_METHODS` | Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. | sim | não implementado |
-| `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |
-| `INSTALLMENTS` | Parcelamento da cobrança no cartão de crédito. | sim | limitação do gateway |
-| `DELAYED_CAPTURE` | Cobrança em duas etapas no cartão: reserva do valor agora e captura depois. | não implementado | não implementado |
-| `PARTIAL_REFUND_CARD` | Estorno de parte do valor numa fatura paga com cartão. | sim | sim |
-| `PARTIAL_REFUND_PIX` | Estorno de parte do valor numa fatura paga com Pix. | limitação do gateway | sim |
-| `REFUND_BANK_SLIP` | Estorno pela API de uma fatura paga com boleto. | limitação do gateway | limitação do gateway |
-| `INVOICE_DUPLICATION` | Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). | sim | sim |
-| `IDEMPOTENCY` | Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo gateway ou pela deduplicação da lib (`IdempotencyStore`). | sim | sim |
-| `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem depender da deduplicação da lib. | limitação do gateway | sim |
-| `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | não implementado |
-| `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | não implementado |
-| `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | não implementado |
-| `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | limitação do gateway | não implementado |
-| `NATIVE_COUPONS` | Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. | limitação do gateway | não implementado |
-| `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | não implementado |
-| `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |
-| `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | não implementado |
+| Capability | Significado | Iugu | Stripe | Restrições |
+|---|---|---|---|---|
+| `CREDIT_CARD` | Fatura paga com cartão de crédito. | sim | sim | Stripe: Na conta brasileira só cartão de crédito Visa e Mastercard; outra bandeira é recusada na cobrança com DeclineCode::BRAND_NOT_SUPPORTED. |
+| `PIX` | Fatura paga com Pix avulso, com QR Code de pagamento único. | sim | sim |  |
+| `BANK_SLIP` | Fatura paga com boleto bancário. | sim | não implementado |  |
+| `AUTOMATIC_PIX` | Recorrência de Pix Automático criada junto com a fatura, com reagendamento e cancelamento pela lib. | sim | não implementado |  |
+| `MULTIPLE_PAYMENT_METHODS` | Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. | sim | não implementado |  |
+| `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |  |
+| `INSTALLMENTS` | Parcelamento da cobrança no cartão de crédito. | sim | limitação do gateway | Iugu: O número de parcelas vai em gatewayOptions['months'], até 12 (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments); a lib não lê as parcelas da fatura paga. |
+| `DELAYED_CAPTURE` | Cobrança em duas etapas no cartão: reserva do valor agora e captura depois. | não implementado | não implementado |  |
+| `PARTIAL_REFUND_CARD` | Estorno de parte do valor numa fatura paga com cartão. | sim | sim |  |
+| `PARTIAL_REFUND_PIX` | Estorno de parte do valor numa fatura paga com Pix. | limitação do gateway | sim |  |
+| `REFUND_BANK_SLIP` | Estorno pela API de uma fatura paga com boleto. | limitação do gateway | limitação do gateway |  |
+| `INVOICE_DUPLICATION` | Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). | sim | sim | Stripe: Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, outro estado ou fatura de assinatura são recusados. |
+| `INVOICE_CANCELLATION` | Cancelamento de uma fatura ainda não paga (`cancelInvoice`). | sim | sim | Stripe: A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada pela Stripe; rascunho é recusado. |
+| `IDEMPOTENCY` | Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo gateway ou pela deduplicação da lib (`IdempotencyStore`). | sim | sim |  |
+| `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem depender da deduplicação da lib. | limitação do gateway | sim |  |
+| `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | não implementado |  |
+| `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | não implementado |  |
+| `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | não implementado |  |
+| `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | limitação do gateway | não implementado |  |
+| `NATIVE_COUPONS` | Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. | limitação do gateway | não implementado |  |
+| `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | não implementado |  |
+| `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |  |
+| `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | não implementado |  |
 
-Restrições dentro de uma célula "sim":
+Sobre as restrições e algumas células:
 
-- **`INVOICE_DUPLICATION` no Stripe** vale só para fatura Pix pendente; cartão ou fatura em outro
-  estado lança `UnsupportedOperationException` com `gateway_limitation` (ver
-  [Particularidades do Stripe](#particularidades-do-stripe)).
+- **Operação fora da restrição** lança `UnsupportedOperationException::restricted()`, com a
+  capability, `reason` `gateway_limitation` e a mensagem que descreve a restrição: duplicação
+  fora de Pix pendente e cancelamento de rascunho de fatura de assinatura no Stripe, cartão que
+  pertence a outro cliente no Stripe (ver [Particularidades do Stripe](#particularidades-do-stripe)).
+  A bandeira fora da restrição de `CREDIT_CARD` chega depois, na cobrança, como
+  `CardDeclinedException` com `DeclineCode::BRAND_NOT_SUPPORTED`; por isso vale consultar
+  `restriction()->allowsBrand()` antes de tokenizar.
 - **`INSTALLMENTS` na Iugu** é informado em `gateway_options['months']`; a lib não modela parcelas
-  nem lê os campos da fatura parcelada.
+  nem lê os campos da fatura parcelada. O máximo publicado em `maxInstallments` vem de
+  `multi-payment.gateways.iugu.max_installments` (`IUGU_MAX_INSTALLMENTS`, 12 por padrão) e
+  deve refletir o parcelamento habilitado na conta.
 - **`IDEMPOTENCY` na Iugu** é honrada pelo gateway só na criação de fatura, cliente e assinatura e
   na cobrança com cartão; nas demais operações de escrita a deduplicação é da lib, pela
   `IdempotencyStore`, que exige o cache do Laravel configurado (ver [Idempotência](#idempotência)).
   Por isso a Iugu não tem `IDEMPOTENCY_ALL_ENDPOINTS`.
-- **`PARTIAL_REFUND_PIX` e `REFUND_BANK_SLIP`** chegam como `RefundNotSupportedException`, que
-  herda de `UnsupportedOperationException` (ver [Estorno](#estorno)).
+- **`PARTIAL_REFUND_PIX` e `REFUND_BANK_SLIP`** chegam como `RefundNotSupportedException`, com
+  `isCapabilityLimitation()` verdadeiro; a classe fica fora da árvore de
+  `UnsupportedOperationException` (ver [Estorno](#estorno)).
 - **`MANAGES_RECURRENCE`** é informativa: diz quem agenda a cobrança do Pix Automático (ver
   [Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)).
 - **`PLAN_CHANGE_PRORATION`** é o que `changePlan()` com `ProrationBehavior::CREDIT` exige; as
@@ -404,7 +430,11 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
   `chargeInvoiceWithCreditCard` ou duplicada com `duplicateInvoice` (nova expiração;
   a original é cancelada). Só fatura Pix pendente de venda avulsa é duplicável: cartão, fatura
   em outro estado ou fatura de assinatura lança `UnsupportedOperationException`
-  (`INVOICE_DUPLICATION`, `gateway_limitation`).
+  (`INVOICE_DUPLICATION`, `gateway_limitation`); `restriction(Capability::INVOICE_DUPLICATION)`
+  publica a regra.
+- **Cartão pertence a um único cliente.** Cobrar, buscar ou excluir um `pm_` informando outro
+  cliente lança `UnsupportedOperationException` (`CREDIT_CARD`, `gateway_limitation`) antes da
+  operação.
 - **A fatura tem duas origens.** A venda avulsa é um PaymentIntent (`pi_`) e a fatura de
   assinatura é um objeto Invoice da Stripe (`in_`); `getInvoice()` aceita os dois ids e
   `Invoice::$originType` diz qual voltou. Ver
@@ -462,15 +492,16 @@ O que muda na fatura de origem `INVOICE`:
 - **Uma requisição a mais** quando a fatura já teve tentativa de pagamento: o charge do
   PaymentIntent fica além do limite de `expand` da Stripe e é lido num GET à parte.
 - **`cancelInvoice()`** anula a fatura (`void`); a Stripe cancela sozinha o PaymentIntent
-  dela. Rascunho (`draft`) não é anulável e lança `GatewayException` orientando a esperar a
-  finalização; fatura `paid` ou já anulada lança `ValidationException`, como o PaymentIntent
-  já pago ou cancelado.
+  dela. Rascunho (`draft`) não é anulável e lança `UnsupportedOperationException`
+  (`INVOICE_CANCELLATION`, `gateway_limitation`) orientando a esperar a finalização; fatura
+  `paid` ou já anulada lança `ValidationException`, como o PaymentIntent já pago ou cancelado.
 - **`duplicateInvoice()`** é recusado com `UnsupportedOperationException` (`INVOICE_DUPLICATION`,
   `gateway_limitation`): a próxima fatura da assinatura é gerada pela Stripe, e um Pix expirado
   se resolve com nova tentativa de pagamento da mesma fatura.
-- **`refundInvoice()` e `chargeInvoiceWithCreditCard()`** sobre a fatura de assinatura ainda não
-  estão disponíveis (`UnsupportedOperationException`, `SUBSCRIPTIONS`, `not_implemented`); entram
-  em uma versão futura junto com a assinatura no Stripe.
+- **`refundInvoice()`, `refundableAmount()` e `chargeInvoiceWithCreditCard()`** sobre a fatura de
+  assinatura ainda não estão disponíveis (`UnsupportedOperationException`, `SUBSCRIPTIONS`,
+  `not_implemented`, antes de qualquer requisição); entram em uma versão futura junto com a
+  assinatura no Stripe.
 
 **Precedência de status.** O status do Invoice da Stripe manda no ciclo de vida da fatura; o
 PaymentIntent e o charge só refinam o detalhe de pagamento. Um PaymentIntent `succeeded` não
@@ -713,10 +744,10 @@ A árvore, com a indentação marcando a herança:
 
 ```
 MultiPaymentException
-    ConfigurationException              gateway não configurado, classe inválida ou IdempotencyStore sem cache
+    ConfigurationException              gateway não configurado, classe inválida, driver que declara capability sem o contract ou o método, IdempotencyStore sem cache
     ModelAttributeValidationException   atributo obrigatório ausente ou inválido, antes da requisição
-    UnsupportedOperationException       operação fora das capabilities do gateway, antes da requisição
-        RefundNotSupportedException     estorno recusado pela lib antes da requisição
+    UnsupportedOperationException       operação fora das capabilities do gateway, ou fora da restrição de uma capability, antes da requisição
+    RefundNotSupportedException         estorno recusado pela lib antes da requisição (limitação do gateway ou estado da fatura)
     AuthenticationException             credencial recusada (401, 403) ou não configurada
     GatewayNotAvailableException        5xx, falha de conexão ou timeout
     CardDeclinedException               cobrança recusada: declineCode, gatewayCode, retryable
@@ -738,11 +769,11 @@ MultiPaymentException
 | `IdempotencyConflictException` | Chave de idempotência reutilizada (409 na Iugu em cliente e assinatura; `idempotency_error` na Stripe quando o payload mudou), a primeira requisição com a chave ainda em andamento, ou lock ocupado na `IdempotencyStore` da lib. `resourceId` traz o id do recurso original quando o gateway o informa | Consultar o resultado da primeira requisição (`resourceId` ou o registro da aplicação) ou usar chave nova; nunca repetir com a mesma chave e outro conteúdo |
 | `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
 | `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
-| `UnsupportedOperationException` | Operação fora das capabilities do gateway, antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented` ou `gateway_limitation`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` antes (ver [Capabilities](#capabilities)) |
-| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway (boleto, Pix parcial, já estornada, valor acima do restante, prazo vencido); herda de `UnsupportedOperationException` e refina `reason` | Ver [Estorno](#estorno) |
-| `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição | Corrigir a chamada |
-| `ConfigurationException` | Gateway não configurado ou classe inválida; `IdempotencyStore` sem registro no container ou sobre um cache sem lock | Corrigir a configuração |
-| `GatewayException` | Qualquer outra resposta de erro do gateway, e a classe pai das quatro de resposta acima; `getErrors()` traz o corpo de erro | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
+| `UnsupportedOperationException` | Operação fora das capabilities do gateway, ou fora da restrição de uma capability suportada (`restriction()`), antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented` ou `gateway_limitation`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` e `restriction()` antes (ver [Capabilities](#capabilities)) |
+| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway: limitação do gateway (boleto, Pix parcial; `isCapabilityLimitation()` verdadeiro e `capability` preenchida) ou estado da fatura (já estornada, valor acima do restante, prazo vencido). Herda direto de `MultiPaymentException`: `catch (UnsupportedOperationException)` não a captura | Ver [Estorno](#estorno) |
+| `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição, inclusive regra de valor que só um gateway impõe (`PlanInterval::DAY` e teto de 599 meses na Iugu, `nextBillingAt` diferente de `trialEndsAt`, `page` e `limit` fora da faixa, plano com `id` em `save()`, valor de estorno zero ou negativo) | Corrigir a chamada |
+| `ConfigurationException` | Gateway não configurado ou classe inválida; driver que declara uma capability sem implementar o contract ou sem o método do despacho por convenção; `IdempotencyStore` sem registro no container ou sobre um cache sem lock | Corrigir a configuração ou o driver |
+| `GatewayException` | Qualquer outra resposta de erro do gateway, e a classe pai das quatro de resposta acima; `httpStatus` e `getErrors()` sempre preenchidos com a resposta. Nenhuma regra local da lib a lança | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
 
 Um `catch` por camada. As subclasses vêm antes de `GatewayException`, senão ela captura tudo:
 
@@ -834,6 +865,16 @@ o deixava nulo, traz o valor de `declineCode`. Compare com `declineCode`.
 > chegar como `GatewayException` (ou `GatewayException::methodNotFound`) e passou a lançar
 > `UnsupportedOperationException`, que herda de `MultiPaymentException`. Um
 > `catch (GatewayException $e)` sozinho deixa de capturar esses casos.
+>
+> Ainda na 5.0.0, `GatewayException` deixou de ser lançada por regra local, sem requisição: regra
+> de valor (`page` e `limit` fora da faixa, plano com `id` em `save()`, `nextBillingAt` diferente
+> de `trialEndsAt`, `PlanInterval::DAY` e teto de 599 meses na Iugu) virou
+> `ModelAttributeValidationException`; restrição do gateway (cartão de outro cliente, rascunho
+> não anulável, fatura sem cliente na duplicação no Stripe) virou
+> `UnsupportedOperationException::restricted()`; driver que declara capability sem o contract ou
+> sem o método de despacho virou `ConfigurationException`. Toda `GatewayException` que sobrou
+> traz `httpStatus` da resposta. `RefundNotSupportedException` deixou de herdar de
+> `UnsupportedOperationException` (ver [Estorno](#estorno)).
 >
 > Ainda na 5.0.0, validação (400, 422), 404, 409 e 429 passaram a chegar como
 > `ValidationException`, `NotFoundException`, `IdempotencyConflictException` e
@@ -1187,12 +1228,12 @@ Particularidades da Iugu:
   (uma fatura) ou `null` (até ser removido).
 - **Plano anual é 12 meses, e plano diário não existe.** A Iugu só tem intervalos em semanas e
   meses, então `PlanInterval::YEAR` é enviado como `12 * intervalCount` meses e
-  `PlanInterval::DAY` lança `GatewayException` antes de chamar a API. Na leitura vale a
+  `PlanInterval::DAY` lança `ModelAttributeValidationException` antes de chamar a API. Na leitura vale a
   heurística inversa: todo plano em meses cujo intervalo é múltiplo de 12 volta como `YEAR` com
   `intervalCount` dividido por 12 (um plano criado direto na Iugu com 24 meses lê como 2 anos).
   Quem precisar do valor cru lê `original`. A Iugu aceita intervalo de 1 a 599, então um plano
-  anual vai até `intervalCount` 49; acima disso o driver lança `GatewayException` antes de
-  chamar a API.
+  anual vai até `intervalCount` 49; acima disso o driver lança `ModelAttributeValidationException`
+  antes de chamar a API.
 - **Planos não são desativáveis.** `deactivatePlan` lança `UnsupportedOperationException`
   (`PLAN_DEACTIVATION`, `gateway_limitation`).
 - **`nextBillingAt` e `trialEndsAt` são o mesmo campo** (`expires_at`), e o que os distingue é
@@ -1202,7 +1243,7 @@ Particularidades da Iugu:
   assinatura nasce sem fatura (`latestInvoice` nulo) e sem cobrança até o fim do teste;
   `setNextBillingAt()` sozinho vai só como `expires_at`, com a fatura e a cobrança imediatas da
   Iugu (`gateway_options['only_charge_on_due_date']` sobrepõe os dois). Informar `trialEndsAt`
-  (ou `trialDays`) e `nextBillingAt` com datas diferentes lança `GatewayException`. Ao prorrogar
+  (ou `trialDays`) e `nextBillingAt` com datas diferentes lança `ModelAttributeValidationException`. Ao prorrogar
   um trial lido do gateway, zere `nextBillingAt` antes, porque a leitura preenche os dois.
   `in_trial` (lido como `TRIALING`) só aparece em assinatura que a própria Iugu põe em teste; a
   assinatura criada com trial pela lib lê como `ACTIVE`, com `nextBillingAt` no fim do teste.
@@ -1246,8 +1287,9 @@ Particularidades da Iugu:
   `latestInvoice`, com status `pending`; use `getInvoice()` pelo id para o valor em centavos. Com `ProrationBehavior::NONE` nada é cobrado; `ProrationBehavior::CREDIT` é
   recusado antes da rede.
 - **O plano de uma assinatura existente não muda por `save()`**; use `changePlan()`.
-- **Plano não é atualizável.** `save()` num `Plan` que já tem `id` lança `GatewayException`; para
-  mudar preço ou intervalo, crie outro plano e troque as assinaturas com `changePlan()`.
+- **Plano não é atualizável.** `save()` num `Plan` que já tem `id` lança
+  `ModelAttributeValidationException` antes da requisição; para mudar preço ou intervalo, crie
+  outro plano e troque as assinaturas com `changePlan()`.
 - **Fatura vencida lê como `EXPIRED` e continua sendo dívida.** A Iugu chama de `expired` a
   fatura que venceu sem pagamento; ela conta como fatura em aberto na derivação de `past_due`
   da assinatura, e `InvoiceStatus::EXPIRED->isPayable()` responde verdadeiro (`isOpen()`
@@ -1310,9 +1352,10 @@ qualquer requisição; plano inexistente pelos dois caminhos lança `NotFoundExc
 ```php
 $payment = new \Potelo\MultiPayment\MultiPayment('stripe');
 
-// estorno total ou parcial (valor em centavos); devolve um Refund (seção "Estorno")
+// estorno do restante ou parcial (valor em centavos); devolve um Refund (seção "Estorno")
 $refund = $payment->refundInvoice($invoiceId);
 $refund = $payment->refundInvoice($invoiceId, 5000);
+$payment->refundableAmount($invoiceId);   // quanto ainda pode ser estornado, em centavos
 
 // cancelamento de fatura pendente (no Stripe, a fatura de assinatura in_ é anulada com void)
 $payment->cancelInvoice($invoiceId);
@@ -1331,9 +1374,9 @@ $payment->cancelInvoice($invoiceId, idempotencyKey: $uuid);
 
 #### Estorno
 
-Sem valor, o estorno é integral; com valor em centavos, é parcial. A operação devolve um
-`Refund` (`Potelo\MultiPayment\Models\Refund`) com o que o gateway registrou do estorno, e a
-fatura relida depois dele fica em `$refund->invoice()`:
+Sem valor, o estorno é do restante estornável; com valor em centavos, é parcial. A operação
+devolve um `Refund` (`Potelo\MultiPayment\Models\Refund`) com o que o gateway registrou do
+estorno, e a fatura relida depois dele fica em `$refund->invoice()`:
 
 | Campo | Conteúdo |
 |---|---|
@@ -1351,7 +1394,7 @@ use Potelo\MultiPayment\Enums\RefundStatus;
 
 $payment = new \Potelo\MultiPayment\MultiPayment('stripe');
 
-$refund = $payment->refundInvoice($invoiceId);         // integral
+$refund = $payment->refundInvoice($invoiceId);         // o restante
 $refund = $payment->refundInvoice($invoiceId, 5000);   // parcial
 
 $refund->id;        // 're_...' (Stripe) ou null (Iugu)
@@ -1362,12 +1405,27 @@ $invoice = $refund->invoice();
 $invoice->status;   // InvoiceStatus::REFUNDED ou InvoiceStatus::PARTIALLY_REFUNDED
 ```
 
-`$invoice->refund()` num model faz o mesmo e atualiza a própria instância: depois da chamada
-`$invoice->status` já é o novo status, e `$refund->invoice()` é a mesma instância. O valor
-pedido viaja em `$invoice->refundedAmount`, que a leitura da fatura preenche com o total já
-estornado: num model lido do gateway que já teve estorno parcial, defina `refundedAmount` antes
-de chamar `refund()` (o novo valor, ou `null` para estornar o restante), senão o acumulado é
-reenviado como um novo estorno parcial.
+`$invoice->refund(?int $amount = null, ?string $idempotencyKey = null)` num model faz o mesmo e
+atualiza a própria instância: depois da chamada `$invoice->status` já é o novo status, e
+`$refund->invoice()` é a mesma instância. `$invoice->refundedAmount` é só de leitura e traz o
+total já estornado que o gateway informou; num model lido do gateway que já teve estorno parcial,
+`refund()` sem valor estorna o que resta.
+
+**Quanto ainda pode ser estornado.** `$invoice->refundableAmount()` (ou
+`$payment->refundableAmount($id)`) devolve o restante em centavos, calculado pelo driver: na
+Iugu é `paidAmount`, porque `paid_cents` já vem líquido do estornado; na Stripe é `paidAmount`
+menos `refundedAmount`, porque o valor pago vem bruto. Zero para fatura não paga ou já
+integralmente estornada. Um model que traz o valor pago não custa requisição; um model só com o
+id lê a fatura. É o teto aritmético do estorno; as guardas de boleto, Pix parcial e prazo
+continuam valendo.
+
+```php
+$invoice = $payment->getInvoice($id);           // já partially_refunded
+
+$invoice->refundableAmount();                   // 5000 nos dois gateways
+$refund = $invoice->refund(amount: 2000, idempotencyKey: $key);
+$refund = $invoice->refund();                   // o restante
+```
 
 **Histórico de estornos.** Toda fatura lida do gateway traz `$invoice->refunds`, uma lista de
 `Refund` (vazia quando nada foi estornado). Os dois gateways preenchem a lista de formas
@@ -1390,7 +1448,12 @@ foreach ($invoice->refunds as $refund) {
 
 **Recusa antes da requisição.** O pacote recusa, **antes de chamar o gateway**, o estorno que a
 regra do gateway já garante que seria negado, e o faz com `RefundNotSupportedException` nos
-dois drivers, para a aplicação não precisar interpretar a mensagem da Iugu ou da Stripe.
+dois drivers, para a aplicação não precisar interpretar a mensagem da Iugu ou da Stripe. A
+classe herda direto de `MultiPaymentException`: `isCapabilityLimitation()` separa a recusa que
+é limitação do gateway (boleto, Pix parcial; `capability` preenchida) da recusa por estado da
+fatura (já estornada, valor acima do restante, prazo vencido; `capability` nula). Um
+`catch (UnsupportedOperationException $e)` usado para rotear a operação para outro gateway não
+captura estorno recusado: rotear um estorno de fatura já estornada não faria sentido.
 
 ```php
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
@@ -1402,29 +1465,31 @@ try {
     if ($e->manualRefundRequired) {
         // boleto ou prazo vencido: o dinheiro só volta por fora do gateway
         ManualRefund::dispatch($invoiceId, $e->paymentMethod, $e->reason);
+    } elseif ($e->isCapabilityLimitation()) {
+        // Pix parcial na Iugu: $e->capability é PARTIAL_REFUND_PIX; repita sem valor
     }
 }
 ```
 
-| `$e->reason` | Quando | `$e->manualRefundRequired` |
-|---|---|---|
-| `boleto_no_refund` | Fatura paga com boleto, nos dois gateways | `true` |
-| `pix_partial_not_supported` | Iugu: valor pedido diferente do valor pago numa fatura Pix. Repita sem valor para estornar o total | `false` |
-| `already_refunded` | Fatura já lida como `refunded` | `false` |
-| `amount_exceeds_refundable` | Valor pedido acima do que ainda pode ser estornado (o restante vai na mensagem). Repita com valor até o restante | `false` |
-| `refund_window_expired` | Iugu: depois do fim do 90º dia após `paidAt` | `true` |
+| `$e->reason` | Quando | `$e->manualRefundRequired` | `$e->isCapabilityLimitation()` |
+|---|---|---|---|
+| `boleto_no_refund` | Fatura paga com boleto, nos dois gateways | `true` | `true` (`REFUND_BANK_SLIP`) |
+| `pix_partial_not_supported` | Iugu: valor pedido diferente do valor pago numa fatura Pix. Repita sem valor para estornar o total | `false` | `true` (`PARTIAL_REFUND_PIX`) |
+| `already_refunded` | Fatura já lida como `refunded` | `false` | `false` |
+| `amount_exceeds_refundable` | Valor pedido acima de `refundableAmount()` (o restante vai na mensagem). Repita com valor até o restante | `false` | `false` |
+| `refund_window_expired` | Iugu: depois do fim do 90º dia após `paidAt` | `true` | `false` |
 
 Uma fatura `partially_refunded` aceita novos estornos até zerar o restante; pedir exatamente
-o que resta é estorno integral. O restante é `paidAmount` na Iugu (que devolve `paid_cents`
-líquido do já estornado) e `paidAmount` menos `refundedAmount` na Stripe.
+o que resta é estorno integral. Valor zero ou negativo é recusado com
+`ModelAttributeValidationException` antes de qualquer requisição.
 
 **Custo da leitura prévia.** As guardas precisam do método de pagamento, do status, na Iugu da
-data de pagamento e, no estorno por valor, do quanto ainda pode ser estornado. Chamar `refundInvoice($id)` só com o id
-custa **um GET a mais** para ler a fatura antes do estorno, nos dois gateways; chamar
-`$invoice->refund()` num model já lido do gateway e pago não paga esse GET. No Stripe, o estorno
-por valor sobre uma fatura fora de `PAID` (por exemplo `partially_refunded`) relê a fatura mesmo
-com o model preenchido, porque o restante estornável depende do acumulado que o gateway guarda.
-Essa leitura não altera o model do chamador: ele só muda quando o estorno acontece.
+data de pagamento e, no estorno por valor, do quanto ainda pode ser estornado. Chamar
+`refundInvoice($id)` só com o id custa **um GET a mais** para ler a fatura antes do estorno, nos
+dois gateways; chamar `$invoice->refund()` num model já lido do gateway não paga esse GET,
+inclusive numa fatura `partially_refunded`, porque `refundedAmount` traz o acumulado que o
+gateway informou. Essa leitura não altera o model do chamador: ele só muda quando o estorno
+acontece.
 
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `refundInvoice()` e
 > `$invoice->refund()` devolviam a `Invoice` atualizada; agora devolvem o `Refund`, e a fatura
@@ -1432,9 +1497,17 @@ Essa leitura não altera o model do chamador: ele só muda quando o estorno acon
 > campo provisório `Invoice::$lastRefundId` foi removido: o id está em `$refund->id`. Na mesma
 > versão, estorno de boleto, Pix parcial, fatura já estornada, valor acima do restante e fora do
 > prazo de 90 dias na Iugu deixaram de ir até a API e voltar como `GatewayException`: lançam
-> `RefundNotSupportedException`, que herda de `UnsupportedOperationException` (e por ela de
-> `MultiPaymentException`), fora da árvore de `GatewayException`: um `catch (GatewayException $e)`
+> `RefundNotSupportedException`, que herda de `MultiPaymentException`, fora da árvore de
+> `GatewayException` e fora da de `UnsupportedOperationException`: um `catch (GatewayException $e)`
 > sozinho deixa de capturar esses casos.
+>
+> Ainda na 5.0.0, o valor do estorno virou argumento: `$invoice->refund(amount: 5000)` e
+> `refundInvoice(Invoice $invoice, ?int $amount, ?string $idempotencyKey)` no contract.
+> `Invoice::$refundedAmount` passou a ser só de leitura (o total já estornado, como o gateway
+> informa); escrever nela antes de chamar `refund()` continua funcionando como pedido de estorno
+> parcial, com aviso `E_USER_DEPRECATED`, e some em uma versão futura. Consequência: num model
+> lido do gateway já `partially_refunded`, `refund()` sem valor passou a estornar o restante em
+> vez de reenviar o acumulado como novo estorno parcial.
 
 #### charge (alternativa por array)
 
@@ -1502,10 +1575,12 @@ $invoice->dueDate;    // vencimento; $invoice->pixExpiresAt é a expiração do 
 #### Refund
 ```php
 $invoice = $payment->getInvoice($invoiceId);
-$invoice->refundedAmount = 5000;       // vazio: estorno integral
-$refund = $invoice->refund();          // Refund; $invoice já reflete o estado posterior
+$invoice->refundableAmount();          // quanto ainda pode ser estornado, em centavos
+$refund = $invoice->refund(5000);      // Refund; $invoice já reflete o estado posterior
+$refund = $invoice->refund();          // sem valor: o restante
 
 $refund->amount;                        // 5000
+$invoice->refundedAmount;               // total já estornado, só de leitura
 $invoice->refunds;                      // Refund[] (ver "Estorno")
 ```
 #### Subscription

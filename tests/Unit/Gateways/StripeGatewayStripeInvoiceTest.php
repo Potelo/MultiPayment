@@ -648,10 +648,13 @@ class StripeGatewayStripeInvoiceTest extends TestCase
 
         try {
             (new StripeGateway())->cancelInvoice($invoice);
-            $this->fail('Rascunho deveria lançar GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Rascunho deveria lançar UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
             $this->assertStringContainsString('rascunho', $e->getMessage());
             $this->assertStringContainsString('in_1UBHTnPjx0CusuMrjxjg8WhK', $e->getMessage());
+            $this->assertSame(Capability::INVOICE_CANCELLATION, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertNull($e->httpStatus);
         }
         $this->assertSame(['get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK'], self::calledPaths($httpClient));
     }
@@ -746,6 +749,26 @@ class StripeGatewayStripeInvoiceTest extends TestCase
             $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
             $this->assertTrue($e->isNotImplemented());
             $this->assertStringContainsString('chargeInvoiceWithCreditCard', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * `refundableAmount()` segue `refundInvoice()`: a fatura de assinatura é recusada antes de
+     * qualquer leitura, para o restante nunca prometer um estorno que o driver recusa.
+     */
+    public function testRefundableAmountRefusesAStripeInvoiceBeforeAnyRequest(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+
+        try {
+            (new StripeGateway())->refundableAmount($invoice);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
+            $this->assertTrue($e->isNotImplemented());
         }
         $this->assertSame([], $httpClient->calls);
     }

@@ -91,7 +91,7 @@ class StripeGatewayIdempotencyTest extends TestCase
             $refunded,
         ]);
 
-        $refund = (new StripeGateway())->refundInvoice(self::invoiceWithId(), 'chave-1');
+        $refund = (new StripeGateway())->refundInvoice(self::invoiceWithId(), null, 'chave-1');
 
         $this->assertSame('re_original', $refund->id);
         $this->assertSame('chave-1', $httpClient->header(1, 'Idempotency-Key'));
@@ -132,7 +132,7 @@ class StripeGatewayIdempotencyTest extends TestCase
         ]);
 
         try {
-            (new StripeGateway())->refundInvoice(self::invoiceWithId(), 'outra-chave');
+            (new StripeGateway())->refundInvoice(self::invoiceWithId(), null, 'outra-chave');
             $this->fail('Esperava RefundNotSupportedException');
         } catch (RefundNotSupportedException $e) {
             $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $e->reason);
@@ -190,7 +190,7 @@ class StripeGatewayIdempotencyTest extends TestCase
         $creditCard = self::creditCardModel();
         $creditCard->id = 'pm_fake123';
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(UnsupportedOperationException::class);
         $this->expectExceptionMessageMatches('/does not belong/');
 
         (new StripeGateway())->deleteCreditCard($creditCard);
@@ -321,7 +321,7 @@ class StripeGatewayIdempotencyTest extends TestCase
                 ['post /v1/payment_intents' => 'chave-1'],
             ],
             'refundInvoice' => [
-                fn (StripeGateway $g, ?string $key) => $g->refundInvoice(self::invoiceWithId(), $key),
+                fn (StripeGateway $g, ?string $key) => $g->refundInvoice(self::invoiceWithId(), null, $key),
                 [
                     self::paidCardPaymentIntentResponse(),
                     ['id' => 're_fake123', 'object' => 'refund', 'amount' => 12345, 'status' => 'pending', 'created' => 1786700100, 'reason' => null],

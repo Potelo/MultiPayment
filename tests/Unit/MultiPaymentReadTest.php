@@ -73,6 +73,30 @@ class MultiPaymentReadTest extends TestCase
     }
 
     /**
+     * `refundableAmount()` pela fachada lê a fatura e devolve o restante que o driver calcula.
+     */
+    public function testRefundableAmountReadsTheInvoiceAndReturnsTheRemainder(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) [
+                'id' => 'inv_1',
+                'status' => 'partially_refunded',
+                'total_cents' => 10000,
+                'paid_cents' => 7500,
+                'refunded_cents' => 2500,
+                'paid_at' => '2026-08-20T10:00:00-03:00',
+                'payment_method' => 'iugu_credit_card',
+                'items' => [],
+                'variables' => [],
+            ],
+        ]))->installAsSdkRequester();
+
+        $this->assertSame(7500, (new MultiPayment('iugu'))->refundableAmount('inv_1'));
+        $this->assertCount(1, $api->calls);
+        $this->assertStringEndsWith('/invoices/inv_1', $api->calls[0]['url']);
+    }
+
+    /**
      * O valor informado é buscado primeiro como identificador do plano.
      */
     public function testGetPlanReadsThePlanByItsIdentifier(): void

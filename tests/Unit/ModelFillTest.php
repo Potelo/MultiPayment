@@ -176,7 +176,7 @@ class ModelFillTest extends TestCase
         $this->assertSame(['description', 'price', 'quantity', 'gateway_options'], InvoiceItem::fillableKeys());
 
         $keys = Invoice::fillableKeys();
-        foreach (['id', 'status', 'amount', 'payment_method', 'available_payment_methods', 'origin_type', 'credit_card', 'due_date', 'pix_expires_at', 'gateway_options'] as $key) {
+        foreach (['id', 'status', 'amount', 'refunded_amount', 'payment_method', 'available_payment_methods', 'origin_type', 'credit_card', 'due_date', 'pix_expires_at', 'gateway_options'] as $key) {
             $this->assertContains($key, $keys);
         }
         // o nome antigo é alias, fora da lista, como `gateway_adicional_options`

@@ -7,6 +7,7 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\AcceptsUnknownValue;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ConfigurationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -26,6 +27,14 @@ abstract class Model implements \JsonSerializable
      * @var array<string, class-string<\BackedEnum>|array{0: class-string<\BackedEnum>}>
      */
     protected const ENUM_CASTS = [];
+
+    /**
+     * Propriedades `protected` que o model lê e escreve pelos próprios métodos mágicos, fora de
+     * `ENUM_CASTS`, e que `fill()`, `toArray()` e `fillableKeys()` tratam como públicas.
+     *
+     * @var string[]
+     */
+    protected const MAGIC_PROPERTIES = [];
 
     /**
      * Capability que o gateway precisa declarar para operar este model, ou nulo quando qualquer
@@ -246,14 +255,15 @@ abstract class Model implements \JsonSerializable
     /**
      * Salva o model no gateway: `create{Model}` sem `id`, `update{Model}` com `id` (sem
      * validação). A chave de idempotência vai para essa operação; o cliente salvo antes de uma
-     * fatura ou assinatura recebe a chave derivada `{chave}:customer`.
+     * fatura ou assinatura recebe a chave derivada `{chave}:customer`. Driver que declara a
+     * capability sem ter o método de despacho lança `ConfigurationException` antes da rede.
      *
      * @param  string|GatewayContract|null  $gateway
      * @param  bool  $validate
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return void
-     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException|\Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException|ConfigurationException
      * @throws UnsupportedOperationException
      */
     public function save(GatewayContract|string|null $gateway = null, bool $validate = true, ?string $idempotencyKey = null): void
@@ -274,7 +284,7 @@ abstract class Model implements \JsonSerializable
         $gatewayClass = ConfigurationHelper::resolveGateway($gateway);
         $this->assertGatewaySupports($gatewayClass);
         if (!method_exists($gatewayClass, $method)) {
-            throw GatewayException::methodNotFound(get_class($gatewayClass), $method);
+            throw ConfigurationException::GatewayMethodNotFound(get_class($gatewayClass), $method);
         }
         $gatewayClass->$method($this, $idempotencyKey);
     }
@@ -388,7 +398,7 @@ abstract class Model implements \JsonSerializable
                 self::warnGatewayAdicionalOptionsDeprecated();
                 $property = 'gatewayOptions';
             }
-            if (!property_exists($this, $property)) {
+            if (!static::isFillableProperty($property)) {
                 if (!str_starts_with($property, 'gateway') && ConfigurationHelper::strictFill()) {
                     throw ModelAttributeValidationException::unknownAttribute(
                         static::getClassName(),
@@ -403,8 +413,8 @@ abstract class Model implements \JsonSerializable
     }
 
     /**
-     * Chaves que `fill()` aceita, em `snake_case`: as propriedades públicas do model e as de
-     * enum (ver `ENUM_CASTS`), na ordem de declaração.
+     * Chaves que `fill()` aceita, em `snake_case`: as propriedades públicas do model, as de
+     * enum (ver `ENUM_CASTS`) e as de `MAGIC_PROPERTIES`, na ordem de declaração.
      *
      * @return string[]
      */
@@ -414,13 +424,41 @@ abstract class Model implements \JsonSerializable
         $reflect = new \ReflectionClass(static::class);
         foreach ($reflect->getProperties(\ReflectionProperty::IS_PUBLIC | \ReflectionProperty::IS_PROTECTED) as $prop) {
             $name = $prop->getName();
-            if ($prop->isStatic() || ($prop->isProtected() && !isset(static::ENUM_CASTS[$name]))) {
+            if ($prop->isStatic() || ($prop->isProtected() && !static::isMagicProperty($name))) {
                 continue;
             }
             $keys[] = self::snakeCase($name);
         }
 
         return $keys;
+    }
+
+    /**
+     * Diz se `fill()` pode escrever na propriedade: ela existe no model e é pública ou protegida
+     * (propriedade privada é estado interno e conta como chave desconhecida).
+     *
+     * @param  string  $property
+     * @return bool
+     */
+    private static function isFillableProperty(string $property): bool
+    {
+        if (!property_exists(static::class, $property)) {
+            return false;
+        }
+
+        return !(new \ReflectionProperty(static::class, $property))->isPrivate();
+    }
+
+    /**
+     * Diz se a propriedade `protected` é exposta pelos métodos mágicos do model (enum de
+     * `ENUM_CASTS` ou nome em `MAGIC_PROPERTIES`).
+     *
+     * @param  string  $name
+     * @return bool
+     */
+    protected static function isMagicProperty(string $name): bool
+    {
+        return isset(static::ENUM_CASTS[$name]) || in_array($name, static::MAGIC_PROPERTIES, true);
     }
 
     /**
@@ -436,7 +474,7 @@ abstract class Model implements \JsonSerializable
 
     /**
      * Convert the model instance to an array. Chave em `snake_case`; propriedade de enum sai
-     * como o valor de string do enum.
+     * como o valor de string do enum; propriedade de `MAGIC_PROPERTIES` sai como as públicas.
      *
      * @return array
      */
@@ -447,7 +485,7 @@ abstract class Model implements \JsonSerializable
         $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC | \ReflectionProperty::IS_PROTECTED);
         foreach ($props as $prop) {
             $name = $prop->getName();
-            if ($prop->isProtected() && !isset(static::ENUM_CASTS[$name])) {
+            if ($prop->isProtected() && !static::isMagicProperty($name)) {
                 continue;
             }
             if (!empty($this->{$name})) {
@@ -495,7 +533,7 @@ abstract class Model implements \JsonSerializable
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         $this->assertGatewaySupports($gateway);
         if (!method_exists($gateway, $method)) {
-            throw GatewayException::methodNotFound(get_class($gateway), $method);
+            throw ConfigurationException::GatewayMethodNotFound(get_class($gateway), $method);
         }
         return $gateway->$method($this);
     }
@@ -516,7 +554,7 @@ abstract class Model implements \JsonSerializable
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         $this->assertGatewaySupports($gateway);
         if (!method_exists($gateway, $method)) {
-            throw GatewayException::methodNotFound(get_class($gateway), $method);
+            throw ConfigurationException::GatewayMethodNotFound(get_class($gateway), $method);
         }
         $gateway->$method($this, $idempotencyKey);
     }

@@ -13,10 +13,12 @@ use Potelo\MultiPayment\Enums\Capability;
  * não estorna de novo, o valor pedido não pode passar do restante estornável e a Iugu fecha a
  * janela de estorno 90 dias após o pagamento. O motivo fica em `$reason`, no vocabulário do
  * pacote, para a aplicação ramificar sem ler a mensagem. `$capability` aponta a capability
- * recusada quando existe uma (`REFUND_BANK_SLIP`, `PARTIAL_REFUND_PIX`) e fica nula para
- * fatura já estornada, valor acima do restante e prazo vencido.
+ * recusada quando a recusa é limitação do gateway (`REFUND_BANK_SLIP`, `PARTIAL_REFUND_PIX`) e
+ * fica nula quando é estado da fatura (já estornada, valor acima do restante, prazo vencido);
+ * `isCapabilityLimitation()` separa os dois casos. Herda direto de `MultiPaymentException`:
+ * um `catch (UnsupportedOperationException)` não a captura.
  */
-class RefundNotSupportedException extends UnsupportedOperationException
+class RefundNotSupportedException extends MultiPaymentException
 {
     /** Boleto não tem estorno pela API do gateway; devolução manual. */
     public const REASON_BOLETO_NO_REFUND = 'boleto_no_refund';
@@ -59,6 +61,22 @@ class RefundNotSupportedException extends UnsupportedOperationException
     public bool $manualRefundRequired;
 
     /**
+     * Nome do gateway, como registrado na configuração; vazio quando a exceção foi criada
+     * sem ele.
+     *
+     * @var string
+     */
+    public string $gateway;
+
+    /**
+     * Capability que o gateway não oferece (`REFUND_BANK_SLIP`, `PARTIAL_REFUND_PIX`), ou nulo
+     * quando a recusa vem do estado da fatura.
+     *
+     * @var Capability|null
+     */
+    public ?Capability $capability;
+
+    /**
      * Cria a exceção com o motivo da recusa e a flag de devolução manual.
      *
      * @param  string  $message
@@ -79,9 +97,40 @@ class RefundNotSupportedException extends UnsupportedOperationException
         ?Capability $capability = null
     ) {
         $this->paymentMethod = $paymentMethod;
+        $this->reason = $reason;
         $this->manualRefundRequired = $manualRefundRequired;
+        $this->gateway = $gateway;
+        $this->capability = $capability;
 
-        parent::__construct($message, $gateway, $capability, $reason, $previous);
+        parent::__construct($message, $previous);
+    }
+
+    /**
+     * Diz se a recusa é limitação do gateway, descrita por `$capability` (boleto sem estorno,
+     * Pix sem estorno parcial). Falso quando a recusa vem do estado da fatura: já estornada,
+     * valor acima do restante ou prazo vencido.
+     *
+     * @return bool
+     */
+    public function isCapabilityLimitation(): bool
+    {
+        return !is_null($this->capability);
+    }
+
+    /**
+     * Sempre falso: nenhuma recusa de estorno é uma capability que a lib ainda não implementou.
+     *
+     * @deprecated desde 2026-09-02, sem substituto; responde sempre falso.
+     * @return bool
+     */
+    public function isNotImplemented(): bool
+    {
+        trigger_error(
+            'RefundNotSupportedException::isNotImplemented() está obsoleto desde 2026-09-02 e responde sempre falso',
+            E_USER_DEPRECATED
+        );
+
+        return false;
     }
 
     /**

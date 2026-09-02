@@ -1348,8 +1348,8 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         try {
             (new IuguGateway($api))->createPlan($plan);
-            $this->fail('Expected GatewayException');
-        } catch (GatewayException $e) {
+            $this->fail('Expected ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
             $this->assertMatchesRegularExpression($message, $e->getMessage());
         }
 
@@ -1760,7 +1760,7 @@ class IuguGatewaySubscriptionTest extends TestCase
             'trial_ends_at' => '2026-09-15',
         ]);
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches('/same field/');
 
         (new IuguGateway(new QueuedIuguApiRequest([])))->createSubscription($subscription);
@@ -1901,7 +1901,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $customer->id = 'cus_1';
         $gateway = new IuguGateway(new QueuedIuguApiRequest([]));
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches($mensagem);
 
         $gateway->listSubscriptions($customer, $page, $limit);
@@ -1912,7 +1912,7 @@ class IuguGatewaySubscriptionTest extends TestCase
     {
         $gateway = new IuguGateway(new QueuedIuguApiRequest([]));
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches(str_replace('Subscription', 'Plan', $mensagem));
 
         $gateway->listPlans($page, $limit);
@@ -2090,7 +2090,7 @@ class IuguGatewaySubscriptionTest extends TestCase
             'trial_ends_at' => '2026-09-15',
         ]);
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches('/different dates/');
 
         (new IuguGateway(new QueuedIuguApiRequest([])))->createSubscription($subscription);
@@ -2896,7 +2896,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1'], 'trial_days' => 7, 'next_billing_at' => '2026-10-01']);
 
-        $this->expectException(GatewayException::class);
+        $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches('/trialEndsAt \(or trialDays\)/');
 
         (new IuguGateway($api))->createSubscription($subscription);

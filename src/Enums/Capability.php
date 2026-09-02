@@ -48,6 +48,9 @@ enum Capability: string
     /** Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). */
     case INVOICE_DUPLICATION = 'invoice_duplication';
 
+    /** Cancelamento de uma fatura ainda não paga (`cancelInvoice`). */
+    case INVOICE_CANCELLATION = 'invoice_cancellation';
+
     /**
      * Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo
      * gateway ou pela deduplicação da lib (`IdempotencyStore`).

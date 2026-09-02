@@ -10,7 +10,6 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Facades\MultiPayment;
-use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ChargingException;
@@ -184,7 +183,7 @@ class StripeGatewayTest extends TestCase
         MultiPayment::setGateway($gateway)->deleteCard($customer->id, $creditCard->id);
 
         // após o detach o PaymentMethod não pertence mais ao customer
-        $this->expectException(GatewayException::class);
+        $this->expectException(UnsupportedOperationException::class);
         MultiPayment::setGateway($gateway)->getCard($customer->id, $creditCard->id);
     }
 
