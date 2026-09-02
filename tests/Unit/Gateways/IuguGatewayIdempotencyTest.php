@@ -842,7 +842,7 @@ class IuguGatewayIdempotencyTest extends TestCase
         $invoice = new Invoice();
         $invoice->customer = self::customerWithId();
         $invoice->availablePaymentMethods = [PaymentMethod::PIX];
-        $invoice->expiresAt = Carbon::parse('2026-10-01');
+        $invoice->dueDate = Carbon::parse('2026-10-01');
         $item = new InvoiceItem();
         $item->description = 'Item';
         $item->price = 10000;

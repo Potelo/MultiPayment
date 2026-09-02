@@ -41,7 +41,7 @@ class MultiPaymentTest extends TestCase
                 '982345678'
             )
             ->addItem('Automatic Pix sandbox test', 100, 1)
-            ->setExpiresAt(now()->addDays(2))
+            ->setDueDate(now()->addDays(2))
             ->addAutomaticPix(
                 AutomaticPix::AUTHORIZATION_TYPE_QR_CODE_WITH_PAYMENT,
                 AutomaticPix::FREQUENCY_MONTHLY,
@@ -280,7 +280,7 @@ class MultiPaymentTest extends TestCase
         $new = $multiPayment->duplicateInvoice($invoice->id, now()->addDays(7));
         $this->assertNotEquals($new->id, $invoice->id);
         $this->assertEquals($new->status, InvoiceStatus::PENDING);
-        $this->assertTrue($new->expiresAt->isSameDay((now()->addDays(7))));
+        $this->assertTrue($new->dueDate->isSameDay((now()->addDays(7))));
 
     }
 
@@ -497,5 +497,33 @@ class MultiPaymentTest extends TestCase
                 'creditCardDataMethod' => 'id',
             ],
         ];
+    }
+
+    /**
+     * `pixExpiresAt` vai em `pix_qr_code_expires_at` e a Iugu aceita a fatura; `dueDate`
+     * ausente vira o dia em que o QR Code expira. A Iugu não devolve o campo na fatura, então
+     * a releitura só confirma o vencimento.
+     *
+     * @return void
+     */
+    public function testShouldCreateAPixInvoiceWithItsOwnQrCodeExpiryOnIugu(): void
+    {
+        $pixExpiresAt = now()->addDays(2)->setTime(18, 0);
+        $invoice = MultiPayment::setGateway('iugu')->newInvoice()
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
+            ->addItem('teste', 1000, 1)
+            ->setPixExpiresAt($pixExpiresAt)
+            ->create();
+
+        $this->assertSame(InvoiceStatus::PENDING, $invoice->status);
+        $this->assertSame([PaymentMethod::PIX], $invoice->availablePaymentMethods);
+        $this->assertNotEmpty($invoice->pix->qrCodeText);
+        $this->assertSame($pixExpiresAt->format('Y-m-d'), $invoice->dueDate->format('Y-m-d'));
+
+        $relida = MultiPayment::setGateway('iugu')->getInvoice($invoice->id);
+        $this->assertSame($pixExpiresAt->format('Y-m-d'), $relida->dueDate->format('Y-m-d'));
+
+        MultiPayment::setGateway('iugu')->cancelInvoice($invoice->id);
     }
 }

@@ -56,14 +56,28 @@ class Subscription extends Model
     protected const REQUIRED_CAPABILITY = Capability::SUBSCRIPTIONS;
 
     /**
-     * Além de `SUBSCRIPTIONS`, a assinatura precisa de `NATIVE_COUPONS` quando algum desconto é
-     * percentual ou limitado a mais de um ciclo.
+     * Além de `SUBSCRIPTIONS`, a assinatura precisa da capability de cada método de
+     * `resolvedPaymentMethods()` (e de `MULTIPLE_PAYMENT_METHODS` quando há mais de um), de
+     * `RAW_CARD_DATA` quando o cartão vem com os dados crus (sem `id` nem `token`) e de
+     * `NATIVE_COUPONS` quando algum desconto é percentual ou limitado a mais de um ciclo.
      *
      * @return Capability[]
+     * @throws ModelAttributeValidationException  método de pagamento fora de `PaymentMethod::selectable()`
      */
     public function requiredCapabilities(): array
     {
         $capabilities = parent::requiredCapabilities();
+
+        $methods = $this->resolvedPaymentMethods();
+        foreach ($methods as $method) {
+            $capabilities[] = Capability::forPaymentMethod($method);
+        }
+        if (count($methods) > 1) {
+            $capabilities[] = Capability::MULTIPLE_PAYMENT_METHODS;
+        }
+        if (!empty($this->creditCard) && empty($this->creditCard->id) && empty($this->creditCard->token)) {
+            $capabilities[] = Capability::RAW_CARD_DATA;
+        }
 
         foreach ($this->discounts ?? [] as $discount) {
             if (
@@ -117,6 +131,10 @@ class Subscription extends Model
     public ?int $amount = null;
 
     /**
+     * Método com que a assinatura é cobrada. Na escrita, quando `availablePaymentMethods` fica
+     * vazia, o driver a deriva dele; na leitura é preenchido quando a assinatura aceita um
+     * único método.
+     *
      * @var PaymentMethod|null
      */
     protected ?PaymentMethod $paymentMethod = null;
@@ -125,6 +143,25 @@ class Subscription extends Model
      * @var PaymentMethod[]|null
      */
     protected ?array $availablePaymentMethods = null;
+
+    /**
+     * Cartão que a assinatura cobra. Informar o cartão implica `paymentMethod` de cartão.
+     * Cartão sem `id` (token ou dados crus) é salvo no cliente ao criar a assinatura. Na Iugu
+     * a assinatura cobra o cartão padrão do cliente, então o cartão informado passa a ser o
+     * padrão; a leitura não o preenche.
+     *
+     * @var CreditCard|null
+     */
+    public ?CreditCard $creditCard = null;
+
+    /**
+     * Duração do período de teste em dias, contada do momento da requisição. O driver a
+     * converte em `trialEndsAt` e a zera, então o model devolvido traz a data; incompatível
+     * com `trialEndsAt` preenchido.
+     *
+     * @var int|null
+     */
+    public ?int $trialDays = null;
 
     /**
      * @var Carbon|null
@@ -213,6 +250,12 @@ class Subscription extends Model
             $data['customer'] = $customer;
         }
 
+        if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
+            $creditCard = new CreditCard();
+            $creditCard->fill($data['credit_card']);
+            $data['credit_card'] = $creditCard;
+        }
+
         if (!empty($data['latest_invoice']) && is_array($data['latest_invoice'])) {
             $invoice = new Invoice();
             $invoice->fill($data['latest_invoice']);
@@ -272,13 +315,91 @@ class Subscription extends Model
             }
         }
 
-        foreach (['customer', 'latest_invoice'] as $key) {
+        foreach (['customer', 'credit_card', 'latest_invoice'] as $key) {
             if (!empty($array[$key])) {
                 $array[$key] = $array[$key]->toArray();
             }
         }
 
         return $array;
+    }
+
+    /**
+     * Método de pagamento com que a assinatura será criada quando `availablePaymentMethods`
+     * está vazia: `paymentMethod` quando informado; senão cartão, quando `creditCard` foi
+     * informado; senão nulo (o gateway usa o padrão dele).
+     *
+     * @return PaymentMethod|null
+     */
+    public function resolvedPaymentMethod(): ?PaymentMethod
+    {
+        if (!is_null($this->paymentMethod)) {
+            return $this->paymentMethod;
+        }
+
+        return !empty($this->creditCard) ? PaymentMethod::CREDIT_CARD : null;
+    }
+
+    /**
+     * Métodos de pagamento com que a assinatura será criada, na ordem de precedência que os
+     * drivers seguem: `availablePaymentMethods` quando preenchida (normalizada, porque uma
+     * string apensada por `[]=` entra no array sem conversão); senão o método de
+     * `resolvedPaymentMethod()`; senão lista vazia. Lança `ModelAttributeValidationException`
+     * para valor fora de `PaymentMethod::selectable()`, para `paymentMethod` fora da lista
+     * informada e para `creditCard` sem cartão entre os métodos resultantes (num model lido do
+     * gateway a lista vem preenchida: para trocar o método, troque a lista ou a zere).
+     *
+     * @return PaymentMethod[]
+     * @throws ModelAttributeValidationException
+     */
+    public function resolvedPaymentMethods(): array
+    {
+        if (!is_null($this->paymentMethod)) {
+            $this->validatePaymentMethodAttribute();
+        }
+
+        if (!empty($this->availablePaymentMethods)) {
+            $methods = array_values(array_unique(
+                PaymentMethod::normalizeSelectable($this->availablePaymentMethods, $this->getClassName()),
+                SORT_REGULAR
+            ));
+            Invoice::assertPaymentMethodIsListed($this->getClassName(), $this->paymentMethod, $methods);
+        } else {
+            $method = $this->resolvedPaymentMethod();
+            $methods = is_null($method) ? [] : [$method];
+        }
+
+        Invoice::assertCreditCardIsPayable($this->getClassName(), $this->creditCard, $methods);
+
+        return $methods;
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateCreditCardAttribute(): void
+    {
+        $this->creditCard->validate();
+    }
+
+    /**
+     * Na escrita, `paymentMethod` precisa ser um método selecionável
+     * (`PaymentMethod::selectable()`).
+     *
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validatePaymentMethodAttribute(): void
+    {
+        if (!in_array($this->paymentMethod, PaymentMethod::selectable(), true)) {
+            $accepted = implode(', ', array_column(PaymentMethod::selectable(), 'value'));
+            throw ModelAttributeValidationException::invalid(
+                $this->getClassName(),
+                'paymentMethod',
+                "paymentMethod must be one of: {$accepted}"
+            );
+        }
     }
 
     /**
@@ -349,13 +470,36 @@ class Subscription extends Model
      */
     protected function attributesExtraValidation(array $attributes): void
     {
+        $model = $this->getClassName();
+
+        // zero é vazio para o validate() do Model, então o mínimo não pode depender de
+        // validateTrialDaysAttribute()
+        if (in_array('trialDays', $attributes) && !is_null($this->trialDays) && $this->trialDays < 1) {
+            throw ModelAttributeValidationException::invalid($model, 'trialDays', 'trialDays must be at least 1');
+        }
+
+        if (
+            in_array('trialDays', $attributes)
+            && in_array('trialEndsAt', $attributes)
+            && !is_null($this->trialDays)
+            && !empty($this->trialEndsAt)
+        ) {
+            throw ModelAttributeValidationException::invalid(
+                $model,
+                'trialDays',
+                'trialDays and trialEndsAt are mutually exclusive'
+            );
+        }
+
+        if (in_array('paymentMethod', $attributes) && in_array('creditCard', $attributes)) {
+            $this->resolvedPaymentMethods();
+        }
+
         // com id preenchido é update, que aceita atributo parcial: cliente e plano não vão no
         // payload e não são exigidos
         if (!empty($this->id)) {
             return;
         }
-
-        $model = $this->getClassName();
 
         if (in_array('customer', $attributes) && empty($this->customer)) {
             throw ModelAttributeValidationException::required($model, 'customer');

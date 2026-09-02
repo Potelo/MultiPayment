@@ -7,6 +7,7 @@ use Carbon\Carbon;
 use PHPUnit\Framework\TestCase;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\Subscription;
@@ -677,5 +678,155 @@ class SubscriptionTest extends TestCase
             'assinaturas' => ['listSubscriptions', ['cus_1'], Capability::SUBSCRIPTIONS],
             'planos' => ['listPlans', [], Capability::PLANS],
         ];
+    }
+
+    public function testBuilderSetsTheCardByIdAndImpliesTheCardPaymentMethod(): void
+    {
+        $subscription = (new SubscriptionBuilder(Mockery::mock(GatewayContract::class)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setCreditCard('pm_1')
+            ->setTrialDays(7)
+            ->get();
+
+        $this->assertInstanceOf(CreditCard::class, $subscription->creditCard);
+        $this->assertSame('pm_1', $subscription->creditCard->id);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $subscription->paymentMethod);
+        $this->assertSame(7, $subscription->trialDays);
+        $this->assertNull($subscription->trialEndsAt);
+    }
+
+    public function testBuilderSetsTheCardByModelAndThePaymentMethodByString(): void
+    {
+        $card = new CreditCard();
+        $card->token = 'tok_1';
+
+        $subscription = (new SubscriptionBuilder(Mockery::mock(GatewayContract::class)))
+            ->setCreditCard($card)
+            ->get();
+        $this->assertSame($card, $subscription->creditCard);
+
+        $pix = (new SubscriptionBuilder(Mockery::mock(GatewayContract::class)))
+            ->setPaymentMethod('pix')
+            ->get();
+        $this->assertSame(PaymentMethod::PIX, $pix->paymentMethod);
+        $this->assertNull($pix->creditCard);
+    }
+
+    public function testResolvedPaymentMethodFallsBackToTheCard(): void
+    {
+        $subscription = new Subscription();
+        $this->assertNull($subscription->resolvedPaymentMethod());
+
+        $subscription->creditCard = new CreditCard();
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $subscription->resolvedPaymentMethod());
+
+        $subscription->paymentMethod = PaymentMethod::CREDIT_CARD;
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $subscription->resolvedPaymentMethod());
+    }
+
+    public function testFillAndToArrayHandleTheCreditCard(): void
+    {
+        $subscription = new Subscription();
+        $subscription->fill(['credit_card' => ['id' => 'pm_1'], 'trial_days' => 3]);
+
+        $this->assertSame('pm_1', $subscription->creditCard->id);
+        $this->assertSame(3, $subscription->trialDays);
+        $this->assertSame('pm_1', $subscription->toArray()['credit_card']['id']);
+        $this->assertSame(3, $subscription->toArray()['trial_days']);
+    }
+
+    #[DataProvider('invalidSubscriptionProvider')]
+    public function testValidationRejectsConflictingPaymentAndTrialAttributes(callable $mutate, string $message): void
+    {
+        $subscription = new Subscription();
+        $subscription->fill(['customer' => ['name' => 'Fulano'], 'plan_id' => 'plano']);
+        $mutate($subscription);
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches($message);
+
+        $subscription->validate();
+    }
+
+    public static function invalidSubscriptionProvider(): array
+    {
+        return [
+            'trialDays zero' => [fn (Subscription $s) => $s->trialDays = 0, '/trialDays must be at least 1/'],
+            'trialDays negativo' => [fn (Subscription $s) => $s->trialDays = -1, '/trialDays must be at least 1/'],
+            'trialDays com trialEndsAt' => [
+                function (Subscription $s) {
+                    $s->trialDays = 7;
+                    $s->trialEndsAt = Carbon::parse('2026-10-01');
+                },
+                '/trialDays and trialEndsAt are mutually exclusive/',
+            ],
+            'cartao com metodo pix' => [
+                function (Subscription $s) {
+                    $s->creditCard = new CreditCard();
+                    $s->creditCard->id = 'pm_1';
+                    $s->paymentMethod = PaymentMethod::PIX;
+                },
+                '/creditCard was given but credit_card is not among the payment methods/',
+            ],
+            'cartao com lista sem cartao' => [
+                function (Subscription $s) {
+                    $s->creditCard = new CreditCard();
+                    $s->creditCard->id = 'pm_1';
+                    $s->availablePaymentMethods = [PaymentMethod::PIX];
+                },
+                '/creditCard was given but credit_card is not among the payment methods/',
+            ],
+            'metodo fora da lista' => [
+                function (Subscription $s) {
+                    $s->paymentMethod = PaymentMethod::CREDIT_CARD;
+                    $s->availablePaymentMethods = [PaymentMethod::PIX];
+                },
+                '/paymentMethod \[credit_card\] must be one of availablePaymentMethods/',
+            ],
+            'metodo nao selecionavel' => [
+                fn (Subscription $s) => $s->paymentMethod = PaymentMethod::AUTOMATIC_PIX,
+                '/paymentMethod must be one of: credit_card, bank_slip, pix/',
+            ],
+            'cartao invalido' => [
+                function (Subscription $s) {
+                    $s->creditCard = new CreditCard();
+                    $s->creditCard->number = '123';
+                },
+                '/CreditCard number/',
+            ],
+        ];
+    }
+
+    public function testRequiredCapabilitiesDeriveFromThePaymentMethodAndTheCard(): void
+    {
+        $subscription = new Subscription();
+        $this->assertSame([Capability::SUBSCRIPTIONS], $subscription->requiredCapabilities());
+
+        $subscription->paymentMethod = PaymentMethod::PIX;
+        $this->assertSame([Capability::SUBSCRIPTIONS, Capability::PIX], $subscription->requiredCapabilities());
+
+        $rawCard = new Subscription();
+        $rawCard->creditCard = new CreditCard();
+        $rawCard->creditCard->number = '4111111111111111';
+        $this->assertSame(
+            [Capability::SUBSCRIPTIONS, Capability::CREDIT_CARD, Capability::RAW_CARD_DATA],
+            $rawCard->requiredCapabilities()
+        );
+
+        $tokenCard = new Subscription();
+        $tokenCard->creditCard = new CreditCard();
+        $tokenCard->creditCard->token = 'tok_1';
+        $this->assertSame([Capability::SUBSCRIPTIONS, Capability::CREDIT_CARD], $tokenCard->requiredCapabilities());
+
+        // a lista tem precedência sobre o método, e mais de um método exige MULTIPLE_PAYMENT_METHODS
+        $list = new Subscription();
+        $list->paymentMethod = PaymentMethod::PIX;
+        $list->availablePaymentMethods = [PaymentMethod::PIX, PaymentMethod::BANK_SLIP];
+        $this->assertSame(
+            [Capability::SUBSCRIPTIONS, Capability::PIX, Capability::BANK_SLIP, Capability::MULTIPLE_PAYMENT_METHODS],
+            $list->requiredCapabilities()
+        );
+        $this->assertSame([PaymentMethod::PIX, PaymentMethod::BANK_SLIP], $list->resolvedPaymentMethods());
     }
 }

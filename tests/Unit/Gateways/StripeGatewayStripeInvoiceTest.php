@@ -79,7 +79,8 @@ class StripeGatewayStripeInvoiceTest extends TestCase
         $this->assertNull($result->paidAt);
         $this->assertNull($result->fee);
         $this->assertSame(1788368263, $result->createdAt->getTimestamp());
-        $this->assertNull($result->expiresAt);
+        $this->assertNull($result->dueDate);
+        $this->assertNull($result->pixExpiresAt);
         $this->assertStringStartsWith('https://invoice.stripe.com/i/', $result->url);
         $this->assertSame('cus_VBen1v8T4Qa6XX', $result->customer->id);
         $this->assertSame(PaymentMethod::CREDIT_CARD, $result->paymentMethod);
@@ -122,7 +123,7 @@ class StripeGatewayStripeInvoiceTest extends TestCase
         $this->assertSame([1000, 3], [$items[1]->price, $items[1]->quantity]);
     }
 
-    public function testDueDateBecomesExpiresAt(): void
+    public function testDueDateBecomesDueDate(): void
     {
         $response = self::fixture('invoices/open_requires_payment_method');
         $response['due_date'] = 1789000000;
@@ -130,8 +131,9 @@ class StripeGatewayStripeInvoiceTest extends TestCase
 
         $result = $this->getInvoice('in_1UBHTnPjx0CusuMrjxjg8WhK');
 
-        $this->assertInstanceOf(Carbon::class, $result->expiresAt);
-        $this->assertSame(1789000000, $result->expiresAt->getTimestamp());
+        $this->assertInstanceOf(Carbon::class, $result->dueDate);
+        $this->assertSame(1789000000, $result->dueDate->getTimestamp());
+        $this->assertNull($result->pixExpiresAt);
     }
 
     public function testGetInvoiceWithAPaymentIntentIdKeepsThePaymentIntentOrigin(): void
@@ -580,12 +582,13 @@ class StripeGatewayStripeInvoiceTest extends TestCase
     }
 
     /**
-     * Fatura de assinatura paga por Pix: o QR Code vem do PaymentIntent e `url` continua sendo
-     * a página hospedada da fatura.
+     * Fatura de assinatura paga por Pix: o QR Code e a expiração dele vêm do PaymentIntent, o
+     * vencimento vem da fatura e `url` continua sendo a página hospedada da fatura.
      */
     public function testPixQrCodeComesFromThePaymentIntentAndUrlStaysTheHostedInvoicePage(): void
     {
         $response = self::fixture('invoices/open_requires_payment_method');
+        $response['due_date'] = 1789000000;
         $paymentIntent = &$response['payments']['data'][0]['payment']['payment_intent'];
         $paymentIntent['status'] = 'requires_action';
         $paymentIntent['payment_method_types'] = ['pix'];
@@ -607,7 +610,8 @@ class StripeGatewayStripeInvoiceTest extends TestCase
         $this->assertSame(PaymentMethod::PIX, $result->paymentMethod);
         $this->assertSame('00020126pixcopiaecola', $result->pix->qrCodeText);
         $this->assertSame('https://qr.stripe.com/test.png', $result->pix->qrCodeImageUrl);
-        $this->assertSame(1788400000, $result->expiresAt->getTimestamp());
+        $this->assertSame(1788400000, $result->pixExpiresAt->getTimestamp());
+        $this->assertSame(1789000000, $result->dueDate->getTimestamp());
         $this->assertStringStartsWith('https://invoice.stripe.com/i/', $result->url);
     }
 

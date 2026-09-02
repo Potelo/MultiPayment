@@ -22,6 +22,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
  * @property PaymentMethod|null $paymentMethod Método com que a fatura foi (ou será) paga.
  * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela fatura.
  * @property InvoiceOriginType|null $originType Objeto do gateway de onde a fatura foi lida (`PAYMENT_INTENT` ou `INVOICE`); `original` guarda esse objeto.
+ * @property Carbon|null $expiresAt Obsoleto desde 2026-09-02, use `$dueDate`. Alias que lê e escreve a mesma data, com aviso de deprecação.
  */
 class Invoice extends Model
 {
@@ -155,9 +156,23 @@ class Invoice extends Model
     public ?AutomaticPixCharge $automaticPixCharge = null;
 
     /**
+     * Data de vencimento da fatura. Na Iugu é o `due_date` (o dia; a fatura vencida continua
+     * pagável); no Stripe é o `due_date` da fatura de assinatura e, na venda avulsa por Pix sem
+     * `pixExpiresAt`, o fim desse dia vira a expiração do QR Code.
+     *
      * @var Carbon|null
      */
-    public ?Carbon $expiresAt = null;
+    public ?Carbon $dueDate = null;
+
+    /**
+     * Instante em que o QR Code do Pix deixa de aceitar pagamento. No Stripe vai em
+     * `payment_method_options.pix.expires_at` (entre 10 segundos e 14 dias no futuro) e volta
+     * na leitura; na Iugu vai em `pix_qr_code_expires_at` e a leitura só o preenche quando a
+     * fatura o devolve.
+     *
+     * @var Carbon|null
+     */
+    public ?Carbon $pixExpiresAt = null;
 
     /**
      * @var int|null
@@ -221,8 +236,18 @@ class Invoice extends Model
         }
 
         if (!empty($data['expires_at'])) {
-            $this->expiresAt = Carbon::createFromFormat('Y-m-d', $data['expires_at']);
+            self::warnExpiresAtDeprecated();
+            $data['due_date'] = $data['due_date'] ?? $data['expires_at'];
             unset($data['expires_at']);
+        }
+
+        foreach (['due_date' => 'dueDate', 'pix_expires_at' => 'pixExpiresAt'] as $key => $attribute) {
+            if (!empty($data[$key])) {
+                $this->{$attribute} = $data[$key] instanceof Carbon
+                    ? $data[$key]
+                    : Carbon::parse($data[$key]);
+                unset($data[$key]);
+            }
         }
 
         if (!empty($data['credit_card']) && is_array($data['credit_card'])) {
@@ -259,6 +284,61 @@ class Invoice extends Model
 
         if (in_array('amount', $attributes) && in_array('items', $attributes) && empty($this->amount) && empty($this->items)) {
             throw ModelAttributeValidationException::required($model, 'amount or items');
+        }
+
+        if (in_array('paymentMethod', $attributes) && in_array('creditCard', $attributes)) {
+            $this->resolvedPaymentMethods();
+        }
+
+        if (
+            in_array('amount', $attributes)
+            && in_array('items', $attributes)
+            && !empty($this->amount)
+            && !empty($this->items)
+            && $this->amount !== $this->itemsTotal()
+        ) {
+            throw ModelAttributeValidationException::invalid(
+                $model,
+                'amount',
+                "amount [{$this->amount}] must equal the sum of the items [{$this->itemsTotal()}]; omit it when items are given"
+            );
+        }
+    }
+
+    /**
+     * Soma dos itens (`price` vezes `quantity`, com quantidade 1 quando ausente), em centavos.
+     *
+     * @return int
+     */
+    public function itemsTotal(): int
+    {
+        $total = 0;
+        foreach ($this->items ?? [] as $item) {
+            if ($item instanceof InvoiceItem) {
+                $total += (int) $item->price * (int) ($item->quantity ?? 1);
+            }
+        }
+
+        return $total;
+    }
+
+    /**
+     * Na escrita, `paymentMethod` precisa ser um método selecionável
+     * (`PaymentMethod::selectable()`); Pix Automático entra pela lista com `PIX` e por
+     * `automaticPix`.
+     *
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validatePaymentMethodAttribute(): void
+    {
+        if (!in_array($this->paymentMethod, PaymentMethod::selectable(), true)) {
+            $accepted = implode(', ', array_column(PaymentMethod::selectable(), 'value'));
+            throw ModelAttributeValidationException::invalid(
+                $this->getClassName(),
+                'paymentMethod',
+                "paymentMethod must be one of: {$accepted}"
+            );
         }
     }
 
@@ -342,15 +422,92 @@ class Invoice extends Model
     }
 
     /**
+     * Métodos de pagamento com que a fatura será criada, na ordem de precedência que os
+     * drivers seguem: `availablePaymentMethods` quando preenchida (normalizada, porque uma
+     * string apensada por `[]=` entra no array sem conversão); senão `paymentMethod`; senão
+     * cartão, quando só `creditCard` foi informado. Lista vazia quando nada foi informado (a
+     * Iugu abre a fatura a todos os métodos da conta; o Stripe exige um). Lança
+     * `ModelAttributeValidationException` para valor fora de `PaymentMethod::selectable()`,
+     * para `paymentMethod` fora da lista informada e para `creditCard` sem cartão entre os
+     * métodos resultantes.
+     *
+     * @return PaymentMethod[]
+     * @throws ModelAttributeValidationException
+     */
+    public function resolvedPaymentMethods(): array
+    {
+        if (!is_null($this->paymentMethod)) {
+            $this->validatePaymentMethodAttribute();
+        }
+
+        if (!empty($this->availablePaymentMethods)) {
+            $methods = array_values(array_unique(
+                PaymentMethod::normalizeSelectable($this->availablePaymentMethods, $this->getClassName()),
+                SORT_REGULAR
+            ));
+            self::assertPaymentMethodIsListed($this->getClassName(), $this->paymentMethod, $methods);
+        } elseif (!is_null($this->paymentMethod)) {
+            $methods = [$this->paymentMethod];
+        } else {
+            $methods = !empty($this->creditCard) ? [PaymentMethod::CREDIT_CARD] : [];
+        }
+
+        self::assertCreditCardIsPayable($this->getClassName(), $this->creditCard, $methods);
+
+        return $methods;
+    }
+
+    /**
+     * Lança `ModelAttributeValidationException` quando `paymentMethod` está preenchido e não
+     * consta da lista de métodos informada.
+     *
+     * @param  string  $model
+     * @param  PaymentMethod|null  $paymentMethod
+     * @param  PaymentMethod[]  $methods
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public static function assertPaymentMethodIsListed(string $model, ?PaymentMethod $paymentMethod, array $methods): void
+    {
+        if (!is_null($paymentMethod) && !in_array($paymentMethod, $methods, true)) {
+            throw ModelAttributeValidationException::invalid(
+                $model,
+                'paymentMethod',
+                "paymentMethod [{$paymentMethod->value}] must be one of availablePaymentMethods; change the list or leave it empty"
+            );
+        }
+    }
+
+    /**
+     * Lança `ModelAttributeValidationException` quando há cartão informado e cartão não está
+     * entre os métodos com que a fatura ou a assinatura será criada.
+     *
+     * @param  string  $model
+     * @param  CreditCard|null  $creditCard
+     * @param  PaymentMethod[]  $methods
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public static function assertCreditCardIsPayable(string $model, ?CreditCard $creditCard, array $methods): void
+    {
+        if (!empty($creditCard) && !in_array(PaymentMethod::CREDIT_CARD, $methods, true)) {
+            throw ModelAttributeValidationException::invalid(
+                $model,
+                'creditCard',
+                'creditCard was given but credit_card is not among the payment methods; add it or remove the card'
+            );
+        }
+    }
+
+    /**
      * Na criação, além do que o `Model` exige, a fatura precisa da capability de cada método
-     * selecionável em `availablePaymentMethods` (ou de cartão, quando só `creditCard` foi
-     * informado), de `MULTIPLE_PAYMENT_METHODS` quando há mais de um método, de
+     * de `resolvedPaymentMethods()`, de `MULTIPLE_PAYMENT_METHODS` quando há mais de um, de
      * `AUTOMATIC_PIX` quando `automaticPix` está preenchido e de `RAW_CARD_DATA` quando o
-     * cartão vem com os dados crus (sem `id` nem `token`). Valor fora de
-     * `PaymentMethod::selectable()` fica para a validação. Com `id` preenchido, só o que o
+     * cartão vem com os dados crus (sem `id` nem `token`). Com `id` preenchido, só o que o
      * `Model` exige.
      *
      * @return Capability[]
+     * @throws ModelAttributeValidationException  método de pagamento fora de `PaymentMethod::selectable()`
      */
     public function requiredCapabilities(): array
     {
@@ -359,17 +516,7 @@ class Invoice extends Model
             return $capabilities;
         }
 
-        $methods = [];
-        foreach ((array) ($this->availablePaymentMethods ?? []) as $method) {
-            $case = $method instanceof PaymentMethod ? $method : (is_string($method) ? PaymentMethod::tryFrom($method) : null);
-            if (!is_null($case) && in_array($case, PaymentMethod::selectable(), true)) {
-                $methods[] = $case;
-            }
-        }
-
-        if (empty($methods) && !empty($this->creditCard)) {
-            $methods[] = PaymentMethod::CREDIT_CARD;
-        }
+        $methods = $this->resolvedPaymentMethods();
 
         foreach ($methods as $method) {
             $capabilities[] = Capability::forPaymentMethod($method);
@@ -421,6 +568,74 @@ class Invoice extends Model
         );
 
         return self::statusFromHelperArgument($status)?->isContested() ?? false;
+    }
+
+    /**
+     * Resolve a leitura do nome antigo `expiresAt` para `dueDate`, com aviso de deprecação;
+     * os demais nomes seguem o `Model`.
+     *
+     * @param  string  $name
+     * @return mixed
+     */
+    public function &__get(string $name): mixed
+    {
+        if ($name === 'expiresAt') {
+            self::warnExpiresAtDeprecated();
+
+            return $this->dueDate;
+        }
+
+        $value = &parent::__get($name);
+
+        return $value;
+    }
+
+    /**
+     * Resolve a escrita no nome antigo `expiresAt` para `dueDate`, com aviso de deprecação; os
+     * demais nomes seguem o `Model`.
+     *
+     * @param  string  $name
+     * @param  mixed  $value
+     * @return void
+     */
+    public function __set(string $name, mixed $value): void
+    {
+        if ($name === 'expiresAt') {
+            self::warnExpiresAtDeprecated();
+            $this->dueDate = $value;
+
+            return;
+        }
+
+        parent::__set($name, $value);
+    }
+
+    /**
+     * Mantém `isset()` e `empty()` funcionando sobre o nome antigo `expiresAt`.
+     *
+     * @param  string  $name
+     * @return bool
+     */
+    public function __isset(string $name): bool
+    {
+        if ($name === 'expiresAt') {
+            return isset($this->dueDate);
+        }
+
+        return parent::__isset($name);
+    }
+
+    /**
+     * Emite o aviso de deprecação do nome antigo `expiresAt`.
+     *
+     * @return void
+     */
+    private static function warnExpiresAtDeprecated(): void
+    {
+        trigger_error(
+            'Invoice::$expiresAt está obsoleto desde 2026-09-02; use $dueDate (vencimento) ou $pixExpiresAt (expiração do QR Code)',
+            E_USER_DEPRECATED
+        );
     }
 
     /**

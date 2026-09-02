@@ -8,6 +8,7 @@ use Carbon\Carbon;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Tests\TestCase;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Facades\MultiPayment;
@@ -340,7 +341,7 @@ class SubscriptionTest extends TestCase
         $this->assertSame(InvoiceStatus::PENDING, $trocada->latestInvoice->status);
         // a cobrança é imediata, e não a do próximo ciclo; comparar contra now() traria o fuso
         // do gateway para dentro do teste
-        $this->assertTrue($trocada->latestInvoice->expiresAt->lessThan($proximaCobranca));
+        $this->assertTrue($trocada->latestInvoice->dueDate->lessThan($proximaCobranca));
         // o resumo de recent_invoices traz o valor formatado, sem centavos, e sem secure_url
         $this->assertSame('R$ 300,00', $trocada->latestInvoice->original->total);
         $this->assertNull($trocada->latestInvoice->amount);
@@ -364,5 +365,51 @@ class SubscriptionTest extends TestCase
         $discount->amountOff = $amountOff;
 
         return $discount;
+    }
+
+    /**
+     * Assinatura com cartão e trial em dias: o cartão informado sem id é salvo no cliente como
+     * padrão, `payable_with` fica só com cartão, `paymentMethod` volta preenchido e o trial
+     * termina no dia calculado pela lib.
+     *
+     * @return void
+     */
+    public function testShouldCreateASubscriptionWithACardAndTrialDays(): void
+    {
+        $plan = $this->createPlan(10000, 'cartao');
+        $customer = $this->createCustomer(self::GATEWAY, $this->customerWithoutAddress());
+        $data = $this->creditCard();
+
+        $card = new CreditCard();
+        $card->number = $data['number'];
+        $card->month = $data['month'];
+        $card->year = $data['year'];
+        $card->cvv = $data['cvv'];
+        $card->firstName = $data['firstName'];
+        $card->lastName = $data['lastName'];
+
+        $subscription = MultiPayment::setGateway(self::GATEWAY)->newSubscription()
+            ->setPlanId($plan->identifier)
+            ->setCustomerId($customer->id)
+            ->setCreditCard($card)
+            ->setTrialDays(7)
+            ->withIdempotencyKey('multipayment-teste-cartao-' . now()->format('YmdHisu'))
+            ->create();
+        $this->criados['subscriptions'][] = $subscription->id;
+
+        $this->assertNotEmpty($subscription->creditCard->id);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $subscription->paymentMethod);
+        $this->assertSame([PaymentMethod::CREDIT_CARD], $subscription->availablePaymentMethods);
+        $this->assertTrue($subscription->status->isActive());
+        $this->assertSame(now()->addDays(7)->format('Y-m-d'), $subscription->trialEndsAt->format('Y-m-d'));
+        $this->assertSame(now()->addDays(7)->format('Y-m-d'), $subscription->nextBillingAt->format('Y-m-d'));
+        // com only_charge_on_due_date a Iugu não cobra o cartão na criação: a fatura do primeiro
+        // ciclo, quando já existe, fica em aberto
+        if (!is_null($subscription->latestInvoice)) {
+            $this->assertFalse($subscription->latestInvoice->status->isSettled());
+        }
+
+        $relido = MultiPayment::setGateway(self::GATEWAY)->getCustomer($customer->id);
+        $this->assertSame($subscription->creditCard->id, $relido->defaultCard->id);
     }
 }

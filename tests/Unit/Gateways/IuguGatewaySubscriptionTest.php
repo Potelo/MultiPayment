@@ -9,6 +9,9 @@ use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Builders\SubscriptionBuilder;
+use Potelo\MultiPayment\Idempotency\InMemoryIdempotencyStore;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Gateways\IuguGateway;
@@ -34,7 +37,10 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $app = new Container();
         $app->instance('config', new Repository([
-            'multi-payment.gateways.iugu.api_key' => 'test-api-key',
+            'multi-payment' => [
+                'default' => 'iugu',
+                'gateways' => ['iugu' => ['api_key' => 'test-api-key', 'class' => IuguGateway::class]],
+            ],
         ]));
         Facade::setFacadeApplication($app);
     }
@@ -42,6 +48,7 @@ class IuguGatewaySubscriptionTest extends TestCase
     protected function tearDown(): void
     {
         Carbon::setTestNow();
+        QueuedIuguApiRequest::restoreSdkRequester();
         Facade::clearResolvedInstances();
         Facade::setFacadeApplication(null);
 
@@ -2297,6 +2304,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
+        $this->assertSame('2026-08-01', $subscription->latestInvoice->dueDate->format('Y-m-d'));
         $this->assertSame(SubscriptionStatus::PAST_DUE, $subscription->status);
     }
 
@@ -2322,5 +2330,314 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
 
         $this->assertNull($gateway->getSubscription($subscription)->latestInvoice);
+    }
+
+    private function cardResponse(string $id = 'pm_1'): object
+    {
+        return (object) [
+            'id' => $id,
+            'description' => 'CREDIT CARD',
+            'created_at_iso' => '2026-09-02T09:00:00-03:00',
+            'data' => (object) ['brand' => 'VISA', 'display_number' => 'XXXX-XXXX-XXXX-4242', 'month' => 12, 'year' => 2030, 'holder_name' => 'Cliente'],
+        ];
+    }
+
+    /**
+     * A assinatura da Iugu cobra o cartão padrão do cliente: o cartão salvo informado vira o
+     * padrão por um `PUT` no cliente antes de `POST /subscriptions`, e `payable_with` sai só
+     * com cartão.
+     */
+    public function testCreateSubscriptionWithASavedCardMakesItTheCustomerDefaultAndPaysWithCard(): void
+    {
+        $api = new QueuedIuguApiRequest([(object) ['id' => 'cus_1'], $this->subscriptionResponse(['payable_with' => 'credit_card'])]);
+
+        $subscription = (new SubscriptionBuilder(new IuguGateway($api)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setCreditCard('pm_1')
+            ->create();
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('PUT', $api->calls[0]['method']);
+        $this->assertStringEndsWith('/customers/cus_1', $api->calls[0]['url']);
+        $this->assertSame(['default_payment_method_id' => 'pm_1'], $api->calls[0]['data']);
+        $this->assertSame('POST', $api->calls[1]['method']);
+        $this->assertStringEndsWith('/subscriptions', $api->calls[1]['url']);
+        $this->assertSame(['credit_card'], $api->calls[1]['data']['payable_with']);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $subscription->paymentMethod);
+        $this->assertSame('pm_1', $subscription->creditCard->id);
+        $this->assertTrue($subscription->creditCard->default);
+    }
+
+    /**
+     * Cartão sem id é salvo no cliente já como padrão (`set_as_default`) antes da assinatura.
+     */
+    public function testCreateSubscriptionWithATokenizedCardSavesItAsTheDefaultFirst(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->cardResponse('pm_novo'), $this->subscriptionResponse()]);
+
+        $card = new CreditCard();
+        $card->token = 'tok_1';
+        $subscription = (new SubscriptionBuilder(new IuguGateway($api)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setCreditCard($card)
+            ->create();
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('POST', $api->calls[0]['method']);
+        $this->assertStringEndsWith('/customers/cus_1/payment_methods', $api->calls[0]['url']);
+        $this->assertSame('tok_1', $api->calls[0]['data']['token']);
+        $this->assertTrue($api->calls[0]['data']['set_as_default']);
+        $this->assertSame(['credit_card'], $api->calls[1]['data']['payable_with']);
+        $this->assertSame('pm_novo', $subscription->creditCard->id);
+    }
+
+    public function testCreateSubscriptionWithATokenizedCardUsesTheDerivedCardKey(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->cardResponse('pm_novo'), $this->subscriptionResponse()]);
+        $store = new InMemoryIdempotencyStore();
+
+        $card = new CreditCard();
+        $card->token = 'tok_1';
+        (new SubscriptionBuilder(new IuguGateway($api, $store)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setCreditCard($card)
+            ->withIdempotencyKey('sub-1')
+            ->create();
+
+        $this->assertTrue($store->has('iugu:sub-1:card'));
+        $this->assertSame([], $api->calls[0]['headers']);
+        $this->assertSame(['Idempotency-Key: sub-1'], $api->calls[1]['headers']);
+    }
+
+    public function testCreateSubscriptionWithOnlyAPaymentMethodDerivesPayableWithWithoutTouchingTheCustomer(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['payable_with' => 'pix'])]);
+
+        $subscription = (new SubscriptionBuilder(new IuguGateway($api)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->create();
+
+        $this->assertCount(1, $api->calls);
+        $this->assertSame(['pix'], $api->calls[0]['data']['payable_with']);
+        $this->assertSame(PaymentMethod::PIX, $subscription->paymentMethod);
+    }
+
+    public function testAvailablePaymentMethodsTakePrecedenceOverPaymentMethod(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse()]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1'], 'payment_method' => 'pix']);
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP, PaymentMethod::PIX];
+
+        (new IuguGateway($api))->createSubscription($subscription);
+
+        $this->assertSame(['bank_slip', 'pix'], $api->calls[0]['data']['payable_with']);
+    }
+
+    /**
+     * `trialDays` vira `expires_at` contado do momento da requisição, com
+     * `only_charge_on_due_date` para a Iugu não cobrar o cartão na criação, e a chave de
+     * idempotência vai intacta no cabeçalho de `POST /subscriptions`; o cartão padrão usa a
+     * chave derivada `{chave}:default` pela store.
+     */
+    public function testTrialDaysBecomesExpiresAtCountedFromNowWithoutChangingTheIdempotencyKey(): void
+    {
+        Carbon::setTestNow('2026-09-15 12:00:00');
+        $api = new QueuedIuguApiRequest([(object) ['id' => 'cus_1'], $this->subscriptionResponse(['in_trial' => true, 'expires_at' => '2026-09-22'])]);
+        $store = new InMemoryIdempotencyStore();
+
+        $subscription = (new SubscriptionBuilder(new IuguGateway($api, $store)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setCreditCard('pm_1')
+            ->setTrialDays(7)
+            ->withIdempotencyKey('sub-1')
+            ->create();
+
+        $this->assertSame('2026-09-22', $api->calls[1]['data']['expires_at']);
+        $this->assertTrue($api->calls[1]['data']['only_charge_on_due_date']);
+        $this->assertSame(['Idempotency-Key: sub-1'], $api->calls[1]['headers']);
+        $this->assertSame([], $api->calls[0]['headers']);
+        $this->assertTrue($store->has('iugu:sub-1:default'));
+        $this->assertSame('2026-09-22', $subscription->trialEndsAt->format('Y-m-d'));
+        $this->assertNull($subscription->trialDays);
+    }
+
+    /**
+     * Um model criado com `trialDays` pode ser salvo de novo: os dias viraram a data.
+     */
+    public function testAModelCreatedWithTrialDaysCanBeSavedAgain(): void
+    {
+        Carbon::setTestNow('2026-09-15 12:00:00');
+        // o save() seguinte resolve o gateway pelo nome gravado no model, então o fake vai no
+        // requester compartilhado do SDK
+        $api = (new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['in_trial' => true, 'expires_at' => '2026-09-22']),
+            $this->subscriptionResponse(['in_trial' => true, 'expires_at' => '2026-09-22']),
+        ]))->installAsSdkRequester();
+
+        $subscription = (new SubscriptionBuilder(new IuguGateway($api)))
+            ->setPlanId('plano_mensal')
+            ->setCustomerId('cus_1')
+            ->setTrialDays(7)
+            ->create();
+        $subscription->metadata = ['origem' => 'teste'];
+        $subscription->save();
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('PUT', $api->calls[1]['method']);
+        $this->assertSame(['custom_variables' => [['name' => 'origem', 'value' => 'teste']]], $api->calls[1]['data']);
+    }
+
+    /**
+     * Num model lido do gateway a lista de métodos vem preenchida, então trocar só
+     * `paymentMethod` ou informar um cartão fora dela é recusado antes de qualquer requisição.
+     */
+    public function testChangingThePaymentMethodOfAReadModelRequiresChangingTheList(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['payable_with' => 'pix'])]);
+        $gateway = new IuguGateway($api);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = $gateway->getSubscription($subscription);
+        $this->assertSame([PaymentMethod::PIX], $subscription->availablePaymentMethods);
+
+        $subscription->paymentMethod = PaymentMethod::CREDIT_CARD;
+        try {
+            $subscription->save($gateway);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('paymentMethod [credit_card] must be one of availablePaymentMethods', $e->getMessage());
+        }
+
+        $subscription->paymentMethod = null;
+        $subscription->creditCard = new CreditCard();
+        $subscription->creditCard->id = 'pm_9';
+        try {
+            $subscription->save($gateway);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('creditCard was given but credit_card is not among the payment methods', $e->getMessage());
+        }
+        $this->assertCount(1, $api->calls);
+    }
+
+    public function testTrialEndsAtAlsoPostponesTheFirstChargeWhileNextBillingAtAloneDoesNot(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(), $this->subscriptionResponse(), $this->subscriptionResponse()]);
+        $gateway = new IuguGateway($api);
+
+        $trial = new Subscription();
+        $trial->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1'], 'trial_ends_at' => '2026-10-01']);
+        $gateway->createSubscription($trial);
+        $this->assertSame('2026-10-01', $api->calls[0]['data']['expires_at']);
+        $this->assertTrue($api->calls[0]['data']['only_charge_on_due_date']);
+
+        $billing = new Subscription();
+        $billing->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1'], 'next_billing_at' => '2026-10-01']);
+        $gateway->createSubscription($billing);
+        $this->assertSame('2026-10-01', $api->calls[1]['data']['expires_at']);
+        $this->assertArrayNotHasKey('only_charge_on_due_date', $api->calls[1]['data']);
+
+        $overridden = new Subscription();
+        $overridden->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1'], 'trial_days' => 7]);
+        $overridden->gatewayOptions = ['only_charge_on_due_date' => false];
+        $gateway->createSubscription($overridden);
+        $this->assertFalse($api->calls[2]['data']['only_charge_on_due_date']);
+    }
+
+    public function testTrialDaysConflictingWithNextBillingAtIsRejectedBeforeTheNetwork(): void
+    {
+        Carbon::setTestNow('2026-09-15 12:00:00');
+        $api = new QueuedIuguApiRequest([]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1'], 'trial_days' => 7, 'next_billing_at' => '2026-10-01']);
+
+        $this->expectException(GatewayException::class);
+        $this->expectExceptionMessageMatches('/trialEndsAt \(or trialDays\)/');
+
+        (new IuguGateway($api))->createSubscription($subscription);
+    }
+
+    public function testUpdateSubscriptionWithACardMakesItTheCustomerDefaultBeforeTheUpdate(): void
+    {
+        $api = new QueuedIuguApiRequest([(object) ['id' => 'cus_1'], $this->subscriptionResponse()]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['id' => 'sub_1', 'customer' => ['id' => 'cus_1'], 'credit_card' => ['id' => 'pm_2']]);
+
+        (new IuguGateway($api))->updateSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertStringEndsWith('/customers/cus_1', $api->calls[0]['url']);
+        $this->assertSame(['default_payment_method_id' => 'pm_2'], $api->calls[0]['data']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[1]['url']);
+        $this->assertSame(['payable_with' => ['credit_card']], $api->calls[1]['data']);
+    }
+
+    public function testUpdateSubscriptionWithATokenizedCardSavesItAsTheDefaultBeforeTheUpdate(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->cardResponse('pm_novo'), $this->subscriptionResponse()]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['id' => 'sub_1', 'customer' => ['id' => 'cus_1'], 'credit_card' => ['token' => 'tok_1']]);
+
+        $subscription = (new IuguGateway($api))->updateSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('POST', $api->calls[0]['method']);
+        $this->assertStringEndsWith('/customers/cus_1/payment_methods', $api->calls[0]['url']);
+        $this->assertTrue($api->calls[0]['data']['set_as_default']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[1]['url']);
+        $this->assertSame(['payable_with' => ['credit_card']], $api->calls[1]['data']);
+        $this->assertSame('pm_novo', $subscription->creditCard->id);
+    }
+
+    public function testCardWithoutACustomerIdIsRejectedBeforeTheNetwork(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['id' => 'sub_1', 'credit_card' => ['id' => 'pm_2']]);
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches('/`customer` attribute is required/');
+
+        (new IuguGateway($api))->updateSubscription($subscription);
+    }
+
+    /**
+     * A Iugu não informa com qual método a assinatura é cobrada; o driver só preenche
+     * `paymentMethod` quando ela aceita um único método.
+     */
+    #[DataProvider('parsedPaymentMethodProvider')]
+    public function testParseFillsPaymentMethodOnlyWhenTheSubscriptionAcceptsASingleMethod(mixed $payableWith, ?PaymentMethod $expected): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse(['payable_with' => $payableWith])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::CREDIT_CARD;
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertSame($expected, $subscription->paymentMethod);
+    }
+
+    public static function parsedPaymentMethodProvider(): array
+    {
+        return [
+            'string unica' => ['pix', PaymentMethod::PIX],
+            'lista de um' => [['credit_card'], PaymentMethod::CREDIT_CARD],
+            'lista de dois' => [['pix', 'bank_slip'], null],
+            'all' => ['all', null],
+        ];
     }
 }

@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Builders;
 
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
@@ -75,19 +76,81 @@ class InvoiceBuilder extends Builder
     }
 
     /**
-     * set invoice expiresAt
+     * Define o método de pagamento da fatura. Quando `availablePaymentMethods` fica vazia, os
+     * drivers criam a fatura com este método (ver `Invoice::resolvedPaymentMethods()`).
      *
-     * @param  Carbon|string  $expiresAt Carbon or string in Y-m-d format
+     * @param  PaymentMethod|string  $paymentMethod
+     *
+     * @return InvoiceBuilder
+     */
+    public function setPaymentMethod(PaymentMethod|string $paymentMethod): InvoiceBuilder
+    {
+        $this->model->paymentMethod = $paymentMethod;
+
+        return $this;
+    }
+
+    /**
+     * Define a data de vencimento da fatura (ver `Invoice::$dueDate`).
+     *
+     * @param  CarbonInterface|string  $dueDate  data, ou string em `Y-m-d` ou ISO 8601
+     *
+     * @return InvoiceBuilder
+     */
+    public function setDueDate(CarbonInterface|string $dueDate): InvoiceBuilder
+    {
+        $this->model->dueDate = self::toCarbon($dueDate);
+
+        return $this;
+    }
+
+    /**
+     * Define o instante em que o QR Code do Pix expira (ver `Invoice::$pixExpiresAt`).
+     *
+     * @param  CarbonInterface|string  $pixExpiresAt  data e hora, ou string em ISO 8601
+     *
+     * @return InvoiceBuilder
+     */
+    public function setPixExpiresAt(CarbonInterface|string $pixExpiresAt): InvoiceBuilder
+    {
+        $this->model->pixExpiresAt = self::toCarbon($pixExpiresAt);
+
+        return $this;
+    }
+
+    /**
+     * Define a data de vencimento. Nome antigo de setDueDate().
+     *
+     * @deprecated desde 2026-09-02, use setDueDate() (vencimento) ou setPixExpiresAt() (expiração do QR Code)
+     *
+     * @param  CarbonInterface|string  $expiresAt
      *
      * @return InvoiceBuilder
      */
     public function setExpiresAt($expiresAt): InvoiceBuilder
     {
-        if (is_string($expiresAt)) {
-            $expiresAt = Carbon::parse($expiresAt);
+        trigger_error(
+            'InvoiceBuilder::setExpiresAt() está obsoleto desde 2026-09-02; use setDueDate() ou setPixExpiresAt()',
+            E_USER_DEPRECATED
+        );
+
+        return $this->setDueDate($expiresAt);
+    }
+
+    /**
+     * Converte data ou string numa instância de `Carbon`.
+     *
+     * @param  CarbonInterface|string  $date
+     *
+     * @return Carbon
+     */
+    private static function toCarbon(CarbonInterface|string $date): Carbon
+    {
+        if ($date instanceof Carbon) {
+            return $date;
         }
-        $this->model->expiresAt = $expiresAt;
-        return $this;
+
+        return $date instanceof CarbonInterface ? Carbon::instance($date) : Carbon::parse($date);
     }
 
     /**

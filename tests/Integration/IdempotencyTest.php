@@ -123,9 +123,9 @@ class IdempotencyTest extends TestCase
             ->addAvailablePaymentMethod(PaymentMethod::PIX)
             ->setCustomer($this->customerWithId($gateway, $customerId))
             ->addItem('Idempotency sandbox test', $amount, 1)
-            // data fixa: um expires_at derivado do instante da chamada mudaria o payload entre as
-            // tentativas, e a Stripe recusa a mesma chave com payload diferente
-            ->setExpiresAt(now()->addDays(2)->startOfDay());
+            // data fixa: uma expiração derivada do instante da chamada mudaria o payload entre
+            // as tentativas, e a Stripe recusa a mesma chave com payload diferente
+            ->setDueDate(now()->addDays(2)->startOfDay());
     }
 
     private function customerWithId(string $gateway, string $customerId): \Potelo\MultiPayment\Models\Customer

@@ -205,7 +205,7 @@ class StripeGatewayTest extends TestCase
             )
             ->addItem('Assinatura mensal', 12345, 1)
             ->setAvailablePaymentMethods([PaymentMethod::PIX])
-            ->setExpiresAt(\Carbon\Carbon::now()->addHour())
+            ->setPixExpiresAt(\Carbon\Carbon::now()->addHour())
             ->create();
 
         $this->assertNotNull($invoice->id);
@@ -215,7 +215,8 @@ class StripeGatewayTest extends TestCase
         $this->assertNotNull($invoice->pix->qrCodeText);
         $this->assertNotNull($invoice->pix->qrCodeImageUrl);
         $this->assertNotNull($invoice->url);
-        $this->assertNotNull($invoice->expiresAt);
+        $this->assertNotNull($invoice->pixExpiresAt);
+        $this->assertNull($invoice->dueDate);
 
         // além do pagamento mágico, espera a balance transaction (fee) materializar
         $invoiceFetched = $this->waitForInvoiceCondition($gateway, $invoice->id, function (Invoice $fetched) {
@@ -384,7 +385,7 @@ class StripeGatewayTest extends TestCase
             ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
             ->addItem('Assinatura mensal', 5000, 1)
             ->setAvailablePaymentMethods([PaymentMethod::PIX])
-            ->setExpiresAt(\Carbon\Carbon::now()->addHour())
+            ->setPixExpiresAt(\Carbon\Carbon::now()->addHour())
             ->create();
 
         $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
@@ -399,7 +400,7 @@ class StripeGatewayTest extends TestCase
         $this->assertNotNull($invoiceDuplicated->pix->qrCodeText);
         $this->assertEqualsWithDelta(
             $newExpiresAt->getTimestamp(),
-            $invoiceDuplicated->expiresAt->getTimestamp(),
+            $invoiceDuplicated->pixExpiresAt->getTimestamp(),
             60
         );
         $this->assertEquals($invoice->customer->id, $invoiceDuplicated->customer->id);
@@ -538,5 +539,35 @@ class StripeGatewayTest extends TestCase
             $this->assertSame(Capability::BANK_SLIP, $e->capability);
             $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
         }
+    }
+
+    /**
+     * Sem `pixExpiresAt`, o QR Code expira no fim do dia de `dueDate`, e a Stripe aceita um
+     * vencimento de hoje.
+     *
+     * @param  string  $gateway
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldCreateAPixInvoiceExpiringAtTheEndOfTheDueDate(string $gateway): void
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
+            ->addItem('Assinatura mensal', 5000, 1)
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->setDueDate(\Carbon\Carbon::today())
+            ->create();
+
+        $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
+        $this->assertEquals(PaymentMethod::PIX, $invoice->paymentMethod);
+        $this->assertEqualsWithDelta(
+            \Carbon\Carbon::today()->endOfDay()->getTimestamp(),
+            $invoice->pixExpiresAt->getTimestamp(),
+            60
+        );
+        $this->assertSame(\Carbon\Carbon::today()->format('Y-m-d'), $invoice->dueDate->format('Y-m-d'));
+
+        MultiPayment::setGateway($gateway)->cancelInvoice($invoice->id);
     }
 }

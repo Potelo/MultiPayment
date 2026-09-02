@@ -15,7 +15,8 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Idempotência](#idempotência)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
-    - [InvoiceBuilder](#invoicebuilder)
+    - [Criar e cobrar uma fatura (InvoiceBuilder)](#criar-e-cobrar-uma-fatura-invoicebuilder)
+    - [Datas da fatura](#datas-da-fatura)
     - [Pix Automático](#pix-automático)
     - [Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)
     - [Assinaturas e planos](#assinaturas-e-planos)
@@ -23,13 +24,14 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [getInvoice](#getinvoice)
     - [Outras operações de fatura](#outras-operações-de-fatura)
     - [Estorno](#estorno)
-    - [charge](#charge)
+    - [charge (alternativa por array)](#charge-alternativa-por-array)
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
     - [Refund](#refund)
     - [Subscription](#subscription)
     - [Plan](#plan)
+- [Apêndice: chaves do array de `charge()`](#apêndice-chaves-do-array-de-charge)
 
 ## Requisitos
   - PHP 8.3+
@@ -389,9 +391,12 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
   código pede ação do pagador (autenticar o cartão ou informar outro); o gateway respondeu
   normalmente e não cabe fallback. Autenticar no momento de salvar (SetupIntent) está planejado para uma versão futura.
 - **Pix exige `tax_document` do cliente** (CPF/CNPJ vai nos billing details do pagamento).
-- **`expires_at` do pix é opcional** (default do Stripe: 4 horas) e, quando informado, deve
-  ficar entre 10 segundos e 14 dias no futuro — diferente da Iugu, onde `expires_at` é a
-  data de vencimento e é obrigatório para pix/boleto.
+- **A expiração do QR Code do Pix é `pixExpiresAt`** (opcional; default do Stripe: 4 horas) e,
+  quando informada, deve ficar entre 10 segundos e 14 dias no futuro. Sem ela, `dueDate` faz o
+  QR Code expirar no fim do dia do vencimento, dentro da mesma janela (ver
+  [Datas da fatura](#datas-da-fatura)). Só um método por fatura: `paymentMethod`,
+  `availablePaymentMethods` com um único método ou só o cartão (`addCreditCardId()`,
+  `addCreditCardToken()`); sem nenhum dos três, `ModelAttributeValidationException` antes da rede.
 - **Pix expirado continua pendente e re-cobrável.** Na Iugu, fatura expirada vira `canceled`;
   no Stripe ela volta a aguardar pagamento (`pending`) e pode ser paga com cartão via
   `chargeInvoiceWithCreditCard` ou duplicada com `duplicateInvoice` (nova expiração;
@@ -449,7 +454,8 @@ O que muda na fatura de origem `INVOICE`:
   itens); na venda avulsa continuam sendo reconstruídos do `metadata` do PaymentIntent.
 - **`url`** é a página hospedada da fatura (`hosted_invoice_url`), com o QR Code do Pix quando
   for o caso; `pix` continua trazendo o QR Code quando o PaymentIntent tem um.
-- **`expiresAt`** é o `due_date` da fatura, quando ela tem um, ou a expiração do QR Code do Pix.
+- **`dueDate`** é o `due_date` da fatura, quando ela tem um, e **`pixExpiresAt`** a expiração
+  do QR Code do Pix, quando o PaymentIntent tem um.
 - **`paidAt`** é o instante em que a Stripe marcou a fatura como paga.
 - **Uma requisição a mais** quando a fatura já teve tentativa de pagamento: o charge do
   PaymentIntent fica além do limite de `expand` da Stripe e é lido num GET à parte.
@@ -544,7 +550,7 @@ Duas exceções à regra: chave com prefixo `gateway_` (ou `gateway` em `camelCa
 sendo ignorada em silêncio, e o conteúdo de `gateway_options` é livre (vai inteiro ao gateway).
 As chaves aceitas de cada model estão em `Model::fillableKeys()`, em `snake_case`. Use sempre
 `snake_case` nos arrays: uma chave escalar em `camelCase` (`taxDocument`) também é aceita, mas
-as chaves que viram objeto ou data (`customer`, `items`, `credit_card`, `expires_at`...) só são
+as chaves que viram objeto ou data (`customer`, `items`, `credit_card`, `due_date`...) só são
 convertidas na forma em `snake_case`.
 
 Para desligar temporariamente durante uma migração, use a configuração
@@ -589,9 +595,10 @@ só depois de uma falha em que a resposta não chegou ou o processo caiu.
 
 Duas regras de payload que valem para a chave: a Stripe compara o payload e recusa a mesma
 chave com conteúdo diferente (`IdempotencyConflictException`), então um campo derivado do
-instante da chamada, como um `expiresAt` calculado de `now()`, precisa ser gravado junto da
+instante da chamada, como um `pixExpiresAt` calculado de `now()`, precisa ser gravado junto da
 chave e reenviado igual; a Iugu não compara e responde com o recurso original mesmo que o
-payload tenha mudado.
+payload tenha mudado (por isso o `expires_at` que `setTrialDays()` calcula a cada tentativa não
+conflita com a chave na Iugu).
 
 Retry seguro:
 
@@ -853,19 +860,82 @@ $payment = new \Potelo\MultiPayment\MultiPayment('iugu');
 $payment = new \Potelo\MultiPayment\MultiPayment();
 $payment->setGateway('iugu');
 ```
-#### InvoiceBuilder
+#### Criar e cobrar uma fatura (InvoiceBuilder)
+
+O builder é o caminho principal: método de pagamento por enum, datas por `Carbon` e validação
+antes de qualquer requisição. O mesmo código cobra o cartão nos dois gateways:
+
 ```php
 use Potelo\MultiPayment\Enums\PaymentMethod;
 
-$multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
-$invoiceBuilder = $multiPayment->newInvoice();
-$invoice = $invoiceBuilder->addAvailablePaymentMethod(PaymentMethod::PIX) // ou a string 'pix'
-    ->addCustomer('name', 'email', 'tax_document', 'phone_area', 'phone_number')
-    ->addCustomerAddress('zip_code', 'street', 'number')
-    ->addItem('description', 'price', 'quantity')
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');   // ou 'stripe'
+
+$invoice = $payment->newInvoice()
+    ->setPaymentMethod(PaymentMethod::CREDIT_CARD)
+    ->addCustomer('Nome do cliente', 'email@example.com', '20176996915', null, '71', '999999999')
+    ->addItem('Produto 1', 10000, 1)
+    ->addItem('Produto 2', 5000, 2)
+    ->addCreditCardId($card->id)                 // cartão salvo; ou addCreditCardToken('pm_...')
+    ->withIdempotencyKey($order->uuid)
     ->create();
+
+$invoice->status;          // InvoiceStatus::PAID (ou CardDeclinedException)
+$invoice->paymentMethod;   // PaymentMethod::CREDIT_CARD
 ```
-Confira `src/MultiPayment/Builders/InvoiceBuilder.php` para saber quais métodos estão disponíveis.
+
+Pix e boleto abrem a fatura e devolvem o QR Code ou a linha digitável; as duas datas da fatura
+têm um sentido só em todos os gateways (ver [Datas da fatura](#datas-da-fatura)):
+
+```php
+$pix = $payment->newInvoice()
+    ->setPaymentMethod(PaymentMethod::PIX)
+    ->addCustomer('Nome do cliente', 'email@example.com', '20176996915')
+    ->addItem('Mensalidade', 10000, 1)
+    ->setPixExpiresAt(now()->addHours(4))          // expiração do QR Code
+    ->create();
+$pix->pix->qrCodeText;
+
+$boleto = $payment->newInvoice()
+    ->setPaymentMethod(PaymentMethod::BANK_SLIP)   // no Stripe: UnsupportedOperationException, antes da rede
+    ->addCustomer('Nome do cliente', 'email@example.com', '20176996915')
+    ->addCustomerAddress('41820330', 'Rua', '123', null, 'Bairro', 'Salvador', 'BA')
+    ->addItem('Mensalidade', 10000, 1)
+    ->setDueDate(today()->addDays(3))              // vencimento
+    ->create();
+$boleto->bankSlip->number;
+```
+
+`setPaymentMethod()` decide como a fatura é criada quando `availablePaymentMethods` fica vazia;
+`setAvailablePaymentMethods([...])` (ou `addAvailablePaymentMethod()`) abre a fatura a mais de
+um método na Iugu e tem precedência sobre `setPaymentMethod()`, que então precisa constar da
+lista. Cartão informado sem método algum também cobra o cartão; cartão junto de um método ou de
+uma lista sem `credit_card` é recusado com `ModelAttributeValidationException`, em vez de ser
+ignorado. `amount` junto de `items` só é aceito quando é a soma deles.
+Confira `src/Builders/InvoiceBuilder.php` para saber quais métodos estão disponíveis; a
+alternativa por array está em [charge](#charge-alternativa-por-array).
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0 a escrita ignorava
+> `Invoice::$paymentMethod` (`payment_method` no array): na Iugu, uma fatura com
+> `payment_method` `credit_card` e `credit_card` preenchido, sem `available_payment_methods`,
+> nascia pendente aberta a todos os métodos da conta e o cartão não era cobrado, enquanto no
+> Stripe o mesmo array cobrava o cartão. Agora `paymentMethod` (ou só o cartão) vale nos dois
+> gateways, e o mesmo array produz o mesmo resultado financeiro. Quem dependia da fatura
+> pendente deve deixar de informar o cartão: `credit_card` junto de uma lista (ou de um
+> `payment_method`) sem cartão, que antes era ignorado, passou a lançar
+> `ModelAttributeValidationException`.
+
+#### Datas da fatura
+
+| Propriedade | Array / builder | Iugu | Stripe |
+|---|---|---|---|
+| `dueDate` | `due_date` / `setDueDate()` | `due_date` (o dia; a fatura vencida continua pagável) | `due_date` da fatura de assinatura; na venda avulsa por Pix sem `pixExpiresAt`, o fim desse dia vira a expiração do QR Code |
+| `pixExpiresAt` | `pix_expires_at` / `setPixExpiresAt()` | `pix_qr_code_expires_at` (ISO 8601); sem `dueDate`, o vencimento é o dia em que o QR Code expira; a leitura só o preenche quando a fatura o devolve | `payment_method_options.pix.expires_at`, entre 10 segundos e 14 dias no futuro (sem ele, a Stripe usa 4 horas); volta na leitura |
+
+As duas aceitam `Carbon` (ou `CarbonImmutable`) e, no array, string em `Y-m-d` ou ISO 8601 com
+hora. `expiresAt` (`expires_at`, `setExpiresAt()`) continua funcionando como alias de `dueDate`,
+com aviso `E_USER_DEPRECATED`, e sai na próxima versão maior: até a 4.1.0 era o vencimento na
+Iugu e a expiração do QR Code no Stripe, então `'expires_at' => hoje` valia na Iugu e falhava no
+Stripe. `toArray()` passa a emitir `due_date` e `pix_expires_at`.
 
 #### Pix Automático
 
@@ -977,14 +1047,42 @@ $subscription = (new \Potelo\MultiPayment\MultiPayment('iugu'))
     ->newSubscription()
     ->setPlanId('plano_mensal')
     ->setCustomerId($customer->id)
-    ->setNextBillingAt('2026-10-01')
+    ->setCreditCard($card->id)                     // cartão salvo (ou um CreditCard com token); implica o método cartão
+    ->setTrialDays(7)                              // a primeira cobrança acontece no fim do teste
     ->addItem('Consultas extras', 2500, 2)         // item recorrente, valor em centavos
     ->addAmountDiscount('Promo', 500, cycles: 1)   // desconto só na próxima fatura
-    ->setAvailablePaymentMethods(['pix'])
+    ->withIdempotencyKey("sub-{$order->uuid}")
     ->create();
 
-$subscription->status; // SubscriptionStatus; na Iugu: TRIALING, ACTIVE, SUSPENDED, PENDING, PAST_DUE, CANCELED ou EXPIRED
+$subscription->status;          // SubscriptionStatus; na Iugu: TRIALING, ACTIVE, SUSPENDED, PENDING, PAST_DUE, CANCELED ou EXPIRED
+$subscription->paymentMethod;   // PaymentMethod::CREDIT_CARD, lido do gateway
+$subscription->trialEndsAt;     // calculado pela lib na criação
+
+$porPix = (new \Potelo\MultiPayment\MultiPayment('iugu'))
+    ->newSubscription()
+    ->setPlanId('plano_mensal')
+    ->setCustomerId($customer->id)
+    ->setPaymentMethod(PaymentMethod::PIX)         // ou setAvailablePaymentMethods(['pix', 'bank_slip']), que tem precedência
+    ->setNextBillingAt('2026-10-01')
+    ->create();
 ```
+
+Meio de pagamento e trial são conceitos da assinatura:
+
+- **`setPaymentMethod()`** define com que método a assinatura é cobrada; com
+  `availablePaymentMethods` vazia, o driver deriva a lista dele, e com ela preenchida o método
+  precisa constar da lista. **`setCreditCard()`** aceita o id de um cartão salvo ou um
+  `CreditCard` (token, ou dados crus na Iugu), implica o método cartão, e um cartão sem id é
+  salvo no cliente ao criar a assinatura; cartão com uma lista sem `credit_card` é recusado com
+  `ModelAttributeValidationException`. Na leitura, `paymentMethod` volta preenchido quando a
+  assinatura aceita um único método, e a lista vem preenchida: para trocar o método de uma
+  assinatura lida, troque `availablePaymentMethods` (ou a zere) antes de `save()`.
+- **`setTrialDays()`** conta o período de teste a partir do momento em que a assinatura é criada:
+  o driver calcula `trialEndsAt` na hora da requisição, o deixa no model e zera `trialDays`
+  (o model devolvido pode ser salvo de novo). Prefira
+  `setTrialDays()` a `setTrialEndsAt(now()->addDays(7))`: a segunda fixa a data no instante em
+  que o model foi montado, e um model guardado para retry carrega uma data velha. Os dois não
+  podem ser informados juntos.
 
 Operações sobre a assinatura:
 
@@ -1036,9 +1134,21 @@ Particularidades da Iugu:
   chamar a API.
 - **Planos não são desativáveis.** `deactivatePlan` lança `UnsupportedOperationException`
   (`PLAN_DEACTIVATION`, `gateway_limitation`).
-- **`nextBillingAt` e `trialEndsAt` são o mesmo campo** (`expires_at`); informar os dois com
-  datas diferentes lança `GatewayException`. Ao prorrogar um trial lido do gateway, zere
-  `nextBillingAt` antes, porque a leitura preenche os dois.
+- **`nextBillingAt` e `trialEndsAt` são o mesmo campo** (`expires_at`), e o que os distingue é
+  a cobrança do primeiro ciclo: por padrão a Iugu cobra o cartão padrão na criação, mesmo com
+  `expires_at` no futuro (observado na sandbox), então um trial (`setTrialDays()` ou
+  `setTrialEndsAt()`) vai com `only_charge_on_due_date`, e a primeira cobrança acontece no fim
+  do teste; `setNextBillingAt()` sozinho vai só como `expires_at`, com a cobrança imediata da
+  Iugu (`gateway_options['only_charge_on_due_date']` sobrepõe os dois). Informar `trialEndsAt`
+  (ou `trialDays`) e `nextBillingAt` com datas diferentes lança `GatewayException`. Ao prorrogar
+  um trial lido do gateway, zere `nextBillingAt` antes, porque a leitura preenche os dois.
+  `in_trial` (lido como `TRIALING`) só aparece em assinatura que a própria Iugu põe em teste; a
+  assinatura criada com trial pela lib lê como `ACTIVE`, com `nextBillingAt` no fim do teste.
+- **O cartão da assinatura é o cartão padrão do cliente.** A Iugu não guarda cartão por
+  assinatura, então `setCreditCard()` torna o cartão informado o padrão do cliente (um `PUT` no
+  cliente, ou o `set_as_default` ao salvar um cartão novo) antes de criar a assinatura, o que
+  vale para as outras assinaturas do mesmo cliente. Só o método (`setPaymentMethod(CREDIT_CARD)`)
+  cobra o cartão padrão que o cliente já tiver. A leitura não preenche `creditCard`.
 - **`past_due` é derivado.** A Iugu não tem esse estado: o pacote o reporta quando a data da
   próxima cobrança já passou e **alguma** fatura de `recent_invoices` continua em aberto —
   pendente, vencida (`expired`) ou parcialmente paga. Olha todas, e não só a que virou
@@ -1055,8 +1165,9 @@ Particularidades da Iugu:
   subitens na mesma chamada, então o pacote lê a assinatura, envia a remoção sozinha e só depois
   a atualização — até três requisições. Entre a remoção e a atualização a assinatura fica sem os
   itens removidos, e se a segunda falhar eles não voltam sozinhos.
-- **`paymentMethod` e `cancelAtPeriodEnd` não são mapeados** na Iugu, nas duas direções.
-  `canceledAt` vem da marca `mp_canceled_at` gravada por `cancel()`.
+- **`cancelAtPeriodEnd` não é mapeado** na Iugu, nas duas direções. `canceledAt` vem da marca
+  `mp_canceled_at` gravada por `cancel()`. `paymentMethod` vai como `payable_with` e volta
+  quando a assinatura aceita um único método (`all` e listas com mais de um leem como nulo).
 - **Reativar exige data de cobrança.** Assinatura criada sem `nextBillingAt` fica sem data no
   gateway e, por isso, não volta com `resume()`: a Iugu responde sem erro e sem mudar nada, e o
   `status` devolvido segue `SUSPENDED`.
@@ -1082,7 +1193,13 @@ Particularidades da Iugu:
   troca o objeto para não misturar dados de dois clientes.
 
 No update, data de cobrança e métodos de pagamento só são enviados quando mudaram em relação
-ao que veio na leitura — um `save()` que mexeu só nos itens não altera a data de cobrança.
+ao que veio na leitura — um `save()` que mexeu só nos itens não altera a data de cobrança. Um
+`creditCard` informado no update vira o padrão do cliente antes do `PUT` da assinatura.
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `trialEndsAt` ia só como
+> `expires_at`, e com cartão padrão a Iugu cobrava o primeiro ciclo na criação; agora o trial vai
+> com `only_charge_on_due_date`. `Subscription::$paymentMethod` passou a ser escrito
+> (`payable_with`) e lido; até a 4.1.0 era ignorado nas duas direções.
 
 Confira `src/Builders/SubscriptionBuilder.php` para saber quais métodos estão disponíveis.
 
@@ -1241,89 +1358,33 @@ Essa leitura não altera o model do chamador: ele só muda quando o estorno acon
 > `MultiPaymentException`), fora da árvore de `GatewayException`: um `catch (GatewayException $e)`
 > sozinho deixa de capturar esses casos.
 
-#### charge
+#### charge (alternativa por array)
 
-```php  
-$options = [
-    'amount' => 10000,
+`charge(array)` monta a mesma fatura a partir de um array em `snake_case`, para integrações que
+recebem os dados prontos (o `MultiPaymentTrait` usa este caminho). As chaves espelham as
+propriedades do model e seguem as mesmas regras do builder; `customer` é obrigatório e é
+conferido antes de qualquer conversão. O exemplo abaixo vale para os dois gateways:
+
+```php
+$invoice = (new \Potelo\MultiPayment\MultiPayment('iugu'))->charge([
     'customer' => [
         'name' => 'Nome do cliente',
         'email' => 'email@example.com',
-        'tax_document' => '12345678901',
+        'tax_document' => '20176996915',
         'phone_area' => '71',
         'phone_number' => '999999999',
-        'address' => [ 
-            'street' => 'Rua do cliente',
-            'number' => '123',
-            'complement' => 'Apto. 123',
-            'district' => 'Bairro do cliente',
-            'city' => 'Cidade do cliente',
-            'state' => 'SP',
-            'zip_code' => '12345678',
-        ],
+        'address' => ['street' => 'Rua', 'number' => '123', 'district' => 'Bairro', 'city' => 'Salvador', 'state' => 'BA', 'zip_code' => '41820330'],
     ],
     'items' => [
-        [
-            'description' => 'Produto 1',
-            'quantity' => 1,
-            'price' => 10000,
-        ],
-        [ 
-            'description' => 'Produto 2',
-            'quantity' => 2,
-            'price' => 5000,
-        ],
+        ['description' => 'Produto 1', 'quantity' => 1, 'price' => 10000],
+        ['description' => 'Produto 2', 'quantity' => 2, 'price' => 5000],
     ],
     'payment_method' => 'credit_card',
-    'credit_card' => [
-        'number' => '1234567890123456',
-        'month' => '12',
-        'year' => '2022',
-        'cvv' => '123',
-        'first_name' => 'João',
-        'last_name' => 'Maria' 
-    ],
-];
-
-$payment = new \Potelo\MultiPayment\MultiPayment();
-$payment->setGateway('iugu')->charge($options);
+    'credit_card' => ['token' => $token],    // token do gateway; na Iugu também number, month, year, cvv, first_name, last_name
+], idempotencyKey: $order->uuid);
 ```
 
-| atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                               |
-|-------------------------------|---------------------------------------------------------------------|--------------------------------|-------------------------------------------|---------------------------------------|
-| `amount`                      | **obrigatório** caso `items` não seja informado                     | int                            | valor em centavos                         | `10000`                               |
-| `customer`                    | **obrigatório**                                                     | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`    |
-| `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                   |
-| `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`               |
-| `customer.tax_document`       | **obrigatório** no Stripe para faturas pix                          | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
-| `customer.birth_date`         |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'1990-01-01'`                        |
-| `customer.phone_number`       |                                                                     | string                         | telefone                                  | `'999999999'`                         |
-| `customer.phone_area`         |                                                                     | string                         | DDD                                       | `'999999999'`                         |
-| `customer.address`            | **obrigatório** para o método de pagamento `bank_slip`              | array                          | array com os dados do endereço do cliente | `['street' => 'Rua do cliente'...]`   |
-| `customer.address.street`     | **obrigatório**                                                     | string                         | nome da rua                               | `'Nome da rua'`                       |
-| `customer.address.number`     | **obrigatório**                                                     | string                         | número da casa                            | `'123'`                               |
-| `customer.address.district`   | **obrigatório**                                                     | string                         | bairro                                    | `'Bairro do cliente'`                 |
-| `customer.address.city`       | **obrigatório**                                                     | string                         | cidade                                    | `'Salvador'`                          |
-| `customer.address.state`      | **obrigatório**                                                     | string                         | estado                                    | `'Bahia'`                             |
-| `customer.address.complement` | **obrigatório**                                                     | string                         | complemento                               | `'Apto. 123'`                         |
-| `customer.address.zip_code`   | **obrigatório**                                                     | string                         | cep                                       | `'12345678'`                          |
-| `items`                       | **obrigatório** caso `amount` não tenha sido informado              | array                          | array com os itens da compra              | `[['description' => 'Produto 1',...`  |
-| `items.description`           | **obrigatório**                                                     | string                         | descrição do item                         | `'Produto 1'`                         |
-| `items.quantity`              | **obrigatório**                                                     | int                            | quantidade do item                        | `1`                                   |
-| `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                               |
-| `payment_method`              |                                                                     | `PaymentMethod` ou a string `'credit_card'`, `'bank_slip'`, `'pix'` | método de pagamento                | `'credit_card'`                       |
-| `available_payment_methods`   | **obrigatório** no Stripe (exatamente um método) quando não há `credit_card` | array de `PaymentMethod` ou de strings | métodos aceitos pela fatura               | `['pix']`                             |
-| `expires_at`                  | **obrigatório** na Iugu caso `payment_method` seja `'bank_slip'` ou `'pix'`; opcional no Stripe (pix — a data precisa cair na janela de 10 segundos a 14 dias no futuro) | string no formato `yyyy-mm-dd` | data de expiração da fatura               | `2021-10-10`                          |
-| `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'`          | array                          | array com os dados do cartão de crédito   | `['number' => '1234567890123456',...` |
-| `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abc123...'` (Iugu) / `'pm_...'` (Stripe) |
-| `credit_card.number`          | **obrigatório** caso `token` não tenha sido informado (somente Iugu — o Stripe é token-only) | string                         | número do cartão de crédito               | `'1234567890123456'`                  |
-| `credit_card.month`           | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | mês de expiração do cartão de crédito     | `'12'`                                |
-| `credit_card.year`            | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | ano de expiração do cartão de crédito     | `'2022'`                              |
-| `credit_card.cvv`             | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | código de segurança do cartão de crédito  | `'123'`                               |
-| `credit_card.first_name`      |                                                                     | string                         | primeiro nome no cartão de crédito        | `'João'`                              |
-| `credit_card.last_name`       |                                                                     | string                         | último nome no cartão de crédito          | `'Maria'`                             |
-| `bank_slip`                   |                                                                     | array                          | array com os dados do boleto              | `['expires_at' => '2022-12-31',...`   |
-| `gateway_options`             |                                                                     | array                          | opções específicas do gateway mescladas ao payload (ver [Opções extras do gateway](#opções-extras-do-gateway)) | `['expires_in' => 3]`                 |
+A lista completa de chaves está no [apêndice](#apêndice-chaves-do-array-de-charge).
 
 ### Models
 #### Customer
@@ -1346,7 +1407,7 @@ $item->description = 'Teste';
 $item->price = 10000;
 $item->quantity = 1;
 $invoice->items[] = $item;
-$invoice->paymentMethod = PaymentMethod::CREDIT_CARD; // a string 'credit_card' também é aceita
+$invoice->paymentMethod = PaymentMethod::CREDIT_CARD; // a string 'credit_card' também é aceita; decide como a fatura é criada
 $invoice->creditCard = new CreditCard();
 $invoice->creditCard->number = '4111111111111111';
 $invoice->creditCard->firstName = 'João';
@@ -1355,9 +1416,10 @@ $invoice->creditCard->month = '11';
 $invoice->creditCard->year = '2022';
 $invoice->creditCard->cvv = '123';
 $invoice->creditCard->customer = $customer;
-$invoice->save('iugu');
+$invoice->save('iugu');      // cobra o cartão
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
 $invoice->originType; // InvoiceOriginType::INVOICE (na Iugu sempre; no Stripe, PAYMENT_INTENT ou INVOICE)
+$invoice->dueDate;    // vencimento; $invoice->pixExpiresAt é a expiração do QR Code do Pix
 ```
 #### Refund
 ```php
@@ -1373,6 +1435,8 @@ $invoice->refunds;                      // Refund[] (ver "Estorno")
 $subscription = new Subscription();
 $subscription->planId = 'plano_mensal';
 $subscription->customer = $customer;
+$subscription->creditCard = $card;      // ou $subscription->paymentMethod = PaymentMethod::PIX
+$subscription->trialDays = 7;
 $subscription->save('iugu');
 echo $subscription->id;
 ```
@@ -1387,3 +1451,45 @@ $plan->save('iugu');
 echo $plan->id;
 ```
 
+## Apêndice: chaves do array de `charge()`
+
+Chaves aceitas por `charge(array)` (e por `Invoice::fill()`), em `snake_case`; ver
+[charge (alternativa por array)](#charge-alternativa-por-array).
+
+| atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                               |
+|-------------------------------|---------------------------------------------------------------------|--------------------------------|-------------------------------------------|---------------------------------------|
+| `amount`                      | **obrigatório** caso `items` não seja informado                     | int                            | valor em centavos; junto de `items`, precisa ser a soma deles | `10000`                               |
+| `customer`                    | **obrigatório**                                                     | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`    |
+| `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                   |
+| `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`               |
+| `customer.tax_document`       | **obrigatório** no Stripe para faturas pix                          | string                         | cpf ou cnpj do cliente                    | `'12345678901'`                       |
+| `customer.birth_date`         |                                                                     | string formato `yyyy-mm-dd`    | data de nascimento                        | `'1990-01-01'`                        |
+| `customer.phone_number`       |                                                                     | string                         | telefone                                  | `'999999999'`                         |
+| `customer.phone_area`         |                                                                     | string                         | DDD                                       | `'999999999'`                         |
+| `customer.address`            | **obrigatório** para o método de pagamento `bank_slip`              | array                          | array com os dados do endereço do cliente | `['street' => 'Rua do cliente'...]`   |
+| `customer.address.street`     | **obrigatório**                                                     | string                         | nome da rua                               | `'Nome da rua'`                       |
+| `customer.address.number`     | **obrigatório**                                                     | string                         | número da casa                            | `'123'`                               |
+| `customer.address.district`   | **obrigatório**                                                     | string                         | bairro                                    | `'Bairro do cliente'`                 |
+| `customer.address.city`       | **obrigatório**                                                     | string                         | cidade                                    | `'Salvador'`                          |
+| `customer.address.state`      | **obrigatório**                                                     | string                         | estado                                    | `'Bahia'`                             |
+| `customer.address.complement` | **obrigatório**                                                     | string                         | complemento                               | `'Apto. 123'`                         |
+| `customer.address.zip_code`   | **obrigatório**                                                     | string                         | cep                                       | `'12345678'`                          |
+| `items`                       | **obrigatório** caso `amount` não tenha sido informado              | array                          | array com os itens da compra              | `[['description' => 'Produto 1',...`  |
+| `items.description`           | **obrigatório**                                                     | string                         | descrição do item                         | `'Produto 1'`                         |
+| `items.quantity`              | **obrigatório**                                                     | int                            | quantidade do item                        | `1`                                   |
+| `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                               |
+| `payment_method`              | **obrigatório** no Stripe quando não há `available_payment_methods` nem `credit_card` | `PaymentMethod` ou a string `'credit_card'`, `'bank_slip'`, `'pix'` | método com que a fatura é criada quando `available_payment_methods` está vazia | `'credit_card'`                       |
+| `available_payment_methods`   |                                                                     | array de `PaymentMethod` ou de strings | métodos aceitos pela fatura (mais de um só na Iugu); tem precedência sobre `payment_method` | `['pix']`                             |
+| `due_date`                    |                                                                     | string em `yyyy-mm-dd` ou ISO 8601 | vencimento (ver [Datas da fatura](#datas-da-fatura)); na Iugu, hoje quando omitido | `'2026-10-10'`                        |
+| `pix_expires_at`              |                                                                     | string em ISO 8601             | expiração do QR Code do Pix (Stripe: entre 10 segundos e 14 dias no futuro) | `'2026-10-10T18:00:00-03:00'`         |
+| `expires_at`                  | obsoleto desde 2026-09-02                                           | string em `yyyy-mm-dd`         | alias de `due_date`, com aviso `E_USER_DEPRECATED` | `'2026-10-10'`                        |
+| `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'`; sozinho, implica cartão | array                          | array com os dados do cartão de crédito   | `['token' => 'pm_...']`               |
+| `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abc123...'` (Iugu) / `'pm_...'` (Stripe) |
+| `credit_card.number`          | **obrigatório** caso `token` não tenha sido informado (somente Iugu — o Stripe é token-only) | string                         | número do cartão de crédito               | `'1234567890123456'`                  |
+| `credit_card.month`           | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | mês de expiração do cartão de crédito     | `'12'`                                |
+| `credit_card.year`            | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | ano de expiração do cartão de crédito     | `'2022'`                              |
+| `credit_card.cvv`             | **obrigatório** caso `token` não tenha sido informado (somente Iugu) | string                         | código de segurança do cartão de crédito  | `'123'`                               |
+| `credit_card.first_name`      |                                                                     | string                         | primeiro nome no cartão de crédito        | `'João'`                              |
+| `credit_card.last_name`       |                                                                     | string                         | último nome no cartão de crédito          | `'Maria'`                             |
+| `bank_slip`                   |                                                                     | array                          | dados do boleto devolvidos na leitura (`url`, `number`, `barcode_data`, `barcode_image`) | `['number' => '...', 'url' => '...']` |
+| `gateway_options`             |                                                                     | array                          | opções específicas do gateway mescladas ao payload (ver [Opções extras do gateway](#opções-extras-do-gateway)) | `['expires_in' => 3]`                 |

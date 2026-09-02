@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Carbon\Carbon;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class IuguGatewayInvoiceTest extends TestCase
 {
@@ -25,6 +27,7 @@ class IuguGatewayInvoiceTest extends TestCase
 
     protected function tearDown(): void
     {
+        Carbon::setTestNow();
         QueuedIuguApiRequest::restoreSdkRequester();
         Facade::clearResolvedInstances();
         Facade::setFacadeApplication(null);
@@ -44,7 +47,7 @@ class IuguGatewayInvoiceTest extends TestCase
         $invoice->fill([
             'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
             'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
-            'expires_at' => '2026-10-01',
+            'due_date' => '2026-10-01',
             'gateway_options' => ['expires_in' => 5, 'payable_with' => ['bank_slip', 'pix']],
         ]);
 
@@ -73,7 +76,7 @@ class IuguGatewayInvoiceTest extends TestCase
         $invoice->fill([
             'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
             'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
-            'expires_at' => '2026-10-01',
+            'due_date' => '2026-10-01',
         ]);
         $invoice->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
         $invoice->availablePaymentMethods[] = 'pix';
@@ -120,7 +123,7 @@ class IuguGatewayInvoiceTest extends TestCase
         $invoice->fill([
             'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
             'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
-            'expires_at' => '2026-10-01',
+            'due_date' => '2026-10-01',
         ]);
 
         (new IuguGateway($api))->createInvoice($invoice);
@@ -160,5 +163,189 @@ class IuguGatewayInvoiceTest extends TestCase
             'credit_card_transaction' => null,
             'variables' => [],
         ];
+    }
+
+    /**
+     * `paymentMethod` de cartão com `availablePaymentMethods` vazia cobra o cartão por
+     * `POST /charge`, com `payable_with` só de cartão.
+     */
+    public function testPaymentMethodAloneWithASavedCardChargesTheCard(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => true, 'invoice_id' => 'inv_1'],
+            $this->pendingInvoiceResponse(),
+        ]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'payment_method' => 'credit_card',
+            'credit_card' => ['id' => 'pm_1'],
+        ]);
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertStringEndsWith('/charge', $api->calls[0]['url']);
+        $this->assertSame('pm_1', $api->calls[0]['data']['customer_payment_method_id']);
+        $this->assertSame(['credit_card'], $api->calls[0]['data']['payable_with']);
+    }
+
+    public function testACardAloneChargesTheCard(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => true, 'invoice_id' => 'inv_1'],
+            $this->pendingInvoiceResponse(),
+        ]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'credit_card' => ['id' => 'pm_1'],
+        ]);
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertStringEndsWith('/charge', $api->calls[0]['url']);
+        $this->assertSame(['credit_card'], $api->calls[0]['data']['payable_with']);
+    }
+
+    /**
+     * Cartão como método sem `creditCard` abre a fatura só a cartão por `POST /invoices`, sem
+     * cobrança.
+     */
+    public function testPaymentMethodCardWithoutACardOpensTheInvoiceWithoutCharging(): void
+    {
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse()]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'payment_method' => 'credit_card',
+        ]);
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertStringEndsWith('/invoices', $api->calls[0]['url']);
+        $this->assertSame(['credit_card'], $api->calls[0]['data']['payable_with']);
+    }
+
+    public function testPaymentMethodAloneWithPixOpensThePixInvoice(): void
+    {
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse()]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'payment_method' => PaymentMethod::PIX,
+        ]);
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertStringEndsWith('/invoices', $api->calls[0]['url']);
+        $this->assertSame(['pix'], $api->calls[0]['data']['payable_with']);
+    }
+
+    /**
+     * `dueDate` vai em `due_date` (só o dia) e `pixExpiresAt` em `pix_qr_code_expires_at`
+     * (ISO 8601 com hora); sem `dueDate`, o vencimento é o dia em que o QR Code expira.
+     */
+    #[DataProvider('datesProvider')]
+    public function testDueDateAndPixExpiresAtGoToTheirOwnIuguFields(array $data, string $dueDate, ?string $pixExpiresAt): void
+    {
+        Carbon::setTestNow('2026-09-02 10:00:00');
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse()]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill(array_merge([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+        ], $data));
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $payload = $api->calls[0]['data'];
+        $this->assertSame($dueDate, $payload['due_date']);
+        $this->assertSame($pixExpiresAt, $payload['pix_qr_code_expires_at'] ?? null);
+    }
+
+    public static function datesProvider(): array
+    {
+        return [
+            'so vencimento' => [['due_date' => '2026-10-01'], '2026-10-01', null],
+            'vencimento e expiracao do QR' => [
+                ['due_date' => '2026-10-01', 'pix_expires_at' => '2026-09-30T18:00:00-03:00'],
+                '2026-10-01',
+                '2026-09-30T18:00:00-03:00',
+            ],
+            'so expiracao do QR' => [
+                ['pix_expires_at' => '2026-09-30T18:00:00-03:00'],
+                '2026-09-30',
+                '2026-09-30T18:00:00-03:00',
+            ],
+            'nenhuma' => [[], '2026-09-02', null],
+        ];
+    }
+
+    /**
+     * O método pedido na escrita fica no model só enquanto a Iugu não informa o método com que
+     * a fatura foi paga.
+     */
+    public function testParseOverwritesTheRequestedPaymentMethodWithTheOneTheInvoiceWasPaidWith(): void
+    {
+        $paid = $this->pendingInvoiceResponse();
+        $paid->status = 'paid';
+        $paid->payment_method = 'iugu_credit_card';
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse(), $paid]))->installAsSdkRequester();
+        $gateway = new IuguGateway($api);
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'payment_method' => 'pix',
+            'available_payment_methods' => ['pix', 'credit_card'],
+        ]);
+
+        $gateway->createInvoice($invoice);
+        $this->assertSame(PaymentMethod::PIX, $invoice->paymentMethod);
+
+        $gateway->getInvoice($invoice);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $invoice->paymentMethod);
+    }
+
+    public function testParseReadsDueDateAndKeepsThePixExpiryTheModelHad(): void
+    {
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse()]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'pix_expires_at' => '2026-09-30T18:00:00-03:00',
+        ]);
+
+        $result = (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertSame('2026-10-01', $result->dueDate->format('Y-m-d'));
+        $this->assertSame('2026-09-30T18:00:00-03:00', $result->pixExpiresAt->toIso8601String());
+    }
+
+    public function testParseReadsThePixExpiryWhenTheInvoiceBringsIt(): void
+    {
+        $response = $this->pendingInvoiceResponse();
+        $response->pix_qr_code_expires_at = '2026-10-01T12:00:00-03:00';
+        $api = (new QueuedIuguApiRequest([$response]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+        $result = (new IuguGateway($api))->getInvoice($invoice);
+
+        $this->assertSame('2026-10-01T12:00:00-03:00', $result->pixExpiresAt->toIso8601String());
+        $this->assertSame('2026-10-01', $result->dueDate->format('Y-m-d'));
     }
 }

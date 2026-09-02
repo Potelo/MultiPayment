@@ -4,6 +4,8 @@ namespace Potelo\MultiPayment\Builders;
 
 use Carbon\Carbon;
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Contracts\GatewayContract;
@@ -109,6 +111,58 @@ class SubscriptionBuilder extends Builder
         $this->model->trialEndsAt = $trialEndsAt instanceof Carbon
             ? $trialEndsAt
             : Carbon::parse($trialEndsAt);
+
+        return $this;
+    }
+
+    /**
+     * Define a duração do período de teste em dias, contada do momento em que a assinatura é
+     * criada; o driver calcula a data de fim na hora da requisição (ver
+     * `Subscription::$trialDays`).
+     *
+     * @param  int  $trialDays
+     *
+     * @return $this
+     */
+    public function setTrialDays(int $trialDays): SubscriptionBuilder
+    {
+        $this->model->trialDays = $trialDays;
+
+        return $this;
+    }
+
+    /**
+     * Define o método de pagamento da assinatura (ver `Subscription::$paymentMethod`).
+     *
+     * @param  PaymentMethod|string  $paymentMethod
+     *
+     * @return $this
+     */
+    public function setPaymentMethod(PaymentMethod|string $paymentMethod): SubscriptionBuilder
+    {
+        $this->model->paymentMethod = $paymentMethod;
+
+        return $this;
+    }
+
+    /**
+     * Define o cartão que a assinatura cobra, pelo model ou pelo id de um cartão já salvo no
+     * cliente, e o método de pagamento como cartão (ver `Subscription::$creditCard`).
+     *
+     * @param  CreditCard|string  $creditCard
+     *
+     * @return $this
+     */
+    public function setCreditCard(CreditCard|string $creditCard): SubscriptionBuilder
+    {
+        if (is_string($creditCard)) {
+            $id = $creditCard;
+            $creditCard = new CreditCard();
+            $creditCard->id = $id;
+        }
+
+        $this->model->creditCard = $creditCard;
+        $this->model->paymentMethod = PaymentMethod::CREDIT_CARD;
 
         return $this;
     }

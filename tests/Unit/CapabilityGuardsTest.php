@@ -19,6 +19,7 @@ use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use Potelo\MultiPayment\Tests\Unit\Gateways\QueuedIuguApiRequest;
 use Potelo\MultiPayment\Tests\Unit\Gateways\RecordingStripeHttpClient;
 
@@ -218,15 +219,57 @@ class CapabilityGuardsTest extends TestCase
     }
 
     /**
-     * `requiredCapabilities()` ignora método fora de `PaymentMethod::selectable()`, como
-     * `AUTOMATIC_PIX` em `availablePaymentMethods`.
+     * `requiredCapabilities()` recusa método fora de `PaymentMethod::selectable()`, como
+     * `AUTOMATIC_PIX` em `availablePaymentMethods` ou em `paymentMethod`, com
+     * `ModelAttributeValidationException`.
      */
-    public function testInvoiceRequiredCapabilitiesIgnoreNonSelectableMethods(): void
+    public function testInvoiceRequiredCapabilitiesRejectNonSelectableMethods(): void
     {
         $invoice = new Invoice();
         $invoice->availablePaymentMethods = [PaymentMethod::AUTOMATIC_PIX];
 
-        $this->assertSame([], $invoice->requiredCapabilities());
+        try {
+            $invoice->requiredCapabilities();
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('availablePaymentMethods must be one of', $e->getMessage());
+        }
+
+        $byMethod = new Invoice();
+        $byMethod->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
+
+        try {
+            $byMethod->requiredCapabilities();
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('paymentMethod must be one of', $e->getMessage());
+        }
+    }
+
+    /**
+     * Com a lista vazia, `paymentMethod` decide a capability exigida, e a fatura de boleto no
+     * Stripe falha pelo array de `charge()` antes de criar o cliente.
+     */
+    public function testInvoiceRequiredCapabilitiesDeriveFromPaymentMethodWhenTheListIsEmpty(): void
+    {
+        $invoice = new Invoice();
+        $invoice->paymentMethod = PaymentMethod::BANK_SLIP;
+        $this->assertSame([Capability::BANK_SLIP], $invoice->requiredCapabilities());
+
+        // a lista tem precedência sobre o método, que precisa constar dela
+        $invoice->availablePaymentMethods = [PaymentMethod::PIX, PaymentMethod::BANK_SLIP];
+        $this->assertSame(
+            [Capability::PIX, Capability::BANK_SLIP, Capability::MULTIPLE_PAYMENT_METHODS],
+            $invoice->requiredCapabilities()
+        );
+
+        $multiPayment = new MultiPayment('stripe');
+        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $multiPayment->charge([
+            'items' => [['description' => 'Mensalidade', 'price' => 10000, 'quantity' => 1]],
+            'payment_method' => 'bank_slip',
+            'customer' => ['name' => 'Fulano', 'email' => 'fulano@exemplo.com'],
+        ]));
+        $this->assertSame([], $this->stripeHttp->calls);
     }
 
     public function testInvoiceRequiredCapabilitiesDeriveFromTheAttributes(): void

@@ -728,26 +728,21 @@ class StripeGateway implements GatewayContract
      */
     private function invoicePaymentMethod(Invoice $invoice): PaymentMethod
     {
-        if (!empty($invoice->availablePaymentMethods)) {
-            if (count($invoice->availablePaymentMethods) > 1) {
-                throw UnsupportedOperationException::forGateway(
-                    $this,
-                    Capability::MULTIPLE_PAYMENT_METHODS,
-                    'Informe exatamente um método em availablePaymentMethods.'
-                );
-            }
+        $methods = $invoice->resolvedPaymentMethods();
 
-            // normaliza antes de ler: uma string apensada por `[]=` entra no array sem conversão
-            $methods = PaymentMethod::normalizeSelectable($invoice->availablePaymentMethods, 'Invoice');
+        if (count($methods) > 1) {
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::MULTIPLE_PAYMENT_METHODS,
+                'Informe exatamente um método em availablePaymentMethods.'
+            );
+        }
 
+        if (!empty($methods)) {
             return reset($methods);
         }
 
-        if (!empty($invoice->creditCard)) {
-            return PaymentMethod::CREDIT_CARD;
-        }
-
-        throw ModelAttributeValidationException::required('Invoice', 'availablePaymentMethods');
+        throw ModelAttributeValidationException::required('Invoice', 'paymentMethod or availablePaymentMethods');
     }
 
     /**
@@ -820,19 +815,9 @@ class StripeGateway implements GatewayContract
             ]),
         ];
         $stripePaymentIntentData['confirm'] = true;
-        if (!empty($invoice->expiresAt)) {
-            // janela aceita pela Stripe: mais de 10 segundos e menos de 14 dias no futuro.
-            // Na Iugu expires_at é due_date (date-only, "vence hoje" é válido) — falhar cedo
-            // evita o erro obscuro de parâmetro da API para quem vem dessa semântica
-            if ($invoice->expiresAt->lessThan(Carbon::now()->addSeconds(10))
-                || $invoice->expiresAt->greaterThan(Carbon::now()->addDays(14))) {
-                throw ModelAttributeValidationException::invalid(
-                    'Invoice',
-                    'expiresAt',
-                    'expiresAt must be more than 10 seconds and less than 14 days in the future for pix invoices on the stripe gateway'
-                );
-            }
-            $stripePaymentIntentData['payment_method_options']['pix']['expires_at'] = $invoice->expiresAt->getTimestamp();
+        $pixExpiresAt = $this->pixExpiresAt($invoice);
+        if (!empty($pixExpiresAt)) {
+            $stripePaymentIntentData['payment_method_options']['pix']['expires_at'] = $pixExpiresAt->getTimestamp();
         }
         $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
 
@@ -844,6 +829,37 @@ class StripeGateway implements GatewayContract
         });
 
         return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Instante em que o QR Code do Pix expira: `pixExpiresAt` ou, na falta dele, o fim do dia
+     * de `dueDate` (o vencimento vale o dia inteiro, como na Iugu). Nulo quando a fatura não
+     * informa nenhum dos dois (a Stripe usa o padrão de 4 horas). A janela aceita pela Stripe
+     * (mais de 10 segundos e menos de 14 dias no futuro) é validada antes da requisição.
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return Carbon|null
+     * @throws ModelAttributeValidationException
+     */
+    private function pixExpiresAt(Invoice $invoice): ?Carbon
+    {
+        $attribute = !empty($invoice->pixExpiresAt) ? 'pixExpiresAt' : 'dueDate';
+        $expiresAt = $invoice->pixExpiresAt ?? $invoice->dueDate?->copy()->endOfDay();
+        if (empty($expiresAt)) {
+            return null;
+        }
+
+        if ($expiresAt->lessThan(Carbon::now()->addSeconds(10))
+            || $expiresAt->greaterThan(Carbon::now()->addDays(14))) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                $attribute,
+                "{$attribute} must be more than 10 seconds and less than 14 days in the future for pix invoices on the stripe gateway"
+                . ($attribute === 'dueDate' ? ' (the QR Code expires at the end of the due date)' : '')
+            );
+        }
+
+        return $expiresAt;
     }
 
     /**
@@ -1286,8 +1302,8 @@ class StripeGateway implements GatewayContract
      * MultiPayment (origem `INVOICE`). O PaymentIntent da fatura vem de `payments`
      * (`invoicePaymentIntent()`), e o charge dele alimenta valores, estornos e contestação como
      * na cobrança avulsa. Os line items vêm de `lines.data` (a primeira página, de até dez
-     * itens); `url` é a página hospedada da fatura; `expiresAt` é o `due_date`, quando a fatura
-     * tem um, ou a expiração do QR Code do Pix.
+     * itens); `url` é a página hospedada da fatura; `dueDate` é o `due_date`, quando a fatura
+     * tem um, e `pixExpiresAt` a expiração do QR Code do Pix.
      *
      * @param  \Stripe\Invoice  $stripeInvoice
      * @param  \Potelo\MultiPayment\Models\Invoice|null  $invoice
@@ -1318,7 +1334,7 @@ class StripeGateway implements GatewayContract
         $invoice->paidAt = !empty($paidAt) ? Carbon::createFromTimestamp($paidAt) : null;
         $invoice->fee = self::chargeFee($paidCharge);
         $invoice->createdAt = Carbon::createFromTimestamp($stripeInvoice->created);
-        $invoice->expiresAt = !empty($stripeInvoice->due_date)
+        $invoice->dueDate = !empty($stripeInvoice->due_date)
             ? Carbon::createFromTimestamp($stripeInvoice->due_date)
             : null;
         $invoice->url = $stripeInvoice->hosted_invoice_url ?? null;
@@ -1528,7 +1544,7 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Preenche `pix` (QR Code) e `expiresAt` a partir de `next_action.pix_display_qr_code` do
+     * Preenche `pix` (QR Code) e `pixExpiresAt` a partir de `next_action.pix_display_qr_code` do
      * PaymentIntent e devolve a página hospedada de instruções. Sem QR Code, limpa `pix` e
      * devolve nulo.
      *
@@ -1553,9 +1569,9 @@ class StripeGateway implements GatewayContract
         }
         $invoice->pix->qrCodeText = $qrCode->data ?? null;
         $invoice->pix->qrCodeImageUrl = $qrCode->image_url_png ?? null;
-        $invoice->expiresAt = !empty($qrCode->expires_at)
+        $invoice->pixExpiresAt = !empty($qrCode->expires_at)
             ? Carbon::createFromTimestamp($qrCode->expires_at)
-            : $invoice->expiresAt;
+            : $invoice->pixExpiresAt;
 
         return $qrCode->hosted_instructions_url ?? null;
     }
@@ -1932,7 +1948,7 @@ class StripeGateway implements GatewayContract
         $duplicated->amount = $parsedOriginal->amount;
         $duplicated->items = $parsedOriginal->items;
         $duplicated->availablePaymentMethods = [PaymentMethod::PIX];
-        $duplicated->expiresAt = $expiresAt;
+        $duplicated->pixExpiresAt = $expiresAt;
         // preserva o metadata da original (inclusive chaves custom do consumidor);
         // as gatewayOptions do chamador vêm por último e podem sobrescrever
         $originalMetadata = !empty($original->metadata) ? $original->metadata->toArray() : [];

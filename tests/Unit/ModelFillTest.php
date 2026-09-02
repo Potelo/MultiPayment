@@ -131,7 +131,7 @@ class ModelFillTest extends TestCase
 
     /**
      * As chaves que os `fill()` especializados consomem antes do `Model` (`items`, `customer`,
-     * `expires_at`, `credit_card`, datas da assinatura) continuam aceitas.
+     * `due_date`, `pix_expires_at`, `credit_card`, datas da assinatura) continuam aceitas.
      */
     public function testKeysConsumedBySpecializedFillsAreStillAccepted(): void
     {
@@ -141,24 +141,30 @@ class ModelFillTest extends TestCase
         $invoice->fill([
             'items' => [['description' => 'Item', 'price' => 1000, 'quantity' => 1]],
             'customer' => ['name' => 'Ana', 'email' => 'ana@example.com', 'address' => ['zip_code' => '41820330']],
-            'expires_at' => '2026-10-01',
+            'due_date' => '2026-10-01',
+            'pix_expires_at' => '2026-10-01T18:00:00-03:00',
             'credit_card' => ['token' => 'pm_x', 'first_name' => 'Ana'],
             'available_payment_methods' => ['credit_card'],
             'origin_type' => 'invoice',
         ]);
         $this->assertSame('41820330', $invoice->customer->address->zipCode);
         $this->assertSame('pm_x', $invoice->creditCard->token);
+        $this->assertSame('2026-10-01', $invoice->dueDate->format('Y-m-d'));
+        $this->assertSame('2026-10-01T18:00:00-03:00', $invoice->pixExpiresAt->toIso8601String());
 
         $subscription = new Subscription();
         $subscription->fill([
             'plan_id' => 'plano',
             'trial_ends_at' => '2026-10-01',
             'next_billing_at' => '2026-11-01',
+            'trial_days' => null,
+            'credit_card' => ['id' => 'pm_1'],
             'customer' => ['id' => 'cus_1'],
             'latest_invoice' => ['id' => 'inv_1', 'status' => 'paid'],
             'items' => [['description' => 'Extra', 'amount' => 500]],
         ]);
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
+        $this->assertSame('pm_1', $subscription->creditCard->id);
 
         $card = new CreditCard();
         $card->fill(['token' => 'tok_x', 'customer' => ['id' => 'cus_1'], 'default' => true]);
@@ -170,8 +176,13 @@ class ModelFillTest extends TestCase
         $this->assertSame(['description', 'price', 'quantity', 'gateway_options'], InvoiceItem::fillableKeys());
 
         $keys = Invoice::fillableKeys();
-        foreach (['id', 'status', 'amount', 'payment_method', 'available_payment_methods', 'origin_type', 'credit_card', 'expires_at', 'gateway_options'] as $key) {
+        foreach (['id', 'status', 'amount', 'payment_method', 'available_payment_methods', 'origin_type', 'credit_card', 'due_date', 'pix_expires_at', 'gateway_options'] as $key) {
             $this->assertContains($key, $keys);
+        }
+        // o nome antigo é alias, fora da lista, como `gateway_adicional_options`
+        $this->assertNotContains('expires_at', $keys);
+        foreach (['payment_method', 'credit_card', 'trial_days', 'trial_ends_at'] as $key) {
+            $this->assertContains($key, Subscription::fillableKeys());
         }
         $this->assertContains('interval', Plan::fillableKeys());
         $this->assertContains('status', Refund::fillableKeys());

@@ -47,6 +47,7 @@ class StripeGatewayInvoiceTest extends TestCase
 
     protected function tearDown(): void
     {
+        Carbon::setTestNow();
         ApiRequestor::setHttpClient(null);
         Facade::clearResolvedInstances();
         Facade::setFacadeApplication(null);
@@ -138,6 +139,7 @@ class StripeGatewayInvoiceTest extends TestCase
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = $this->creditCardInvoiceModel();
+        $invoice->creditCard = null;
         $invoice->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
 
         try {
@@ -204,8 +206,8 @@ class StripeGatewayInvoiceTest extends TestCase
         $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
 
         $invoice = $this->pixInvoiceModel();
-        // o parse sobrescreve expiresAt com o valor devolvido pela Stripe — captura antes
-        $requestedExpiresAt = $invoice->expiresAt->getTimestamp();
+        // o parse sobrescreve pixExpiresAt com o valor devolvido pela Stripe: captura antes
+        $requestedExpiresAt = $invoice->pixExpiresAt->getTimestamp();
         $result = (new StripeGateway())->createInvoice($invoice);
 
         $this->assertCount(1, $httpClient->calls);
@@ -240,7 +242,8 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame('00020126pixcopiaecola', $result->pix->qrCodeText);
         $this->assertSame('https://qr.stripe.com/test.png', $result->pix->qrCodeImageUrl);
         $this->assertSame('https://payments.stripe.com/qr/instructions/test', $result->url);
-        $this->assertSame(1786800000, $result->expiresAt->getTimestamp());
+        $this->assertSame(1786800000, $result->pixExpiresAt->getTimestamp());
+        $this->assertNull($result->dueDate);
         $this->assertNull($result->paidAmount);
     }
 
@@ -282,26 +285,127 @@ class StripeGatewayInvoiceTest extends TestCase
         (new StripeGateway())->createInvoice($invoice);
     }
 
-    public function testPixInvoiceWithoutExpiresAtOmitsPaymentMethodOptions(): void
+    public function testPixInvoiceWithoutPixExpiresAtOrDueDateOmitsPaymentMethodOptions(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
 
         $invoice = $this->pixInvoiceModel();
-        $invoice->expiresAt = null;
+        $invoice->pixExpiresAt = null;
         (new StripeGateway())->createInvoice($invoice);
 
         $this->assertArrayNotHasKey('payment_method_options', $httpClient->calls[0][2]);
     }
 
-    public function testPixInvoiceRejectsExpiresAtOutsideStripeWindow(): void
+    public function testPixInvoiceRejectsPixExpiresAtOutsideStripeWindow(): void
     {
         $invoice = $this->pixInvoiceModel();
-        $invoice->expiresAt = Carbon::now()->subMinute();
+        $invoice->pixExpiresAt = Carbon::now()->subMinute();
 
         $this->expectException(ModelAttributeValidationException::class);
-        $this->expectExceptionMessage('more than 10 seconds and less than 14 days');
+        $this->expectExceptionMessage('pixExpiresAt must be more than 10 seconds and less than 14 days');
 
         (new StripeGateway())->createInvoice($invoice);
+    }
+
+    /**
+     * Sem `pixExpiresAt`, o QR Code expira no fim do dia de `dueDate`: um vencimento de hoje
+     * cabe na janela e `dueDate` permanece no model.
+     */
+    public function testPixInvoiceDerivesTheQrCodeExpiryFromTheEndOfTheDueDate(): void
+    {
+        Carbon::setTestNow('2026-09-02 10:00:00');
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->pixExpiresAt = null;
+        $invoice->dueDate = Carbon::parse('2026-09-02');
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(
+            Carbon::parse('2026-09-02 23:59:59')->getTimestamp(),
+            $httpClient->calls[0][2]['payment_method_options']['pix']['expires_at']
+        );
+        $this->assertSame('2026-09-02', $invoice->dueDate->format('Y-m-d'));
+    }
+
+    public function testPixInvoiceGivesPixExpiresAtPrecedenceOverDueDate(): void
+    {
+        Carbon::setTestNow('2026-09-02 10:00:00');
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->dueDate = Carbon::parse('2026-09-05');
+        $invoice->pixExpiresAt = Carbon::parse('2026-09-02 14:00:00');
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(
+            Carbon::parse('2026-09-02 14:00:00')->getTimestamp(),
+            $httpClient->calls[0][2]['payment_method_options']['pix']['expires_at']
+        );
+    }
+
+    #[DataProvider('dueDateOutsideWindowProvider')]
+    public function testPixInvoiceRejectsDueDateWhoseEndOfDayIsOutsideStripeWindow(string $dueDate): void
+    {
+        Carbon::setTestNow('2026-09-02 10:00:00');
+        $invoice = $this->pixInvoiceModel();
+        $invoice->pixExpiresAt = null;
+        $invoice->dueDate = Carbon::parse($dueDate);
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('dueDate must be more than 10 seconds and less than 14 days');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public static function dueDateOutsideWindowProvider(): array
+    {
+        return [
+            'vencida ontem' => ['2026-09-01'],
+            'fim do dia alem de 14 dias' => ['2026-09-16'],
+        ];
+    }
+
+    /**
+     * `paymentMethod` com a lista vazia escolhe o método da fatura, como a lista faria.
+     */
+    #[DataProvider('paymentMethodOnlyProvider')]
+    public function testPaymentMethodAloneSelectsTheStripePaymentMethodType(PaymentMethod $method, string $stripeType, bool $withCard): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $withCard ? $this->paidCardPaymentIntentResponse() : $this->pendingPixPaymentIntentResponse(),
+        ]);
+        $invoice = $withCard ? $this->creditCardInvoiceModel() : $this->pixInvoiceModel();
+        $invoice->availablePaymentMethods = null;
+        $invoice->paymentMethod = $method;
+
+        $result = (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame([$stripeType], $httpClient->calls[0][2]['payment_method_types']);
+        $this->assertSame($method, $result->paymentMethod);
+    }
+
+    public static function paymentMethodOnlyProvider(): array
+    {
+        return [
+            'cartao' => [PaymentMethod::CREDIT_CARD, 'card', true],
+            'pix' => [PaymentMethod::PIX, 'pix', false],
+        ];
+    }
+
+    public function testInvoiceWithoutAnyPaymentMethodIsRejectedBeforeTheNetwork(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = $this->pixInvoiceModel();
+        $invoice->availablePaymentMethods = null;
+
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Fatura sem método deveria lançar ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('paymentMethod or availablePaymentMethods', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     public function testPixInvoiceBillingDetailsOmitsMissingNameAndEmail(): void
@@ -1714,7 +1818,7 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->customer->name = 'Fake Customer';
         $invoice->customer->email = 'email@exemplo.com';
         $invoice->customer->taxDocument = '20176996915';
-        $invoice->expiresAt = Carbon::now()->addHour();
+        $invoice->pixExpiresAt = Carbon::now()->addHour();
 
         return $invoice;
     }

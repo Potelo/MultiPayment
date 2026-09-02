@@ -106,20 +106,24 @@ class MultiPayment
     }
 
     /**
-     * Charge a customer
+     * Cria e cobra uma fatura a partir de um array em `snake_case` (as chaves aceitas estão no
+     * README, no apêndice "Chaves do array de charge()"). `customer` é obrigatório e é
+     * conferido antes de qualquer conversão.
      *
      * @param  array  $attributes
-     * @param  string|null  $idempotencyKey  idempotency key of the operation; null disables deduplication
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
      *
      * @return Invoice
      * @throws GatewayException|ModelAttributeValidationException|GatewayNotAvailableException
      */
     public function charge(array $attributes, ?string $idempotencyKey = null): Invoice
     {
+        if (empty($attributes['customer'])) {
+            throw ModelAttributeValidationException::required('Invoice', 'customer');
+        }
+
         $invoice = new Invoice();
         $invoice->fill($attributes);
-        $invoice->customer = new Customer();
-        $invoice->customer->fill($attributes['customer']);
 
         $invoice->save($this->gateway, true, $idempotencyKey);
         return $invoice;

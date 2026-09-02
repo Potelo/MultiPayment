@@ -144,10 +144,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
-     * A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /invoices` ou de
-     * `POST /charge` (fatura com cartão); o cartão salvo antes da cobrança usa a chave derivada
-     * `{chave}:card` pela `IdempotencyStore`. Na reutilização da chave, a Iugu responde 409 com
-     * o id da fatura original, que o driver lê e devolve.
+     * Os métodos da fatura vêm de `Invoice::resolvedPaymentMethods()` (`payable_with`); com
+     * cartão entre eles e `creditCard` preenchido, a fatura é cobrada por `POST /charge`.
+     * `dueDate` vai em `due_date` (sem ele, o dia de `pixExpiresAt`, ou hoje) e `pixExpiresAt`
+     * em `pix_qr_code_expires_at`. A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /invoices` ou de `POST /charge`;
+     * o cartão salvo antes da cobrança usa a chave derivada `{chave}:card` pela
+     * `IdempotencyStore`. Na reutilização da chave, a Iugu responde 409 com o id da fatura
+     * original, que o driver lê e devolve.
      *
      * @throws ModelAttributeValidationException|ChargingException|UnsupportedOperationException
      */
@@ -171,10 +174,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 'price_cents' => $item->price,
             ];
         }
-        $iuguInvoiceData['due_date'] = !empty($invoice->expiresAt)
-            ? $invoice->expiresAt->format('Y-m-d')
-            : Carbon::now()->format('Y-m-d');
+        $dueDate = $invoice->dueDate ?? $invoice->pixExpiresAt ?? Carbon::now();
+        $iuguInvoiceData['due_date'] = $dueDate->format('Y-m-d');
         $iuguInvoiceData['expires_in'] = 0;
+        if (!empty($invoice->pixExpiresAt)) {
+            $iuguInvoiceData['pix_qr_code_expires_at'] = $invoice->pixExpiresAt->toIso8601String();
+        }
 
         if (!empty($invoice->customer->address)) {
             $iuguInvoiceData['payer']['address'] = $invoice->customer->address->toArray();
@@ -183,10 +188,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             }
         }
 
-        // normaliza antes de ler: uma string apensada por `[]=` entra no array sem conversão
-        $payableWith = !empty($invoice->availablePaymentMethods)
-            ? PaymentMethod::normalizeSelectable($invoice->availablePaymentMethods, 'Invoice')
-            : [];
+        $payableWith = $invoice->resolvedPaymentMethods();
 
         if (!empty($payableWith)) {
             $iuguInvoiceData['payable_with'] = self::paymentMethodsToIuguPayableWith($payableWith);
@@ -1319,11 +1321,17 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $invoice->paidAmount = $iuguInvoice->paid_cents ?? null;
         $invoice->refundedAmount = $iuguInvoice->refunded_cents ?? null;
         $invoice->refunds = $this->parseRefunds($invoice);
-        $invoice->expiresAt = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+        $invoice->dueDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
+        // a Iugu não documenta a expiração do QR Code na fatura; quando vier, ela vale, senão
+        // fica o que o model já tinha
+        $invoice->pixExpiresAt = !empty($iuguInvoice->pix_qr_code_expires_at)
+            ? new Carbon($iuguInvoice->pix_qr_code_expires_at)
+            : $invoice->pixExpiresAt;
 
-        if (empty($invoice->paymentMethod)) {
-            $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method ?? null);
-        }
+        // a resposta manda: o método pedido na escrita só fica enquanto a Iugu não informa o
+        // método com que a fatura foi paga
+        $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method ?? null)
+            ?? $invoice->paymentMethod;
 
         if (!empty($iuguInvoice->payable_with)) {
             $invoice->availablePaymentMethods = $this->iuguPayableWithToPaymentMethods($iuguInvoice->payable_with);
@@ -1792,27 +1800,81 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
-     * A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /subscriptions`. Na
-     * reutilização da chave a Iugu responde 409 sem o id da assinatura original
-     * (`resource_id: processing`), que chega como `IdempotencyConflictException`.
+     * `payable_with` vem de `availablePaymentMethods` ou, com ela vazia, de `paymentMethod`
+     * (cartão quando só `creditCard` foi informado); o cartão informado vira o padrão do
+     * cliente antes da criação, porque a assinatura da Iugu cobra o cartão padrão. `trialDays`
+     * vira `trialEndsAt` contado de hoje, e um trial (`trialEndsAt`) vai como `expires_at` com
+     * `only_charge_on_due_date`, para o primeiro ciclo só ser cobrado no fim do teste;
+     * `nextBillingAt` sozinho vai só como `expires_at`. A chave de idempotência vai no cabeçalho
+     * `Idempotency-Key` de `POST /subscriptions`. Na reutilização da chave a Iugu responde 409
+     * sem o id da assinatura original (`resource_id: processing`), que chega como
+     * `IdempotencyConflictException`.
      */
     public function createSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
         $data = array_merge(
             $this->subscriptionToIuguData($subscription),
             self::withoutIdempotencyKey($subscription->gatewayOptions)
         );
+
+        $this->applySubscriptionCreditCard($subscription, $idempotencyKey);
 
         $response = $this->iuguIdempotentRequest(
             'POST',
             Iugu::getBaseURI() . '/subscriptions',
             $data,
             'creating subscription',
-            $this->idempotencyKeyFor($idempotencyKey, $subscription),
+            $idempotencyKey,
             true
         );
 
         return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * Torna o cartão de `Subscription::$creditCard` o cartão padrão do cliente, que é o que a
+     * Iugu cobra numa assinatura paga com cartão. Cartão sem `id` (token ou dados crus) é salvo
+     * no cliente já como padrão (`{chave}:card`); cartão com `id` é marcado como padrão por um
+     * `PUT` no cliente (`{chave}:default`). Sem cartão no model, nada é feito.
+     *
+     * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return void
+     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     */
+    private function applySubscriptionCreditCard(Subscription $subscription, ?string $idempotencyKey): void
+    {
+        $creditCard = $subscription->creditCard;
+        if (empty($creditCard)) {
+            return;
+        }
+        if (empty($subscription->customer) || empty($subscription->customer->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'customer');
+        }
+
+        if (empty($creditCard->id)) {
+            if (empty($creditCard->customer)) {
+                $creditCard->customer = $subscription->customer;
+            }
+            $creditCard->default = true;
+            $subscription->creditCard = $this->createCreditCard(
+                $creditCard,
+                self::derivedIdempotencyKey($idempotencyKey, 'card')
+            );
+
+            return;
+        }
+
+        $this->iuguIdempotentRequest(
+            'PUT',
+            Iugu::getBaseURI() . '/customers/' . rawurlencode($subscription->customer->id),
+            ['default_payment_method_id' => $creditCard->id],
+            'setting the subscription card as the customer default',
+            self::derivedIdempotencyKey($idempotencyKey, 'default')
+        );
+        $creditCard->default = true;
     }
 
     /**
@@ -1838,7 +1900,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @inheritDoc
      *
      * A chave de idempotência passa pela `IdempotencyStore`: a informada no `PUT` da
-     * atualização e `{chave}:remove` na remoção de subitens que a antecede.
+     * atualização, `{chave}:remove` na remoção de subitens que a antecede e `{chave}:card` ou
+     * `{chave}:default` no cartão que passa a ser o padrão do cliente.
      */
     public function updateSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
@@ -1853,6 +1916,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         );
         $subitems = $data['subitems'] ?? null;
         unset($data['subitems']);
+
+        $this->applySubscriptionCreditCard($subscription, $idempotencyKey);
 
         if (!is_null($subitems)) {
             // a Iugu recusa remover e adicionar subitens na mesma requisição, então a remoção
@@ -2223,30 +2288,44 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $data['plan_identifier'] = $subscription->planId;
         }
 
+        // o fim do trial em dias é calculado agora, no momento da requisição, e substitui os
+        // dias no model, para o próximo save() não os recontar
+        if (empty($subscription->trialEndsAt) && !empty($subscription->trialDays)) {
+            $subscription->trialEndsAt = Carbon::now()->addDays($subscription->trialDays);
+            $subscription->trialDays = null;
+        }
+        $trialEndsAt = $subscription->trialEndsAt;
+
         if (
             !empty($subscription->nextBillingAt)
-            && !empty($subscription->trialEndsAt)
-            && !$subscription->nextBillingAt->isSameDay($subscription->trialEndsAt)
+            && !empty($trialEndsAt)
+            && !$subscription->nextBillingAt->isSameDay($trialEndsAt)
         ) {
             throw new GatewayException(
                 'Iugu stores the trial end and the next billing date in the same field, so '
-                . 'nextBillingAt and trialEndsAt cannot hold different dates.'
+                . 'nextBillingAt and trialEndsAt (or trialDays) cannot hold different dates.'
             );
         }
 
-        $expiresAt = $subscription->nextBillingAt ?? $subscription->trialEndsAt;
+        $expiresAt = $subscription->nextBillingAt ?? $trialEndsAt;
 
         if (!empty($expiresAt) && ($creating || !$this->isOriginalExpiresAt($subscription, $expiresAt))) {
             $data['expires_at'] = $expiresAt->format('Y-m-d');
         }
 
+        // por padrão a Iugu cobra o primeiro ciclo na criação, mesmo com `expires_at` no
+        // futuro; num trial a primeira cobrança só pode acontecer no fim dele
+        if ($creating && !empty($trialEndsAt)) {
+            $data['only_charge_on_due_date'] = true;
+        }
+
+        // lista vazia: a Iugu usa os métodos habilitados na conta
+        $payableWith = $subscription->resolvedPaymentMethods();
         if (
-            !empty($subscription->availablePaymentMethods)
-            && ($creating || !$this->isOriginalPayableWith($subscription))
+            !empty($payableWith)
+            && ($creating || !$this->isOriginalPayableWith($subscription, $payableWith))
         ) {
-            $data['payable_with'] = self::paymentMethodsToIuguPayableWith(
-                PaymentMethod::normalizeSelectable($subscription->availablePaymentMethods, 'Subscription')
-            );
+            $data['payable_with'] = self::paymentMethodsToIuguPayableWith($payableWith);
         }
 
         if (!empty($subscription->metadata)) {
@@ -2296,10 +2375,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * dos três métodos.
      *
      * @param  Subscription  $subscription
+     * @param  PaymentMethod[]  $payableWith
      *
      * @return bool
      */
-    private function isOriginalPayableWith(Subscription $subscription): bool
+    private function isOriginalPayableWith(Subscription $subscription, array $payableWith): bool
     {
         $original = $subscription->original->payable_with ?? null;
 
@@ -2307,8 +2387,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             return false;
         }
 
-        return $this->iuguPayableWithToPaymentMethods($original)
-            === array_values($subscription->availablePaymentMethods);
+        return $this->iuguPayableWithToPaymentMethods($original) === array_values($payableWith);
     }
 
     /**
@@ -2507,6 +2586,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $subscription->availablePaymentMethods = $this->iuguPayableWithToPaymentMethods(
                 $iuguSubscription->payable_with
             );
+            // a Iugu não diz com qual método a assinatura é cobrada: só há um quando ela
+            // aceita um único método
+            $subscription->paymentMethod = count($subscription->availablePaymentMethods) === 1
+                ? $subscription->availablePaymentMethods[0]
+                : null;
         }
 
         // lista vazia também conta: é o que a Iugu devolve depois de remover a última variável
@@ -2814,7 +2898,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             ? self::iuguStatusToMultiPayment($iuguInvoice->status)
             : null;
 
-        $invoice->expiresAt = !empty($iuguInvoice->due_date)
+        $invoice->dueDate = !empty($iuguInvoice->due_date)
             ? new Carbon($iuguInvoice->due_date)
             : null;
         $invoice->url = $iuguInvoice->secure_url ?? null;
