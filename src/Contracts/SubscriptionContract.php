@@ -3,6 +3,7 @@
 namespace  Potelo\MultiPayment\Contracts;
 
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -91,28 +92,38 @@ interface SubscriptionContract
     ): Subscription;
 
     /**
-     * Troca o plano da assinatura.
+     * Troca o plano da assinatura com a política de pró-rata informada.
      *
-     * Com $charge falso, a troca não gera cobrança imediata. Se `nextBillingAt` estiver
-     * preenchido na assinatura, a data da próxima cobrança vai na mesma requisição.
+     * `CHARGE_DIFFERENCE` cobra o plano novo na hora; `NONE` não cobra nem credita nada agora
+     * e, se `nextBillingAt` estiver preenchido na assinatura, a data da próxima cobrança vai na
+     * mesma requisição; `CREDIT` pede ao gateway o crédito proporcional do período não usado, e
+     * gateway sem `Capability::PLAN_CHANGE_PRORATION` lança `UnsupportedOperationException`
+     * antes de qualquer requisição. O booleano antigo continua aceito no lugar do enum e pelo
+     * nome `charge` (`true` é `CHARGE_DIFFERENCE`, `false` é `NONE`), com aviso
+     * `E_USER_DEPRECATED`; `charge` informado prevalece sobre `$proration`.
      *
      * @param  Subscription  $subscription
      * @param  string  $planId
-     * @param  bool  $charge
+     * @param  ProrationBehavior|bool  $proration  política de pró-rata; o booleano é o `$charge` antigo, obsoleto
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @param  bool|null  $charge  obsoleto desde 2026-09-02; use `$proration`
      *
      * @return Subscription
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function changeSubscriptionPlan(
         Subscription $subscription,
         string $planId,
-        bool $charge = true,
-        ?string $idempotencyKey = null
+        ProrationBehavior|bool $proration = ProrationBehavior::CHARGE_DIFFERENCE,
+        ?string $idempotencyKey = null,
+        ?bool $charge = null
     ): Subscription;
 
     /**
-     * Simula a troca de plano sem aplicá-la, devolvendo o que seria cobrado.
+     * Simula a troca de plano sem aplicá-la, devolvendo o que seria cobrado. As linhas de
+     * `SubscriptionPlanChange::$items` nunca faltam: quando o gateway não as devolve, o driver
+     * as monta a partir dos totais da simulação.
      *
      * @param  Subscription  $subscription
      * @param  string  $planId

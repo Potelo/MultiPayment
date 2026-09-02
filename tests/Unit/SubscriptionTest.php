@@ -17,11 +17,13 @@ use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
@@ -376,11 +378,39 @@ class SubscriptionTest extends TestCase
             'amount' => 50000,
             'items' => [['description' => 'Tempo não utilizado', 'price' => -10000, 'quantity' => 1]],
             'effective_at' => '2026-10-01',
+            'applies_immediately' => true,
         ]);
 
         $this->assertInstanceOf(InvoiceItem::class, $planChange->items[0]);
         $this->assertSame(-10000, $planChange->items[0]->price);
         $this->assertSame('2026-10-01', $planChange->effectiveAt->format('Y-m-d'));
+        $this->assertTrue($planChange->appliesImmediately);
+    }
+
+    /**
+     * Uma prévia recém-criada já tem lista de linhas (vazia) e não assume que o plano vale na
+     * hora.
+     */
+    public function testPlanChangeStartsWithAnEmptyListOfLines(): void
+    {
+        $planChange = new SubscriptionPlanChange();
+
+        $this->assertSame([], $planChange->items);
+        $this->assertFalse($planChange->appliesImmediately);
+    }
+
+    /**
+     * `items` e `applies_immediately` nulos no `fill()` mantêm o valor atual em vez de lançar
+     * `TypeError`.
+     */
+    public function testPlanChangeFillIgnoresNullLinesAndFlag(): void
+    {
+        $planChange = new SubscriptionPlanChange();
+        $planChange->fill(['amount' => 100, 'items' => null, 'applies_immediately' => null]);
+
+        $this->assertSame(100, $planChange->amount);
+        $this->assertSame([], $planChange->items);
+        $this->assertFalse($planChange->appliesImmediately);
     }
 
     public function testBuilderAssemblesTheSubscription(): void
@@ -474,8 +504,56 @@ class SubscriptionTest extends TestCase
             'resume' => ['resumeSubscription', [], 'resume', []],
             'cancel imediato' => ['cancelSubscription', [false], 'cancel', [false]],
             'cancel ao fim do periodo' => ['cancelSubscription', [true], 'cancel', [true]],
-            'changePlan cobrando' => ['changeSubscriptionPlan', ['plano_anual', true], 'changePlan', ['plano_anual', true]],
-            'changePlan sem cobrar' => ['changeSubscriptionPlan', ['plano_anual', false], 'changePlan', ['plano_anual', false]],
+            'changePlan cobrando' => ['changeSubscriptionPlan', ['plano_anual', ProrationBehavior::CHARGE_DIFFERENCE], 'changePlan', ['plano_anual', ProrationBehavior::CHARGE_DIFFERENCE]],
+            'changePlan sem cobrar' => ['changeSubscriptionPlan', ['plano_anual', ProrationBehavior::NONE], 'changePlan', ['plano_anual', ProrationBehavior::NONE]],
+            'changePlan com crédito' => ['changeSubscriptionPlan', ['plano_anual', ProrationBehavior::CREDIT], 'changePlan', ['plano_anual', ProrationBehavior::CREDIT]],
+        ];
+    }
+
+    /**
+     * O booleano antigo de `changePlan()`, posicional ou pelo nome `charge`, chega ao gateway
+     * traduzido para o enum, com aviso de obsolescência.
+     */
+    #[DataProvider('deprecatedChargeProvider')]
+    #[IgnoreDeprecations]
+    public function testChangePlanTranslatesTheDeprecatedBoolean(callable $call, ProrationBehavior $expected): void
+    {
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $gateway = self::subscriptionGateway();
+        $gateway->shouldReceive('changeSubscriptionPlan')
+            ->once()
+            ->with($subscription, 'plano_anual', $expected, null)
+            ->andReturn($subscription);
+
+        $this->expectUserDeprecationMessage(
+            'O booleano $charge de changePlan() está obsoleto desde 2026-09-02; passe'
+            . ' ProrationBehavior::CHARGE_DIFFERENCE ou ProrationBehavior::NONE'
+        );
+
+        $this->assertSame($subscription, $call($subscription, $gateway));
+    }
+
+    public static function deprecatedChargeProvider(): array
+    {
+        return [
+            'true posicional' => [
+                fn (Subscription $s, $g) => $s->changePlan('plano_anual', true, $g),
+                ProrationBehavior::CHARGE_DIFFERENCE,
+            ],
+            'false posicional' => [
+                fn (Subscription $s, $g) => $s->changePlan('plano_anual', false, $g),
+                ProrationBehavior::NONE,
+            ],
+            'charge nomeado' => [
+                fn (Subscription $s, $g) => $s->changePlan('plano_anual', charge: false, gateway: $g),
+                ProrationBehavior::NONE,
+            ],
+            'charge nomeado prevalece sobre o enum' => [
+                fn (Subscription $s, $g) => $s->changePlan('plano_anual', ProrationBehavior::NONE, $g, charge: true),
+                ProrationBehavior::CHARGE_DIFFERENCE,
+            ],
         ];
     }
 

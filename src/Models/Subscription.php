@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Models;
 use Carbon\Carbon;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -629,15 +630,21 @@ class Subscription extends Model
     }
 
     /**
-     * Troca o plano da assinatura.
+     * Troca o plano da assinatura com a política de pró-rata informada.
      *
-     * Com $charge, a troca gera a cobrança na hora e a fatura resultante volta em
-     * `latestInvoice`; sem ele, nada é cobrado.
+     * Com `ProrationBehavior::CHARGE_DIFFERENCE` (o padrão) a troca gera a cobrança na hora e a
+     * fatura resultante volta em `latestInvoice`; com `NONE` nada é cobrado nem creditado agora;
+     * com `CREDIT` o gateway calcula o crédito do período não usado, e gateway sem
+     * `Capability::PLAN_CHANGE_PRORATION` lança `UnsupportedOperationException` antes de
+     * qualquer requisição. O booleano antigo continua aceito na mesma posição, e o argumento
+     * nomeado `charge` também; os dois são traduzidos (`true` é `CHARGE_DIFFERENCE`, `false` é
+     * `NONE`) com aviso `E_USER_DEPRECATED`, e `charge` informado prevalece sobre `$proration`.
      *
      * @param  string  $planId
-     * @param  bool  $charge
+     * @param  ProrationBehavior|bool  $proration  política de pró-rata; o booleano é o `$charge` antigo, obsoleto
      * @param  GatewayContract|string|null  $gateway
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @param  bool|null  $charge  obsoleto desde 2026-09-02; use `$proration`
      *
      * @return Subscription
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
@@ -648,12 +655,15 @@ class Subscription extends Model
      */
     public function changePlan(
         string $planId,
-        bool $charge = true,
+        ProrationBehavior|bool $proration = ProrationBehavior::CHARGE_DIFFERENCE,
         GatewayContract|string|null $gateway = null,
-        ?string $idempotencyKey = null
+        ?string $idempotencyKey = null,
+        ?bool $charge = null
     ): Subscription {
+        $proration = ProrationBehavior::resolve($charge ?? $proration);
+
         return $this->resolveSubscriptionGateway($gateway)
-            ->changeSubscriptionPlan($this, $planId, $charge, $idempotencyKey);
+            ->changeSubscriptionPlan($this, $planId, $proration, $idempotencyKey);
     }
 
     /**

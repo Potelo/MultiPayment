@@ -23,6 +23,7 @@ use Potelo\MultiPayment\Builders\CustomerBuilder;
 use Potelo\MultiPayment\Builders\CreditCardBuilder;
 use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\NotFoundException;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -246,6 +247,50 @@ class MultiPayment
         $invoice = new Invoice();
         $invoice->id = $id;
         return $invoice->get($this->gateway);
+    }
+
+    /**
+     * Busca a assinatura pelo id no gateway desta instância.
+     *
+     * @param  string  $id
+     *
+     * @return Subscription
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     */
+    public function getSubscription(string $id): Subscription
+    {
+        $subscription = new Subscription();
+        $subscription->id = $id;
+
+        return $subscription->get($this->gateway);
+    }
+
+    /**
+     * Busca o plano pelo identificador definido por quem o criou ou pelo id do gateway. A
+     * primeira busca usa o valor como `identifier`; se o gateway responder que não existe
+     * (`NotFoundException`), a segunda usa o valor como `id`. Plano inexistente nos dois
+     * lança a `NotFoundException` da segunda busca.
+     *
+     * @param  string  $idOrIdentifier
+     *
+     * @return Plan
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     */
+    public function getPlan(string $idOrIdentifier): Plan
+    {
+        $plan = new Plan();
+        $plan->identifier = $idOrIdentifier;
+
+        try {
+            return $plan->get($this->gateway);
+        } catch (NotFoundException) {
+            $plan = new Plan();
+            $plan->id = $idOrIdentifier;
+
+            return $plan->get($this->gateway);
+        }
     }
 
     /**

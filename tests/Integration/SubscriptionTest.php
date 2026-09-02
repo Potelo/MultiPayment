@@ -16,6 +16,7 @@ use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 
 /**
@@ -126,6 +127,10 @@ class SubscriptionTest extends TestCase
         $porId->id = $plan->id;
         $this->assertSame($plan->identifier, $porId->get(self::GATEWAY)->identifier);
 
+        // a fachada aceita o identificador (uma requisição) ou o id do gateway (duas)
+        $this->assertSame($plan->id, MultiPayment::setGateway(self::GATEWAY)->getPlan($plan->identifier)->id);
+        $this->assertSame($plan->identifier, MultiPayment::setGateway(self::GATEWAY)->getPlan($plan->id)->identifier);
+
         $this->createPlan(500, 'plano2');
 
         $primeira = MultiPayment::setGateway(self::GATEWAY)->listPlans(1, 1);
@@ -181,9 +186,7 @@ class SubscriptionTest extends TestCase
         );
         $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
 
-        $lida = new Subscription();
-        $lida->id = $subscription->id;
-        $lida = $lida->get(self::GATEWAY);
+        $lida = MultiPayment::setGateway(self::GATEWAY)->getSubscription($subscription->id);
         $this->assertSame($subscription->id, $lida->id);
         $this->assertSame($subscription->planId, $lida->planId);
 
@@ -304,11 +307,16 @@ class SubscriptionTest extends TestCase
         $preview = $subscription->previewPlanChange($planoNovo->identifier, self::GATEWAY);
         $this->assertSame('iugu', $preview->gateway);
         $this->assertSame(30000, $preview->amount);
-        $this->assertNull($preview->items);
+        // a Iugu não devolve linhas; a lib monta a de cobrança do plano novo a partir de cost
+        $this->assertCount(1, $preview->items);
+        $this->assertSame(30000, $preview->items[0]->price);
+        $this->assertSame("Plano {$planoNovo->identifier}", $preview->items[0]->description);
+        // assinatura paga por Pix: a troca com cobrança só vale depois do pagamento
+        $this->assertFalse($preview->appliesImmediately);
         $this->assertSame($planoNovo->identifier, $preview->original->new_plan);
         $this->assertSame($plan->identifier, $preview->original->old_plan);
 
-        $trocada = $subscription->changePlan($planoNovo->identifier, false, self::GATEWAY);
+        $trocada = $subscription->changePlan($planoNovo->identifier, ProrationBehavior::NONE, self::GATEWAY);
         $this->assertSame($planoNovo->identifier, $trocada->planId);
         $this->assertSame(30000, $trocada->amount);
     }
@@ -329,7 +337,7 @@ class SubscriptionTest extends TestCase
         // guarda: sem isto a asserção de latestInvoice abaixo passaria com a da leitura anterior
         $this->assertNull($subscription->latestInvoice);
 
-        $trocada = $subscription->changePlan($planoNovo->identifier, true, self::GATEWAY);
+        $trocada = $subscription->changePlan($planoNovo->identifier, ProrationBehavior::CHARGE_DIFFERENCE, self::GATEWAY);
 
         $this->assertSame($planoNovo->identifier, $trocada->planId);
         $this->assertSame(30000, $trocada->amount);

@@ -29,6 +29,7 @@ use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\DeclineCode;
@@ -2077,6 +2078,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
+     * `CHARGE_DIFFERENCE` vai para `POST change_plan`, que gera a fatura da troca na hora;
+     * `NONE` vai num `PUT` com `skip_charge`; `CREDIT` é recusado antes da rede
+     * (`PLAN_CHANGE_PRORATION` é limitação da Iugu, que não gera crédito ao trocar de plano).
      * A chave de idempotência passa pela `IdempotencyStore` na requisição que aplica a troca
      * (`POST change_plan` ou `PUT`); a releitura da assinatura que segue a troca com cobrança
      * não a usa.
@@ -2084,15 +2088,25 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     public function changeSubscriptionPlan(
         Subscription $subscription,
         string $planId,
-        bool $charge = true,
-        ?string $idempotencyKey = null
+        ProrationBehavior|bool $proration = ProrationBehavior::CHARGE_DIFFERENCE,
+        ?string $idempotencyKey = null,
+        ?bool $charge = null
     ): Subscription {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
+
+        $proration = ProrationBehavior::resolve($charge ?? $proration);
+        if (!is_null($proration->requiredCapability())) {
+            $this->assertSupports(
+                $proration->requiredCapability(),
+                'A Iugu não gera crédito do período não usado ao trocar de plano; use'
+                . ' ProrationBehavior::CHARGE_DIFFERENCE ou ProrationBehavior::NONE.'
+            );
+        }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
-        if ($charge) {
+        if ($proration === ProrationBehavior::CHARGE_DIFFERENCE) {
             $this->iuguIdempotentRequest(
                 'POST',
                 $this->subscriptionUrl($subscription->id) . '/change_plan/' . rawurlencode($planId),
@@ -2125,6 +2139,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * Simula o fluxo de `ProrationBehavior::CHARGE_DIFFERENCE` (`change_plan_simulation`).
+     * `appliesImmediately` depende de como a assinatura é paga: verdadeiro quando o único
+     * método é cartão (a Iugu cobra o cartão padrão na hora); falso quando há boleto ou Pix,
+     * porque a Iugu só efetiva a troca depois do pagamento da fatura gerada. Quando o model não
+     * traz `paymentMethod` nem `availablePaymentMethods`, o driver lê a assinatura antes da
+     * simulação (num model à parte, sem tocar no do chamador), o que custa uma requisição a
+     * mais; `creditCard` sozinho não conta, porque é atributo de escrita.
      */
     public function previewSubscriptionPlanChange(
         Subscription $subscription,
@@ -2134,6 +2156,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
 
+        $source = $subscription;
+        if (empty($subscription->availablePaymentMethods) && is_null($subscription->paymentMethod)) {
+            $source = new Subscription();
+            $source->id = $subscription->id;
+            $source = $this->getSubscription($source);
+        }
+        $paymentMethods = $source->resolvedPaymentMethods();
+
         $response = $this->iuguRequest(
             'GET',
             $this->subscriptionUrl($subscription->id)
@@ -2142,7 +2172,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             'simulating subscription plan change'
         );
 
-        return $this->parseIuguPlanChange($response);
+        $planChange = $this->parseIuguPlanChange($response);
+        $planChange->appliesImmediately = $paymentMethods === [PaymentMethod::CREDIT_CARD];
+
+        return $planChange;
     }
 
     /**
@@ -2944,6 +2977,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             }
         }
 
+        if (empty($planChange->items) && !is_null($planChange->amount)) {
+            $planChange->items = $this->synthesizeIuguPlanChangeItems($planChange->amount, $response);
+        }
+
         if (!empty($response->expires_at)) {
             $planChange->effectiveAt = new Carbon($response->expires_at);
         }
@@ -2952,6 +2989,44 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $planChange->original = $response;
 
         return $planChange;
+    }
+
+    /**
+     * Monta as linhas da simulação de troca de plano a partir dos totais, porque a Iugu não
+     * devolve linhas em `change_plan_simulation`: uma de cobrança do plano novo e, quando
+     * `discount` é maior que zero, uma negativa de crédito do plano antigo. `cost` é lido como
+     * o valor líquido da troca, então a linha do plano novo é `cost` mais `discount` e a soma
+     * das linhas é igual a `cost`.
+     *
+     * @param  int  $amount  valor líquido da troca (`cost`)
+     * @param  object  $response
+     *
+     * @return InvoiceItem[]
+     */
+    private function synthesizeIuguPlanChangeItems(int $amount, object $response): array
+    {
+        $discount = isset($response->discount) && is_numeric($response->discount)
+            ? (int) $response->discount
+            : 0;
+        $newPlan = isset($response->new_plan) && is_scalar($response->new_plan) ? (string) $response->new_plan : null;
+        $oldPlan = isset($response->old_plan) && is_scalar($response->old_plan) ? (string) $response->old_plan : null;
+
+        $charge = new InvoiceItem();
+        $charge->description = is_null($newPlan) ? 'Plano novo' : "Plano {$newPlan}";
+        $charge->price = $amount + max($discount, 0);
+        $charge->quantity = 1;
+
+        $items = [$charge];
+
+        if ($discount > 0) {
+            $credit = new InvoiceItem();
+            $credit->description = is_null($oldPlan) ? 'Crédito do plano anterior' : "Crédito do plano {$oldPlan}";
+            $credit->price = -$discount;
+            $credit->quantity = 1;
+            $items[] = $credit;
+        }
+
+        return $items;
     }
 
     /**

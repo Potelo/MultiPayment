@@ -10,27 +10,38 @@ use Carbon\Carbon;
 class SubscriptionPlanChange extends Model
 {
     /**
-     * Valor da troca segundo o gateway, em centavos. Nem todo gateway o devolve já líquido de
-     * créditos e descontos — o que sobra fica em `original`.
+     * Valor que a troca cobraria agora, em centavos, segundo o gateway; quando há linhas, é a
+     * soma de `items`.
      *
      * @var int|null
      */
     public ?int $amount = null;
 
     /**
-     * Linhas da fatura que a troca geraria, quando o gateway as devolve — a Iugu não devolve, e
-     * lá fica `null`. Crédito de período não usado vem com price negativo.
+     * Linhas da fatura que a troca geraria. Crédito de período não usado vem com `price`
+     * negativo. Gateway que não devolve linhas recebe linhas montadas pela lib a partir dos
+     * totais da simulação (na Iugu: uma de cobrança do plano novo e, quando há crédito, uma
+     * negativa do plano antigo), então a lista nunca é nula; o payload cru fica em `original`.
      *
-     * @var InvoiceItem[]|null
+     * @var InvoiceItem[]
      */
-    public ?array $items = null;
+    public array $items = [];
 
     /**
-     * Quando a próxima cobrança aconteceria caso a troca fosse aplicada.
+     * Data em que a próxima cobrança acontece após a troca.
      *
      * @var Carbon|null
      */
     public ?Carbon $effectiveAt = null;
+
+    /**
+     * Diz se o plano novo passa a valer assim que a troca for aplicada. Falso quando o gateway
+     * só efetiva a troca depois que o pagador quitar a fatura gerada por ela (na Iugu,
+     * assinatura paga por boleto ou Pix).
+     *
+     * @var bool
+     */
+    public bool $appliesImmediately = false;
 
     /**
      * @var string|null
@@ -51,6 +62,13 @@ class SubscriptionPlanChange extends Model
     {
         if (!empty($data['effective_at']) && !$data['effective_at'] instanceof Carbon) {
             $data['effective_at'] = Carbon::parse($data['effective_at']);
+        }
+
+        // as duas propriedades não aceitam nulo; chave nula mantém o valor atual
+        foreach (['items', 'applies_immediately'] as $key) {
+            if (array_key_exists($key, $data) && is_null($data[$key])) {
+                unset($data[$key]);
+            }
         }
 
         if (!empty($data['items']) && is_array($data['items'])) {

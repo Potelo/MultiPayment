@@ -22,6 +22,7 @@ use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Contracts\IdempotencyStore;
 use Potelo\MultiPayment\Idempotency\InMemoryIdempotencyStore;
 use Potelo\MultiPayment\Exceptions\RateLimitException;
@@ -284,13 +285,13 @@ class IuguGatewayIdempotencyTest extends TestCase
                 'PUT', '/subscriptions/sub_1',
             ],
             'changeSubscriptionPlan com cobrança (POST /change_plan, com a releitura repetida)' => [
-                fn (IuguGateway $g, string $key) => $g->changeSubscriptionPlan(self::subscriptionWithId(), 'plano_anual', true, $key),
+                fn (IuguGateway $g, string $key) => $g->changeSubscriptionPlan(self::subscriptionWithId(), 'plano_anual', ProrationBehavior::CHARGE_DIFFERENCE, $key),
                 [(object) ['success' => true], self::subscriptionResponse(['plan_identifier' => 'plano_anual'])],
                 'POST', '/subscriptions/sub_1/change_plan/plano_anual',
                 [self::subscriptionResponse(['plan_identifier' => 'plano_anual'])],
             ],
             'changeSubscriptionPlan sem cobrança (PUT /subscriptions/{id})' => [
-                fn (IuguGateway $g, string $key) => $g->changeSubscriptionPlan(self::subscriptionWithId(), 'plano_anual', false, $key),
+                fn (IuguGateway $g, string $key) => $g->changeSubscriptionPlan(self::subscriptionWithId(), 'plano_anual', ProrationBehavior::NONE, $key),
                 [self::subscriptionResponse(['plan_identifier' => 'plano_anual'])],
                 'PUT', '/subscriptions/sub_1',
             ],

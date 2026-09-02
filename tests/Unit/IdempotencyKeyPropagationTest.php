@@ -314,13 +314,13 @@ class IdempotencyKeyPropagationTest extends TestCase
         $gateway->shouldReceive('suspendSubscription')->once()->with($subscription, 'k-suspend')->andReturn($subscription);
         $gateway->shouldReceive('resumeSubscription')->once()->with($subscription, 'k-resume')->andReturn($subscription);
         $gateway->shouldReceive('cancelSubscription')->once()->with($subscription, true, 'k-cancel')->andReturn($subscription);
-        $gateway->shouldReceive('changeSubscriptionPlan')->once()->with($subscription, 'plano_anual', false, 'k-change')->andReturn($subscription);
+        $gateway->shouldReceive('changeSubscriptionPlan')->once()->with($subscription, 'plano_anual', \Potelo\MultiPayment\Enums\ProrationBehavior::NONE, 'k-change')->andReturn($subscription);
         $gateway->shouldReceive('updateSubscription')->once()->with($subscription, 'k-update')->andReturn($subscription);
 
         $this->assertSame($subscription, $subscription->suspend($gateway, 'k-suspend'));
         $this->assertSame($subscription, $subscription->resume($gateway, 'k-resume'));
         $this->assertSame($subscription, $subscription->cancel(true, $gateway, 'k-cancel'));
-        $this->assertSame($subscription, $subscription->changePlan('plano_anual', false, $gateway, 'k-change'));
+        $this->assertSame($subscription, $subscription->changePlan('plano_anual', \Potelo\MultiPayment\Enums\ProrationBehavior::NONE, $gateway, 'k-change'));
         $subscription->save($gateway, true, 'k-update');
         $this->assertSame('sub_1', $subscription->id);
     }

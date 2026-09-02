@@ -78,7 +78,7 @@ enum Capability: string
     /** Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. */
     case NATIVE_COUPONS = 'native_coupons';
 
-    /** Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano. */
+    /** Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). */
     case PLAN_CHANGE_PRORATION = 'plan_change_proration';
 
     /** Assinatura com saldo de créditos consumíveis, abatidos a cada uso. */

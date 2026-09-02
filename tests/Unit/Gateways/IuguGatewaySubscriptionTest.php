@@ -13,6 +13,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Builders\SubscriptionBuilder;
 use Potelo\MultiPayment\Idempotency\InMemoryIdempotencyStore;
 use Potelo\MultiPayment\Models\Invoice;
+use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Models\SubscriptionItem;
@@ -22,10 +23,12 @@ use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 
@@ -675,7 +678,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->fill(['id' => 'sub_1', 'next_billing_at' => '2026-12-01']);
 
-        (new IuguGateway($api))->changeSubscriptionPlan($subscription, 'plano_anual', false);
+        (new IuguGateway($api))->changeSubscriptionPlan($subscription, 'plano_anual', ProrationBehavior::NONE);
 
         $this->assertCount(1, $api->calls);
         $this->assertSame('PUT', $api->calls[0]['method']);
@@ -694,13 +697,136 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $changed = (new IuguGateway($api))->changeSubscriptionPlan($subscription, 'plano_anual');
+        $changed = (new IuguGateway($api))
+            ->changeSubscriptionPlan($subscription, 'plano_anual', ProrationBehavior::CHARGE_DIFFERENCE);
 
         $this->assertCount(2, $api->calls);
         $this->assertSame('POST', $api->calls[0]['method']);
         $this->assertStringEndsWith('/subscriptions/sub_1/change_plan/plano_anual', $api->calls[0]['url']);
         $this->assertSame('GET', $api->calls[1]['method']);
         $this->assertSame('plano_anual', $changed->planId);
+    }
+
+    /**
+     * `CREDIT` é limitação da Iugu: a recusa aponta `PLAN_CHANGE_PRORATION` e nenhuma
+     * requisição sai.
+     */
+    public function testChangePlanWithCreditIsRefusedBeforeTheNetwork(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+        $store = new InMemoryIdempotencyStore();
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        try {
+            (new IuguGateway($api, $store))
+                ->changeSubscriptionPlan($subscription, 'plano_anual', ProrationBehavior::CREDIT, 'chave-1');
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::PLAN_CHANGE_PRORATION, $e->capability);
+            $this->assertSame('iugu', $e->gateway);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('ProrationBehavior::CHARGE_DIFFERENCE', $e->getMessage());
+        }
+        $this->assertCount(0, $api->calls);
+        // a recusa vem antes da chave entrar na store
+        $this->assertFalse($store->has('iugu:chave-1'));
+    }
+
+    /**
+     * O booleano antigo continua aceito pelo driver: `true` segue para `change_plan` e `false`
+     * para o `PUT` com `skip_charge`, com aviso de obsolescência.
+     */
+    #[DataProvider('deprecatedChargeProvider')]
+    #[IgnoreDeprecations]
+    public function testChangePlanTranslatesTheDeprecatedBoolean(bool $charge, string $method, array $responses): void
+    {
+        $api = new QueuedIuguApiRequest($responses);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $this->expectUserDeprecationMessage(
+            'O booleano $charge de changePlan() está obsoleto desde 2026-09-02; passe'
+            . ' ProrationBehavior::CHARGE_DIFFERENCE ou ProrationBehavior::NONE'
+        );
+
+        (new IuguGateway($api))->changeSubscriptionPlan($subscription, 'plano_anual', $charge);
+
+        $this->assertSame($method, $api->calls[0]['method']);
+        if ($charge) {
+            $this->assertStringEndsWith('/subscriptions/sub_1/change_plan/plano_anual', $api->calls[0]['url']);
+        } else {
+            $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[0]['url']);
+            $this->assertTrue($api->calls[0]['data']['skip_charge']);
+        }
+    }
+
+    public static function deprecatedChargeProvider(): array
+    {
+        $reloaded = (object) ['id' => 'sub_1', 'active' => true, 'plan_identifier' => 'plano_anual'];
+
+        return [
+            'true cobra pelo change_plan' => [true, 'POST', [(object) ['success' => true], $reloaded]],
+            'false troca pelo PUT com skip_charge' => [false, 'PUT', [$reloaded]],
+        ];
+    }
+
+    /**
+     * Do model ao driver, o booleano antigo dispara um único aviso: o model o traduz e o driver
+     * recebe o enum.
+     */
+    public function testTheDeprecatedBooleanTriggersASingleNoticeFromTheModelToTheDriver(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['id' => 'sub_1', 'active' => true, 'plan_identifier' => 'plano_anual'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $notices = [];
+        set_error_handler(function (int $level, string $message) use (&$notices): bool {
+            $notices[] = $message;
+
+            return true;
+        }, E_USER_DEPRECATED);
+
+        try {
+            $subscription->changePlan('plano_anual', false, new IuguGateway($api));
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertCount(1, $notices);
+        $this->assertSame('PUT', $api->calls[0]['method']);
+    }
+
+    /**
+     * O argumento nomeado `charge` antigo continua aceito pelo driver e prevalece sobre a
+     * política, com aviso de obsolescência.
+     */
+    #[IgnoreDeprecations]
+    public function testChangePlanAcceptsTheDeprecatedNamedChargeArgument(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['id' => 'sub_1', 'active' => true, 'plan_identifier' => 'plano_anual'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $this->expectUserDeprecationMessage(
+            'O booleano $charge de changePlan() está obsoleto desde 2026-09-02; passe'
+            . ' ProrationBehavior::CHARGE_DIFFERENCE ou ProrationBehavior::NONE'
+        );
+
+        (new IuguGateway($api))->changeSubscriptionPlan($subscription, 'plano_anual', charge: false);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertSame('PUT', $api->calls[0]['method']);
+        $this->assertTrue($api->calls[0]['data']['skip_charge']);
     }
 
     /**
@@ -725,11 +851,14 @@ class IuguGatewaySubscriptionTest extends TestCase
     /**
      * Resposta real de `change_plan_simulation` gravada na sandbox, de uma assinatura com
      * subitem e desconto ativos: só `cost`, `discount`, `cycles`, `expires_at`, `new_plan` e
-     * `old_plan`, com `discount` em 0 e sem linhas. O parse lê `cost` e deixa `items` nulo.
+     * `old_plan`, com `discount` em 0 e sem linhas. O parse lê `cost` e monta uma única linha,
+     * a de cobrança do plano novo; o model só com o id faz o driver ler a assinatura antes da
+     * simulação, e a assinatura paga por Pix não aplica o plano na hora.
      */
     public function testPreviewPlanChangeReadsTheSimulationResponse(): void
     {
         $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['payable_with' => 'pix']),
             json_decode(
                 file_get_contents(__DIR__ . '/../../fixtures/iugu/change_plan_simulation.json'),
                 flags: JSON_THROW_ON_ERROR
@@ -742,17 +871,217 @@ class IuguGatewaySubscriptionTest extends TestCase
         $planChange = (new IuguGateway($api))
             ->previewSubscriptionPlanChange($subscription, 'multipayment-teste-destino');
 
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('GET', $api->calls[0]['method']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[0]['url']);
         $this->assertStringEndsWith(
             '/subscriptions/sub_1/change_plan_simulation/multipayment-teste-destino',
-            $api->calls[0]['url']
+            $api->calls[1]['url']
         );
         $this->assertSame(30000, $planChange->amount);
         $this->assertSame('2026-10-02', $planChange->effectiveAt->format('Y-m-d'));
-        $this->assertNull($planChange->items);
+        $this->assertFalse($planChange->appliesImmediately);
+        $this->assertCount(1, $planChange->items);
+        $this->assertSame('Plano multipayment-teste-destino', $planChange->items[0]->description);
+        $this->assertSame(30000, $planChange->items[0]->price);
+        $this->assertSame(1, $planChange->items[0]->quantity);
         $this->assertSame(0, $planChange->original->discount);
         $this->assertSame(1, $planChange->original->cycles);
         $this->assertSame('multipayment-teste-destino', $planChange->original->new_plan);
         $this->assertSame('multipayment-teste-origem', $planChange->original->old_plan);
+        // a leitura prévia não altera o model do chamador
+        $this->assertNull($subscription->availablePaymentMethods);
+    }
+
+    /**
+     * A leitura prévia usa um model à parte: o cliente do model do chamador não é sobrescrito
+     * com o que veio do gateway.
+     */
+    public function testPreviewReadsTheSubscriptionWithoutTouchingTheCallersCustomer(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse([
+                'payable_with' => 'pix',
+                'customer_name' => 'Nome do gateway',
+                'customer_email' => 'gateway@exemplo.com',
+            ]),
+            (object) ['cost' => 30000, 'discount' => 0, 'expires_at' => '2026-10-02', 'new_plan' => 'p', 'old_plan' => 'o'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->customer = new Customer();
+        $subscription->customer->id = 'cus_1';
+        $subscription->customer->name = 'Nome local';
+
+        (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('Nome local', $subscription->customer->name);
+        $this->assertNull($subscription->customer->email);
+    }
+
+    /**
+     * `creditCard` é atributo de escrita e não diz como a assinatura é paga no gateway: com
+     * ele sozinho o driver ainda lê a assinatura, e `payable_with: all` responde falso.
+     */
+    public function testPreviewReadsTheSubscriptionWhenTheModelOnlyHasACreditCard(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['payable_with' => 'all']),
+            (object) ['cost' => 30000, 'discount' => 0, 'expires_at' => '2026-10-02', 'new_plan' => 'p', 'old_plan' => 'o'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->creditCard = new CreditCard();
+        $subscription->creditCard->id = 'pm_1';
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertFalse($planChange->appliesImmediately);
+    }
+
+    /**
+     * Com `discount` maior que zero, a lib monta a linha de crédito do plano antigo com valor
+     * negativo, e a soma das linhas continua igual a `cost`.
+     */
+    public function testPreviewSynthesizesACreditLineWhenTheSimulationHasADiscount(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) [
+                'cost' => 25000,
+                'discount' => 5000,
+                'cycles' => 1,
+                'expires_at' => '2026-10-02',
+                'new_plan' => 'plano_anual',
+                'old_plan' => 'plano_mensal',
+            ],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::PIX;
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'plano_anual');
+
+        $this->assertSame(25000, $planChange->amount);
+        $this->assertCount(2, $planChange->items);
+        $this->assertSame('Plano plano_anual', $planChange->items[0]->description);
+        $this->assertSame(30000, $planChange->items[0]->price);
+        $this->assertSame('Crédito do plano plano_mensal', $planChange->items[1]->description);
+        $this->assertSame(-5000, $planChange->items[1]->price);
+        $this->assertSame(1, $planChange->items[1]->quantity);
+        $this->assertSame(
+            $planChange->amount,
+            array_sum(array_map(fn (InvoiceItem $item) => $item->price * $item->quantity, $planChange->items))
+        );
+    }
+
+    /**
+     * Assinatura paga só com cartão aplica o plano novo na hora; o model que já traz o método
+     * dispensa a leitura prévia.
+     */
+    public function testPreviewAppliesImmediatelyWhenTheSubscriptionIsPaidOnlyByCard(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['cost' => 30000, 'discount' => 0, 'expires_at' => '2026-10-02', 'new_plan' => 'p', 'old_plan' => 'o'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::CREDIT_CARD;
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
+
+        $this->assertCount(1, $api->calls);
+        $this->assertTrue($planChange->appliesImmediately);
+    }
+
+    /**
+     * Model lido do gateway com `payable_with: credit_card` já traz a lista: sem leitura extra,
+     * e o plano novo vale na hora.
+     */
+    public function testPreviewAppliesImmediatelyForASubscriptionReadWithCardOnly(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['payable_with' => 'credit_card']),
+            (object) ['cost' => 30000, 'discount' => 0, 'expires_at' => '2026-10-02', 'new_plan' => 'p', 'old_plan' => 'o'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertTrue($planChange->appliesImmediately);
+    }
+
+    /**
+     * As linhas sintetizadas toleram totais fora do esperado: `discount` não numérico ou
+     * negativo vale zero, e plano sem identificador ganha descrição genérica.
+     */
+    #[DataProvider('unusualSimulationTotalsProvider')]
+    public function testPreviewSynthesizedLinesTolerateUnusualTotals(object $simulation, array $expectedItems): void
+    {
+        $api = new QueuedIuguApiRequest([$simulation]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::PIX;
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
+
+        $this->assertSame(30000, $planChange->amount);
+        $this->assertSame(
+            $expectedItems,
+            array_map(fn (InvoiceItem $item) => $item->toArray(), $planChange->items)
+        );
+    }
+
+    public static function unusualSimulationTotalsProvider(): array
+    {
+        return [
+            'discount formatado' => [
+                (object) ['cost' => 30000, 'discount' => 'R$ 50,00', 'new_plan' => 'p', 'old_plan' => 'o'],
+                [['description' => 'Plano p', 'price' => 30000, 'quantity' => 1]],
+            ],
+            'discount negativo' => [
+                (object) ['cost' => 30000, 'discount' => -5000, 'new_plan' => 'p', 'old_plan' => 'o'],
+                [['description' => 'Plano p', 'price' => 30000, 'quantity' => 1]],
+            ],
+            'planos sem identificador' => [
+                (object) ['cost' => 30000, 'discount' => 5000],
+                [
+                    ['description' => 'Plano novo', 'price' => 35000, 'quantity' => 1],
+                    ['description' => 'Crédito do plano anterior', 'price' => -5000, 'quantity' => 1],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Assinatura aberta a mais de um método (`payable_with: all`) não aplica na hora: o driver
+     * não sabe se o cartão padrão será cobrado.
+     */
+    public function testPreviewDoesNotApplyImmediatelyWhenTheSubscriptionAcceptsSeveralMethods(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['payable_with' => 'all']),
+            (object) ['cost' => 30000, 'discount' => 0, 'expires_at' => '2026-10-02', 'new_plan' => 'p', 'old_plan' => 'o'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertFalse($planChange->appliesImmediately);
     }
 
     public function testPreviewPlanChangeFallsBackToPriceCentsAndSubitems(): void
@@ -769,12 +1098,14 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::PIX;
 
         $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'plano_anual');
 
         $this->assertSame(30000, $planChange->amount);
         $this->assertSame('2026-12-01', $planChange->effectiveAt->format('Y-m-d'));
         $this->assertCount(1, $planChange->items);
+        $this->assertSame('Plano anual', $planChange->items[0]->description);
         $this->assertSame(30000, $planChange->items[0]->price);
     }
 
@@ -1836,10 +2167,13 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::PIX;
 
         $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p');
 
         $this->assertNull($planChange->amount);
+        // sem total não há linha a sintetizar
+        $this->assertSame([], $planChange->items);
     }
 
     public function testStatusKeepsThePreviousValueWhenTheResponseHasNoFlags(): void
@@ -1869,6 +2203,7 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::PIX;
 
         $this->assertSame(
             30000,

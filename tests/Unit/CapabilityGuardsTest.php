@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Gateways\StripeGateway;
@@ -80,8 +81,11 @@ class CapabilityGuardsTest extends TestCase
 
         $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->get('stripe'));
         $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->suspend('stripe'));
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->changePlan('plano_anual', true, 'stripe'));
+        foreach (ProrationBehavior::cases() as $proration) {
+            $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->changePlan('plano_anual', $proration, 'stripe'));
+        }
         $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->previewPlanChange('plano_anual', 'stripe'));
+        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => (new MultiPayment('stripe'))->getSubscription('sub_1'));
         $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->resume('stripe'));
         $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->cancel(false, 'stripe'));
         $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => (new MultiPayment('stripe'))->listSubscriptions('cus_1'));
@@ -130,6 +134,7 @@ class CapabilityGuardsTest extends TestCase
         $existing->id = 'plan_1';
         $this->assertNotImplemented(Capability::PLANS, fn () => $existing->get('stripe'));
         $this->assertNotImplemented(Capability::PLANS, fn () => (new MultiPayment('stripe'))->listPlans());
+        $this->assertNotImplemented(Capability::PLANS, fn () => (new MultiPayment('stripe'))->getPlan('plano_mensal'));
     }
 
     public function testBankSlipChargeOnStripeFailsBeforeCreatingTheCustomer(): void

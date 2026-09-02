@@ -19,6 +19,8 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static \Potelo\MultiPayment\Models\Subscription[] listSubscriptions(\Potelo\MultiPayment\Models\Customer|string $customer, int $page = 1, int $limit = 100)
  * @method static \Potelo\MultiPayment\Models\Plan[] listPlans(int $page = 1, int $limit = 100)
  * @method static Invoice getInvoice(string $id)
+ * @method static \Potelo\MultiPayment\Models\Subscription getSubscription(string $id)
+ * @method static \Potelo\MultiPayment\Models\Plan getPlan(string $idOrIdentifier)
  * @method static \Potelo\MultiPayment\Models\Customer getCustomer(string $id)
  * @method static \Potelo\MultiPayment\Models\Refund refundInvoice(string $id, ?int $partialValueCents = null, ?string $idempotencyKey = null)
  * @method static Invoice duplicateInvoice(Invoice|string $invoice, \Carbon\Carbon $expiresAt, array $gatewayOptions = [], ?string $idempotencyKey = null)

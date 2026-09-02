@@ -160,7 +160,7 @@ o teste `GatewayCapabilitiesTest` falha quando o README fica defasado em relaç�
 | `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | não implementado |
 | `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | limitação do gateway | não implementado |
 | `NATIVE_COUPONS` | Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. | limitação do gateway | não implementado |
-| `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano. | limitação do gateway | não implementado |
+| `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | não implementado |
 | `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |
 | `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | não implementado |
 
@@ -179,6 +179,8 @@ Restrições dentro de uma célula "sim":
   herda de `UnsupportedOperationException` (ver [Estorno](#estorno)).
 - **`MANAGES_RECURRENCE`** é informativa: diz quem agenda a cobrança do Pix Automático (ver
   [Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)).
+- **`PLAN_CHANGE_PRORATION`** é o que `changePlan()` com `ProrationBehavior::CREDIT` exige; as
+  outras duas políticas fazem parte de `SUBSCRIPTIONS` (ver [Troca de plano](#troca-de-plano)).
 
 ### Status da fatura
 
@@ -1087,12 +1089,14 @@ Meio de pagamento e trial são conceitos da assinatura:
 Operações sobre a assinatura:
 
 ```php
+use Potelo\MultiPayment\Enums\ProrationBehavior;
+
 $subscription->suspend();
 $subscription->resume();
 $subscription->cancel();                        // CANCELED; na Iugu, suspende e grava a marca de cancelamento
-$subscription->changePlan('plano_anual');       // aplica a troca e gera cobrança imediata
-$subscription->changePlan('plano_anual', charge: false);
-$preview = $subscription->previewPlanChange('plano_anual'); // simula, não aplica
+$subscription->changePlan('plano_anual');       // ProrationBehavior::CHARGE_DIFFERENCE: cobra o plano novo agora
+$subscription->changePlan('plano_anual', ProrationBehavior::NONE);   // nada é cobrado agora
+$preview = $subscription->previewPlanChange('plano_anual');          // simula sem aplicar (ver "Troca de plano")
 
 // itens e descontos são declarativos: a lista informada vira o estado da assinatura, e a lista
 // que ficar em null é preservada como está no gateway
@@ -1101,9 +1105,66 @@ $mantido->id = $subscription->items[0]->id;
 $subscription->items = [$mantido];
 $subscription->save();
 
-$assinaturas = (new \Potelo\MultiPayment\MultiPayment('iugu'))->listSubscriptions($customer->id);
-$planos = (new \Potelo\MultiPayment\MultiPayment('iugu'))->listPlans();
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
+$subscription = $payment->getSubscription($subscriptionId);   // mesma forma de getInvoice()
+$plan = $payment->getPlan('plano_mensal');                   // identificador ou id do gateway
+$assinaturas = $payment->listSubscriptions($customer->id);
+$planos = $payment->listPlans();
 ```
+
+##### Troca de plano
+
+`changePlan()` recebe a política de pró-rata como `Potelo\MultiPayment\Enums\ProrationBehavior`,
+e cada gateway a traduz para o próprio parâmetro:
+
+| `ProrationBehavior` | O que acontece | Iugu | Stripe |
+|---|---|---|---|
+| `CHARGE_DIFFERENCE` (padrão) | O plano novo é cobrado agora; o gateway decide o que abater do período já pago | `POST change_plan`: fatura emitida na hora, sem crédito do período anterior (a Iugu acrescenta ciclos no downgrade) | `proration_behavior: always_invoice` (planejado para uma versão futura) |
+| `NONE` | Nada é cobrado nem creditado agora; o plano novo vale a partir da próxima cobrança do ciclo | `PUT` com `skip_charge`, mantendo a data de cobrança (`nextBillingAt` preenchido vai junto) | `proration_behavior: none` (planejado para uma versão futura) |
+| `CREDIT` | O gateway calcula o crédito do período não usado e o aplica na próxima fatura | `UnsupportedOperationException` (`PLAN_CHANGE_PRORATION`, `gateway_limitation`), antes de qualquer requisição | `proration_behavior: create_prorations` (planejado para uma versão futura) |
+
+Como a política que o gateway não oferece é recusada antes da rede, consulte
+`supports(Capability::PLAN_CHANGE_PRORATION)` antes de oferecer a opção de crédito no
+checkout.
+
+```php
+$subscription->changePlan('plano_anual', ProrationBehavior::CHARGE_DIFFERENCE, idempotencyKey: "upgrade-{$order->uuid}");
+$subscription->changePlan('basico', ProrationBehavior::NONE);
+$subscription->changePlan('plano_anual', ProrationBehavior::CREDIT);   // Iugu: UnsupportedOperationException
+```
+
+`previewPlanChange()` simula a troca sem aplicá-la e devolve um `SubscriptionPlanChange`:
+
+- **`amount`**: o que a troca cobraria agora, em centavos; quando há linhas, é a soma de `items`.
+- **`items`**: as linhas da fatura que a troca geraria, como `InvoiceItem` (crédito com `price`
+  negativo). A lista nunca é nula: a Iugu não devolve linhas em `change_plan_simulation`, então
+  a lib monta uma linha de cobrança do plano novo (`Plano <novo>`, valendo `cost` mais
+  `discount`) e, quando `discount` é maior que zero, uma linha negativa de crédito do plano
+  antigo. O payload cru (`cost`, `discount`, `cycles`, `expires_at`, `old_plan`, `new_plan`)
+  segue em `original`.
+- **`effectiveAt`**: a data em que a próxima cobrança acontece após a troca.
+- **`appliesImmediately`**: se o plano novo passa a valer assim que a troca for aplicada. Na
+  Iugu é verdadeiro quando a assinatura é paga só com cartão (o cartão padrão é cobrado na
+  hora) e falso quando ela aceita boleto ou Pix, porque a Iugu só efetiva a troca depois do
+  pagamento da fatura gerada; uma assinatura aberta a mais de um método também lê como falso.
+  Quando o model não traz os métodos de pagamento (só o id), o driver lê a assinatura antes
+  da simulação.
+
+```php
+$preview = $subscription->previewPlanChange('plano_anual');
+foreach ($preview->items as $line) {              // nunca null
+    echo "{$line->description}: {$line->price}";
+}
+$preview->amount;                                 // 30000
+$preview->effectiveAt;                            // Carbon: próxima cobrança depois da troca
+$preview->appliesImmediately;                     // false numa assinatura paga por Pix na Iugu
+```
+
+> **Obsoleto (desde 2026-09-02).** O booleano `$charge` de `changePlan()` continua aceito, na
+> mesma posição ou pelo nome (`charge: false`), e é traduzido (`true` para
+> `CHARGE_DIFFERENCE`, `false` para `NONE`) com aviso `E_USER_DEPRECATED`; `charge` informado
+> prevalece sobre a política. Nos drivers, `changeSubscriptionPlan()` aceita o booleano das
+> mesmas duas formas. A remoção fica para uma versão futura.
 
 Particularidades da Iugu:
 
@@ -1174,13 +1235,16 @@ Particularidades da Iugu:
   `status` devolvido segue `SUSPENDED`.
 - **`active` e `suspended` são flags independentes.** Assinatura suspensa pode continuar com
   `active: true` na Iugu; o pacote dá precedência a `suspended` e reporta `SUSPENDED`.
-- **A simulação de troca não traz linhas.** `previewPlanChange()` preenche só `amount` e
-  `effectiveAt`; `items` fica `null` e o resto (`discount`, `cycles`, `old_plan`, `new_plan`)
-  está em `original`.
+- **A simulação de troca traz linhas montadas pela lib.** `change_plan_simulation` devolve só
+  totais (`cost`, `discount`, `cycles`, `expires_at`, `old_plan`, `new_plan`, todos em
+  `original`); `previewPlanChange()` monta `items` a partir deles (ver
+  [Troca de plano](#troca-de-plano)). `cost` é lido como o valor líquido da troca, então
+  `amount` é `cost` e, quando há `discount`, a linha do plano novo é `cost` mais `discount`.
 - **Trocar de plano com cobrança gera fatura pendente, não pagamento.** `changePlan()` com
-  `charge: true` (o padrão) faz a Iugu emitir a fatura na hora, com vencimento imediato e não na
-  data do próximo ciclo. Ela volta resumida em `latestInvoice`, com status `pending`; use
-  `getInvoice()` pelo id para o valor em centavos. Com `charge: false` nada é cobrado.
+  `ProrationBehavior::CHARGE_DIFFERENCE` (o padrão) faz a Iugu emitir a fatura na hora, com
+  vencimento imediato e sem crédito do período anterior. Ela volta resumida em
+  `latestInvoice`, com status `pending`; use `getInvoice()` pelo id para o valor em centavos. Com `ProrationBehavior::NONE` nada é cobrado; `ProrationBehavior::CREDIT` é
+  recusado antes da rede.
 - **O plano de uma assinatura existente não muda por `save()`**; use `changePlan()`.
 - **Plano não é atualizável.** `save()` num `Plan` que já tem `id` lança `GatewayException`; para
   mudar preço ou intervalo, crie outro plano e troque as assinaturas com `changePlan()`.
@@ -1228,6 +1292,19 @@ $foundInvoice = $payment->getInvoice($invoiceId);
 $foundInvoice = (new \Potelo\MultiPayment\MultiPayment('stripe'))->getInvoice('in_1UBH...');
 $foundInvoice->originType;   // InvoiceOriginType::INVOICE
 ```
+
+#### getSubscription e getPlan
+```php
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
+$subscription = $payment->getSubscription($subscriptionId);   // Subscription, com status, latestInvoice e cliente resumido
+
+// getPlan() aceita o identificador definido na criação ou o id do gateway: busca primeiro pelo
+// identificador e, se ele não existir, pelo id (duas requisições nesse caso)
+$plan = $payment->getPlan('plano_mensal');
+$plan = $payment->getPlan('7D96C7C932F2427CAF54F042345A13C6');
+```
+Nos dois, gateway sem `SUBSCRIPTIONS` ou `PLANS` lança `UnsupportedOperationException` antes de
+qualquer requisição; plano inexistente pelos dois caminhos lança `NotFoundException`.
 
 #### Outras operações de fatura
 ```php
