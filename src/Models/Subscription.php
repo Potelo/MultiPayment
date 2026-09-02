@@ -360,7 +360,8 @@ class Subscription extends Model
 
         if (!$resolved instanceof SubscriptionContract) {
             throw new GatewayException(
-                'Gateway [' . get_class($resolved) . '] does not implement SubscriptionContract'
+                'Gateway [' . get_class($resolved) . '] does not implement SubscriptionContract;'
+                . ' subscriptions are not yet implemented in this library for that gateway'
             );
         }
 

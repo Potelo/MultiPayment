@@ -168,8 +168,8 @@ class StripeGateway implements GatewayContract
 
     /**
      * Garante os expands exigidos pelo parse no payload sem descartar um expand vindo de
-     * gatewayAdicionalOptions — sem eles a Stripe omite dados (tax ids, charge) e o
-     * parse/sync corromperia silenciosamente.
+     * gatewayOptions. Sem eles a Stripe omite dados (tax ids, charge) e o parse/sync
+     * corromperia silenciosamente.
      *
      * @param  array  $stripeData
      * @param  array  $expand
@@ -253,8 +253,8 @@ class StripeGateway implements GatewayContract
             $stripeCustomerData['invoice_settings']['default_payment_method'] = $customer->defaultCard->id;
         }
 
-        if (!empty($customer->gatewayAdicionalOptions)) {
-            foreach ($customer->gatewayAdicionalOptions as $option => $value) {
+        if (!empty($customer->gatewayOptions)) {
+            foreach ($customer->gatewayOptions as $option => $value) {
                 $stripeCustomerData[$option] = $value;
             }
         }
@@ -477,15 +477,22 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Exceção padrão para operações do contrato ainda não implementadas neste gateway —
+     * Exceção padrão para operações que a Stripe oferece mas este driver ainda não construiu;
      * mais clara que o methodNotFound do despacho por convenção, que sugeriria erro de digitação.
      *
      * @param  string  $operation
+     * @param  string  $advice  orientação enquanto a operação não existe (ex.: usar a Iugu)
      * @return GatewayException
      */
-    private function operationNotImplemented(string $operation): GatewayException
+    private function operationNotImplemented(string $operation, string $advice = ''): GatewayException
     {
-        return new GatewayException("Operation [{$operation}] is not yet implemented by the stripe gateway");
+        $message = "A operação [{$operation}] no Stripe ainda não está implementada nesta lib;"
+            . ' a Stripe suporta o recurso.';
+        if ($advice !== '') {
+            $message .= ' ' . $advice;
+        }
+
+        return new GatewayException($message);
     }
 
     /**
@@ -495,9 +502,12 @@ class StripeGateway implements GatewayContract
     public function createInvoice(Invoice $invoice): Invoice
     {
         // sem esta guarda a fatura seria criada como pix comum, descartando a recorrência
-        // silenciosamente — o suporte a Pix Automático no Stripe ainda não foi construído
+        // silenciosamente, porque o Pix Automático no Stripe ainda não foi construído
         if (!empty($invoice->automaticPix)) {
-            throw $this->operationNotImplemented('createInvoice with automatic pix');
+            throw $this->operationNotImplemented(
+                'createInvoice com Pix Automático',
+                'Use a Iugu para Pix Automático por enquanto.'
+            );
         }
 
         $paymentMethod = $this->invoicePaymentMethod($invoice);
@@ -507,9 +517,12 @@ class StripeGateway implements GatewayContract
             case Invoice::PAYMENT_METHOD_PIX:
                 return $this->createPixInvoice($invoice);
             case Invoice::PAYMENT_METHOD_BANK_SLIP:
-                throw new GatewayException('The stripe gateway does not support bank slip invoices; use the iugu gateway instead');
+                throw $this->operationNotImplemented(
+                    'createInvoice com boleto',
+                    'Use a Iugu para boleto por enquanto.'
+                );
             default:
-                throw $this->operationNotImplemented("createInvoice with the [{$paymentMethod}] payment method");
+                throw $this->operationNotImplemented("createInvoice com o método de pagamento [{$paymentMethod}]");
         }
     }
 
@@ -529,7 +542,7 @@ class StripeGateway implements GatewayContract
                 throw ModelAttributeValidationException::invalid(
                     'Invoice',
                     'availablePaymentMethods',
-                    'the stripe gateway supports exactly one payment method per invoice'
+                    'this library maps the invoice to a single PaymentIntent, so exactly one payment method per invoice is accepted for now'
                 );
             }
 
@@ -584,7 +597,7 @@ class StripeGateway implements GatewayContract
         $stripePaymentIntentData['payment_method'] = $invoice->creditCard->id;
         $stripePaymentIntentData['confirm'] = true;
         $stripePaymentIntentData['off_session'] = true;
-        $stripePaymentIntentData = $this->mergeGatewayAdicionalOptions($stripePaymentIntentData, $invoice);
+        $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
         $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
 
         $stripePaymentIntent = $this->stripeChargeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
@@ -638,7 +651,7 @@ class StripeGateway implements GatewayContract
             }
             $stripePaymentIntentData['payment_method_options']['pix']['expires_at'] = $invoice->expiresAt->getTimestamp();
         }
-        $stripePaymentIntentData = $this->mergeGatewayAdicionalOptions($stripePaymentIntentData, $invoice);
+        $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
         $requestOptions = $this->extractIdempotencyKey($stripePaymentIntentData);
 
         $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $requestOptions) {
@@ -733,9 +746,9 @@ class StripeGateway implements GatewayContract
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
      * @return array
      */
-    private function mergeGatewayAdicionalOptions(array $stripeData, Invoice $invoice): array
+    private function mergeGatewayOptions(array $stripeData, Invoice $invoice): array
     {
-        foreach ($invoice->gatewayAdicionalOptions ?? [] as $option => $value) {
+        foreach ($invoice->gatewayOptions ?? [] as $option => $value) {
             $stripeData[$option] = $value;
         }
 
@@ -782,7 +795,7 @@ class StripeGateway implements GatewayContract
         if (!empty($invoice->refundedAmount)) {
             $stripeRefundData['amount'] = $invoice->refundedAmount;
         }
-        $stripeRefundData = $this->mergeGatewayAdicionalOptions($stripeRefundData, $invoice);
+        $stripeRefundData = $this->mergeGatewayOptions($stripeRefundData, $invoice);
         $requestOptions = $this->extractIdempotencyKey($stripeRefundData);
 
         $stripeRefund = $this->stripeRequest(function () use ($stripeRefundData, $requestOptions) {
@@ -1134,10 +1147,10 @@ class StripeGateway implements GatewayContract
         // as gatewayOptions do chamador vêm por último e podem sobrescrever
         $originalMetadata = !empty($original->metadata) ? $original->metadata->toArray() : [];
         if (!empty($originalMetadata)) {
-            $duplicated->gatewayAdicionalOptions['metadata'] = $originalMetadata;
+            $duplicated->gatewayOptions['metadata'] = $originalMetadata;
         }
         if (!empty($gatewayOptions)) {
-            $duplicated->gatewayAdicionalOptions = array_merge($duplicated->gatewayAdicionalOptions, $gatewayOptions);
+            $duplicated->gatewayOptions = array_merge($duplicated->gatewayOptions, $gatewayOptions);
         }
         $duplicated = $this->createPixInvoice($duplicated);
 
@@ -1335,7 +1348,7 @@ class StripeGateway implements GatewayContract
      */
     public function rescheduleAutomaticPixPayment(Invoice $invoice): Invoice
     {
-        throw $this->operationNotImplemented('rescheduleAutomaticPixPayment');
+        throw $this->operationNotImplemented('rescheduleAutomaticPixPayment', 'Use a Iugu para Pix Automático por enquanto.');
     }
 
     /**
@@ -1343,7 +1356,7 @@ class StripeGateway implements GatewayContract
      */
     public function cancelAutomaticPixScheduledPayment(AutomaticPixCharge $charge): AutomaticPixCancellation
     {
-        throw $this->operationNotImplemented('cancelAutomaticPixScheduledPayment');
+        throw $this->operationNotImplemented('cancelAutomaticPixScheduledPayment', 'Use a Iugu para Pix Automático por enquanto.');
     }
 
     /**
@@ -1351,7 +1364,7 @@ class StripeGateway implements GatewayContract
      */
     public function cancelAutomaticPixRecurrence(AutomaticPix $automaticPix): AutomaticPixCancellation
     {
-        throw $this->operationNotImplemented('cancelAutomaticPixRecurrence');
+        throw $this->operationNotImplemented('cancelAutomaticPixRecurrence', 'Use a Iugu para Pix Automático por enquanto.');
     }
 
     /**
@@ -1359,7 +1372,7 @@ class StripeGateway implements GatewayContract
      */
     public function getAutomaticPixCancellation(AutomaticPixCancellation $cancellation): AutomaticPixCancellation
     {
-        throw $this->operationNotImplemented('getAutomaticPixCancellation');
+        throw $this->operationNotImplemented('getAutomaticPixCancellation', 'Use a Iugu para Pix Automático por enquanto.');
     }
 
     /**
@@ -1367,7 +1380,7 @@ class StripeGateway implements GatewayContract
      */
     public function listAutomaticPixCancellations(AutomaticPix $automaticPix, int $page = 1, int $limit = 100): array
     {
-        throw $this->operationNotImplemented('listAutomaticPixCancellations');
+        throw $this->operationNotImplemented('listAutomaticPixCancellations', 'Use a Iugu para Pix Automático por enquanto.');
     }
 
     /**

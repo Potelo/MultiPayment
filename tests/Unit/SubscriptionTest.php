@@ -541,7 +541,7 @@ class SubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
 
         $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches('/does not implement SubscriptionContract/');
+        $this->expectExceptionMessageMatches('/does not implement SubscriptionContract; subscriptions are not yet implemented in this library/');
 
         $subscription->suspend($gateway);
     }
@@ -601,7 +601,7 @@ class SubscriptionTest extends TestCase
         $multiPayment = new \Potelo\MultiPayment\MultiPayment(Mockery::mock(GatewayContract::class));
 
         $this->expectException(GatewayException::class);
-        $this->expectExceptionMessageMatches("/does not implement {$contract}/");
+        $this->expectExceptionMessageMatches("/does not implement {$contract}; the operations of that contract are not yet implemented in this library/");
 
         $multiPayment->{$metodo}(...$args);
     }

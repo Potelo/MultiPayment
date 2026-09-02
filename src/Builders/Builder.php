@@ -58,7 +58,23 @@ class Builder
     }
 
     /**
-     * Set the gateway adicional options.
+     * Define as opções extras enviadas direto ao gateway (ver Model::$gatewayOptions).
+     *
+     * @param  array  $gatewayOptions
+     *
+     * @return $this
+     */
+    public function setGatewayOptions(array $gatewayOptions): self
+    {
+        $this->model->gatewayOptions = $gatewayOptions;
+
+        return $this;
+    }
+
+    /**
+     * Set the gateway options. Old name of setGatewayOptions().
+     *
+     * @deprecated since 2026-09-02, use setGatewayOptions()
      *
      * @param  array  $gatewayAdicionalOptions
      *
@@ -66,8 +82,11 @@ class Builder
      */
     public function setGatewayAdicionalOptions(array $gatewayAdicionalOptions): self
     {
-        $this->model->gatewayAdicionalOptions = $gatewayAdicionalOptions;
+        trigger_error(
+            'Builder::setGatewayAdicionalOptions() está obsoleto desde 2026-09-02; use setGatewayOptions()',
+            E_USER_DEPRECATED
+        );
 
-        return $this;
+        return $this->setGatewayOptions($gatewayAdicionalOptions);
     }
 }

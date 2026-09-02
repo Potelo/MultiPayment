@@ -201,14 +201,14 @@ class StripeGatewayCustomerTest extends TestCase
         $this->assertSame('pm_fake123', $result->defaultCard->id);
     }
 
-    public function testGatewayAdicionalOptionsReachThePayloadAndExpandIsMerged(): void
+    public function testGatewayOptionsReachThePayloadAndExpandIsMerged(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([$this->stripeCustomerResponse()]);
 
         $customer = new Customer();
         $customer->name = 'Fake Customer';
         $customer->taxDocument = '20176996915';
-        $customer->gatewayAdicionalOptions = [
+        $customer->gatewayOptions = [
             'preferred_locales' => ['pt-BR'],
             'expand' => ['subscriptions'],
         ];
@@ -274,14 +274,21 @@ class StripeGatewayCustomerTest extends TestCase
         $this->assertSame('123', $result->address->number);
     }
 
-    public function testUnimplementedOperationThrowsClearGatewayException(): void
+    public function testUnimplementedOperationThrowsClearGatewayExceptionWithoutHittingTheApi(): void
     {
-        RecordingStripeHttpClient::withResponses([]);
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('Operation [rescheduleAutomaticPixPayment] is not yet implemented by the stripe gateway');
-
-        (new StripeGateway())->rescheduleAutomaticPixPayment(new Invoice());
+        try {
+            (new StripeGateway())->rescheduleAutomaticPixPayment(new Invoice());
+            $this->fail('Pix Automático no Stripe deveria lançar GatewayException');
+        } catch (GatewayException $e) {
+            $this->assertSame(
+                'A operação [rescheduleAutomaticPixPayment] no Stripe ainda não está implementada nesta lib;'
+                . ' a Stripe suporta o recurso. Use a Iugu para Pix Automático por enquanto.',
+                $e->getMessage()
+            );
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     public function testAuthenticationErrorBecomesAuthenticationExceptionNotGatewayNotAvailable(): void

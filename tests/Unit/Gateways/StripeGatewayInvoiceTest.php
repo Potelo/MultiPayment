@@ -120,15 +120,41 @@ class StripeGatewayInvoiceTest extends TestCase
         (new StripeGateway())->createInvoice($invoice);
     }
 
-    public function testRejectsBankSlipInvoiceWithClearMessage(): void
+    public function testRejectsBankSlipInvoiceAttributingTheLimitationToTheLibrary(): void
     {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = $this->creditCardInvoiceModel();
         $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_BANK_SLIP];
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('does not support bank slip');
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Boleto no Stripe deveria lançar GatewayException');
+        } catch (GatewayException $e) {
+            $this->assertStringContainsString('[createInvoice com boleto] no Stripe ainda não está implementada nesta lib', $e->getMessage());
+            $this->assertStringContainsString('Use a Iugu para boleto por enquanto', $e->getMessage());
+            $this->assertStringNotContainsStringIgnoringCase('não suporta', $e->getMessage());
+            $this->assertStringNotContainsStringIgnoringCase('does not support', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
+    }
 
-        (new StripeGateway())->createInvoice($invoice);
+    public function testRejectsUnknownPaymentMethodWithoutHittingTheApi(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->availablePaymentMethods = ['foo'];
+
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Método de pagamento desconhecido deveria lançar GatewayException');
+        } catch (GatewayException $e) {
+            $this->assertSame(
+                'A operação [createInvoice com o método de pagamento [foo]] no Stripe ainda não está implementada nesta lib;'
+                . ' a Stripe suporta o recurso.',
+                $e->getMessage()
+            );
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     public function testCreatesPixInvoiceFullyServerSideAndParsesQrCode(): void
@@ -178,13 +204,18 @@ class StripeGatewayInvoiceTest extends TestCase
 
     public function testRejectsInvoiceWithAutomaticPixUntilSupported(): void
     {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = $this->pixInvoiceModel();
         $invoice->automaticPix = new \Potelo\MultiPayment\Models\AutomaticPix();
 
-        $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('Operation [createInvoice with automatic pix] is not yet implemented');
-
-        (new StripeGateway())->createInvoice($invoice);
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Pix Automático no Stripe deveria lançar GatewayException');
+        } catch (GatewayException $e) {
+            $this->assertStringContainsString('A operação [createInvoice com Pix Automático] no Stripe ainda não está implementada nesta lib', $e->getMessage());
+            $this->assertStringContainsString('Use a Iugu para Pix Automático por enquanto', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     public function testPixInvoiceRequiresCustomerTaxDocument(): void
@@ -246,12 +277,12 @@ class StripeGatewayInvoiceTest extends TestCase
         );
     }
 
-    public function testIdempotencyKeyFromGatewayAdicionalOptionsBecomesRequestHeader(): void
+    public function testIdempotencyKeyFromGatewayOptionsBecomesRequestHeader(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([$this->pendingPixPaymentIntentResponse()]);
 
         $invoice = $this->pixInvoiceModel();
-        $invoice->gatewayAdicionalOptions = ['idempotency_key' => 'chave-unica-123'];
+        $invoice->gatewayOptions = ['idempotency_key' => 'chave-unica-123'];
         (new StripeGateway())->createInvoice($invoice);
 
         // a chave não pode vazar como parâmetro do payload (a API a rejeitaria)
@@ -690,12 +721,12 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame('pm_fake123', $httpClient->calls[4][2]['payment_method']);
     }
 
-    public function testGatewayAdicionalOptionsOverrideAndExpandIsMerged(): void
+    public function testGatewayOptionsOverrideAndExpandIsMerged(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
 
         $invoice = $this->creditCardInvoiceModel();
-        $invoice->gatewayAdicionalOptions = [
+        $invoice->gatewayOptions = [
             'statement_descriptor_suffix' => 'POTELO',
             'off_session' => false,
             'expand' => ['customer'],

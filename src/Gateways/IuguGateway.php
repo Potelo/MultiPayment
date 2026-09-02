@@ -118,8 +118,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             );
         }
 
-        if (!empty($invoice->gatewayAdicionalOptions)) {
-            foreach ($invoice->gatewayAdicionalOptions as $option => $value) {
+        if (!empty($invoice->gatewayOptions)) {
+            foreach ($invoice->gatewayOptions as $option => $value) {
                 $iuguInvoiceData[$option] = $value;
             }
         }
@@ -1261,8 +1261,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             ];
         }
 
-        if (!empty($customer->gatewayAdicionalOptions)) {
-            foreach ($customer->gatewayAdicionalOptions as $option => $value) {
+        if (!empty($customer->gatewayOptions)) {
+            foreach ($customer->gatewayOptions as $option => $value) {
                 $iuguCustomerData[$option] = $value;
             }
         }
@@ -1361,7 +1361,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     {
         $data = array_merge(
             $this->subscriptionToIuguData($subscription),
-            $subscription->gatewayAdicionalOptions
+            $subscription->gatewayOptions
         );
 
         $response = $this->iuguRequest(
@@ -1404,7 +1404,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         $data = array_merge(
             $this->subscriptionToIuguData($subscription, false),
-            $subscription->gatewayAdicionalOptions
+            $subscription->gatewayOptions
         );
         $subitems = $data['subitems'] ?? null;
         unset($data['subitems']);
@@ -1602,7 +1602,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $response = $this->iuguRequest(
             'POST',
             Iugu::getBaseURI() . '/plans',
-            array_merge($this->planToIuguData($plan), $plan->gatewayAdicionalOptions),
+            array_merge($this->planToIuguData($plan), $plan->gatewayOptions),
             'creating plan'
         );
 

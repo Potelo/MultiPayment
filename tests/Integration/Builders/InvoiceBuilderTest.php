@@ -110,8 +110,8 @@ class InvoiceBuilderTest extends TestCase
             );
         }
 
-        if (isset($data['gatewayAdicionalOptions'])) {
-            $invoiceBuilder->setGatewayAdicionalOptions($data['gatewayAdicionalOptions']);
+        if (isset($data['gatewayOptions'])) {
+            $invoiceBuilder->setGatewayOptions($data['gatewayOptions']);
         }
 
         return $invoiceBuilder->create();
@@ -183,7 +183,7 @@ class InvoiceBuilderTest extends TestCase
             $this->assertNotEmpty($invoice->creditCard->id);
         }
 
-        if ((isset($data['availablePaymentMethods']) && in_array('bank_slip', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'bank_slip') || (isset($data['gatewayAdicionalOptions']) && in_array('payable_with', $data['gatewayAdicionalOptions']) && in_array('bank_slip', $data['gatewayAdicionalOptions']['payable_with']))) {
+        if ((isset($data['availablePaymentMethods']) && in_array('bank_slip', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'bank_slip') || (isset($data['gatewayOptions']) && in_array('payable_with', $data['gatewayOptions']) && in_array('bank_slip', $data['gatewayOptions']['payable_with']))) {
             $this->assertNotEmpty($invoice->bankSlip);
             $this->assertNotEmpty($invoice->bankSlip->url);
             $this->assertNotEmpty($invoice->bankSlip->number);
@@ -191,23 +191,23 @@ class InvoiceBuilderTest extends TestCase
             $this->assertNotEmpty($invoice->bankSlip->barcodeImage);
         }
 
-        if ((isset($data['availablePaymentMethods']) && in_array('pix', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'pix') || (isset($data['gatewayAdicionalOptions']) && in_array('payable_with', $data['gatewayAdicionalOptions']) && in_array('pix', $data['gatewayAdicionalOptions']['payable_with']))) {
+        if ((isset($data['availablePaymentMethods']) && in_array('pix', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'pix') || (isset($data['gatewayOptions']) && in_array('payable_with', $data['gatewayOptions']) && in_array('pix', $data['gatewayOptions']['payable_with']))) {
 
             $this->assertNotEmpty($invoice->pix);
             $this->assertNotEmpty($invoice->pix->qrCodeImageUrl);
             $this->assertNotEmpty($invoice->pix->qrCodeText);
         }
 
-        if (isset($data['gatewayAdicionalOptions'])) {
-            if (in_array('payable_with', $data['gatewayAdicionalOptions']) && $gateway == 'iugu') {
+        if (isset($data['gatewayOptions'])) {
+            if (in_array('payable_with', $data['gatewayOptions']) && $gateway == 'iugu') {
                 foreach ($invoice->original->payable_with as $value) {
-                    $this->assertContains($value, $data['gatewayAdicionalOptions']['payable_with']);
+                    $this->assertContains($value, $data['gatewayOptions']['payable_with']);
                 }
             }
-            if (in_array('expires_in', $data['gatewayAdicionalOptions'])) {
-                $this->assertEquals($data['gatewayAdicionalOptions'], $invoice->gatewayAdicionalOptions);
+            if (in_array('expires_in', $data['gatewayOptions'])) {
+                $this->assertEquals($data['gatewayOptions'], $invoice->gatewayOptions);
                 if ($gateway == 'iugu') {
-                    foreach ($invoice->gatewayAdicionalOptions as $key => $value) {
+                    foreach ($invoice->gatewayOptions as $key => $value) {
                         $this->assertNotEmpty(array_filter($invoice->original->variables, function ($variable) use ($key, $value) {
                             return $variable->variable == $key && $variable->value == $value;
                         }));
@@ -276,7 +276,7 @@ class InvoiceBuilderTest extends TestCase
                     'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
-                    'gatewayAdicionalOptions' => [
+                    'gatewayOptions' => [
                         'expires_in' => 5,
                     ]
                 ]
@@ -287,7 +287,7 @@ class InvoiceBuilderTest extends TestCase
                     'expiresAt' => Carbon::now()->addWeekday()->format('Y-m-d'),
                     'items' => [['description' => 'Teste', 'quantity' => 1, 'price' => 10000,]],
                     'customer' => self::customerWithAddress(),
-                    'gatewayAdicionalOptions' => [
+                    'gatewayOptions' => [
                         'payable_with' => ['bank_slip', 'pix'],
                     ]
                 ]

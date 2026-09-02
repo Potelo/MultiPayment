@@ -8,13 +8,86 @@ use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
+/**
+ * @property array $gatewayAdicionalOptions Obsoleto desde 2026-09-02, use $gatewayOptions. Alias
+ *                                          que lê e escreve o mesmo array, com aviso de deprecação.
+ */
 abstract class Model
 {
+    /**
+     * Opções extras enviadas direto ao gateway. Cada driver mescla este array ao payload que
+     * monta a partir do model, e as chaves daqui sobrepõem as geradas.
+     *
+     * @var array
+     */
+    public array $gatewayOptions = [];
 
     /**
-     * @var array $gatewayAdicionalOptions Gateway adicional options Can be used to send adicional options to the gateway and override the default options
+     * Resolve a leitura do nome antigo `gatewayAdicionalOptions` para `gatewayOptions`.
+     *
+     * Devolve por referência para que `$model->gatewayAdicionalOptions['chave'] = 'valor'`
+     * continue alterando o array, como fazia quando a propriedade existia.
+     *
+     * @param  string  $name
+     * @return mixed
      */
-    public array $gatewayAdicionalOptions = [];
+    public function &__get(string $name): mixed
+    {
+        if ($name === 'gatewayAdicionalOptions') {
+            self::warnGatewayAdicionalOptionsDeprecated();
+
+            return $this->gatewayOptions;
+        }
+
+        trigger_error('Undefined property: ' . static::class . '::$' . $name, E_USER_WARNING);
+        $undefined = null;
+
+        return $undefined;
+    }
+
+    /**
+     * Resolve a escrita no nome antigo `gatewayAdicionalOptions` para `gatewayOptions`.
+     * Qualquer outro nome segue o comportamento padrão do PHP (propriedade dinâmica).
+     *
+     * @param  string  $name
+     * @param  mixed  $value
+     * @return void
+     */
+    public function __set(string $name, mixed $value): void
+    {
+        if ($name === 'gatewayAdicionalOptions') {
+            self::warnGatewayAdicionalOptionsDeprecated();
+            $this->gatewayOptions = $value;
+
+            return;
+        }
+
+        $this->{$name} = $value;
+    }
+
+    /**
+     * Mantém `isset()` e `empty()` funcionando sobre o nome antigo `gatewayAdicionalOptions`.
+     *
+     * @param  string  $name
+     * @return bool
+     */
+    public function __isset(string $name): bool
+    {
+        return $name === 'gatewayAdicionalOptions';
+    }
+
+    /**
+     * Emite o aviso de deprecação do nome antigo `gatewayAdicionalOptions`.
+     *
+     * @return void
+     */
+    private static function warnGatewayAdicionalOptionsDeprecated(): void
+    {
+        trigger_error(
+            'Model::$gatewayAdicionalOptions está obsoleto desde 2026-09-02; use $gatewayOptions',
+            E_USER_DEPRECATED
+        );
+    }
 
     /**
      * Create a new instance of the model with an array of attributes.
@@ -115,6 +188,10 @@ abstract class Model
     {
         foreach ($data as $key => $value) {
             $key = lcfirst(str_replace('_', '', ucwords($key, '_')));
+            if ($key === 'gatewayAdicionalOptions') {
+                self::warnGatewayAdicionalOptionsDeprecated();
+                $key = 'gatewayOptions';
+            }
             if (property_exists($this, $key)) {
                 $this->{$key} = $value;
             }

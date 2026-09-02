@@ -89,13 +89,13 @@ class IuguGatewaySubscriptionTest extends TestCase
         ], $call['data']);
     }
 
-    public function testGatewayAdicionalOptionsOverrideTheGeneratedPayload(): void
+    public function testGatewayOptionsOverrideTheGeneratedPayload(): void
     {
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse()]);
 
         $subscription = new Subscription();
         $subscription->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1']]);
-        $subscription->gatewayAdicionalOptions = [
+        $subscription->gatewayOptions = [
             'only_on_charge_success' => true,
             'plan_identifier' => 'outro_plano',
         ];
@@ -999,13 +999,13 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame([['id' => 'si_a', '_destroy' => true]], $api->calls[1]['data']['subitems']);
     }
 
-    public function testGatewayAdicionalOptionsAlsoOverrideTheUpdatePayload(): void
+    public function testGatewayOptionsAlsoOverrideTheUpdatePayload(): void
     {
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse()]);
 
         $subscription = new Subscription();
         $subscription->fill(['id' => 'sub_1', 'next_billing_at' => '2026-11-01']);
-        $subscription->gatewayAdicionalOptions = ['expires_at' => '2026-12-25', 'ignore_due_email' => true];
+        $subscription->gatewayOptions = ['expires_at' => '2026-12-25', 'ignore_due_email' => true];
 
         (new IuguGateway($api))->updateSubscription($subscription);
 

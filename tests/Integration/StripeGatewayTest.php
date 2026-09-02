@@ -355,7 +355,7 @@ class StripeGatewayTest extends TestCase
             ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_BANK_SLIP]);
 
         $this->expectException(GatewayException::class);
-        $this->expectExceptionMessage('does not support bank slip');
+        $this->expectExceptionMessage('[createInvoice com boleto] no Stripe ainda não está implementada nesta lib');
 
         $invoiceBuilder->create();
     }

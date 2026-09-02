@@ -158,9 +158,10 @@ class MultiPayment
     private function gatewayImplementing(string $contract): GatewayContract
     {
         if (!$this->gateway instanceof $contract) {
+            $contractName = substr(strrchr($contract, '\\'), 1);
             throw new GatewayException(
-                'Gateway [' . get_class($this->gateway) . '] does not implement '
-                . substr(strrchr($contract, '\\'), 1)
+                'Gateway [' . get_class($this->gateway) . "] does not implement {$contractName};"
+                . ' the operations of that contract are not yet implemented in this library for that gateway'
             );
         }
 
