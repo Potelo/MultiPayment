@@ -23,6 +23,8 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
@@ -70,9 +72,9 @@ class StripeGateway implements GatewayContract
 
     /** Mapa de tipos de PaymentMethod da Stripe para os métodos genéricos do pacote. */
     private const PAYMENT_METHOD_TYPES = [
-        'card' => Invoice::PAYMENT_METHOD_CREDIT_CARD,
-        'pix' => Invoice::PAYMENT_METHOD_PIX,
-        'boleto' => Invoice::PAYMENT_METHOD_BANK_SLIP,
+        'card' => PaymentMethod::CREDIT_CARD,
+        'pix' => PaymentMethod::PIX,
+        'boleto' => PaymentMethod::BANK_SLIP,
     ];
 
     private StripeClient $client;
@@ -511,19 +513,18 @@ class StripeGateway implements GatewayContract
         }
 
         $paymentMethod = $this->invoicePaymentMethod($invoice);
-        switch ($paymentMethod) {
-            case Invoice::PAYMENT_METHOD_CREDIT_CARD:
-                return $this->createCreditCardInvoice($invoice);
-            case Invoice::PAYMENT_METHOD_PIX:
-                return $this->createPixInvoice($invoice);
-            case Invoice::PAYMENT_METHOD_BANK_SLIP:
-                throw $this->operationNotImplemented(
-                    'createInvoice com boleto',
-                    'Use a Iugu para boleto por enquanto.'
-                );
-            default:
-                throw $this->operationNotImplemented("createInvoice com o método de pagamento [{$paymentMethod}]");
-        }
+
+        return match ($paymentMethod) {
+            PaymentMethod::CREDIT_CARD => $this->createCreditCardInvoice($invoice),
+            PaymentMethod::PIX => $this->createPixInvoice($invoice),
+            PaymentMethod::BANK_SLIP => throw $this->operationNotImplemented(
+                'createInvoice com boleto',
+                'Use a Iugu para boleto por enquanto.'
+            ),
+            default => throw $this->operationNotImplemented(
+                "createInvoice com o método de pagamento [{$paymentMethod->value}]"
+            ),
+        };
     }
 
     /**
@@ -532,10 +533,10 @@ class StripeGateway implements GatewayContract
      * Iugu não tem equivalente aqui e este gateway é restrito a um método por fatura.
      *
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
-     * @return string
+     * @return PaymentMethod
      * @throws ModelAttributeValidationException
      */
-    private function invoicePaymentMethod(Invoice $invoice): string
+    private function invoicePaymentMethod(Invoice $invoice): PaymentMethod
     {
         if (!empty($invoice->availablePaymentMethods)) {
             if (count($invoice->availablePaymentMethods) > 1) {
@@ -546,11 +547,14 @@ class StripeGateway implements GatewayContract
                 );
             }
 
-            return reset($invoice->availablePaymentMethods);
+            // normaliza antes de ler: uma string apensada por `[]=` entra no array sem conversão
+            $methods = PaymentMethod::normalizeSelectable($invoice->availablePaymentMethods, 'Invoice');
+
+            return reset($methods);
         }
 
         if (!empty($invoice->creditCard)) {
-            return Invoice::PAYMENT_METHOD_CREDIT_CARD;
+            return PaymentMethod::CREDIT_CARD;
         }
 
         throw ModelAttributeValidationException::required('Invoice', 'availablePaymentMethods');
@@ -783,11 +787,11 @@ class StripeGateway implements GatewayContract
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
-        if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_BANK_SLIP) {
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
             throw RefundNotSupportedException::boletoNoRefund('stripe');
         }
-        if ($invoice->status === Invoice::STATUS_REFUNDED) {
-            throw RefundNotSupportedException::alreadyRefunded('stripe', $invoice->paymentMethod);
+        if ($invoice->status === InvoiceStatus::REFUNDED) {
+            throw RefundNotSupportedException::alreadyRefunded('stripe', $invoice->paymentMethod?->value);
         }
 
         // mesma semântica da Iugu: refundedAmount preenchido = estorno parcial; vazio = total
@@ -967,17 +971,16 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Deriva o status genérico de contestação de um charge pago. O Charge da Stripe só traz a
-     * flag `disputed`; a dispute não é expansível a partir dele, então um charge disputado
-     * custa um GET a mais em /v1/disputes. Contestação em aberto tem precedência sobre
-     * perdida; dispute ganha, encerrada sem virar chargeback (`warning_closed`) ou prevenida
-     * não altera o status da fatura.
+     * Deriva o status genérico de contestação de um charge pago. Quando a flag `disputed` do
+     * charge é verdadeira, lista as disputes dele em /v1/disputes (um GET a mais).
+     * Contestação em aberto tem precedência sobre perdida; dispute ganha, encerrada sem virar
+     * chargeback (`warning_closed`) ou prevenida não altera o status da fatura.
      *
      * @param  object  $stripeCharge
-     * @return string|null  `Invoice::STATUS_DISPUTED`, `Invoice::STATUS_CHARGEBACK` ou null
+     * @return InvoiceStatus|null  `DISPUTED`, `CHARGEBACK` ou null
      * @throws GatewayException|GatewayNotAvailableException
      */
-    private function disputeStatus(object $stripeCharge): ?string
+    private function disputeStatus(object $stripeCharge): ?InvoiceStatus
     {
         // isset() passa pelo __isset e não loga "Undefined property" quando a chave falta
         if (!isset($stripeCharge->disputed) || !$stripeCharge->disputed) {
@@ -991,10 +994,10 @@ class StripeGateway implements GatewayContract
 
         $statuses = array_map(static fn ($dispute) => $dispute->status, $disputes->data ?? []);
         if (!empty(array_intersect($statuses, self::OPEN_DISPUTE_STATUSES))) {
-            return Invoice::STATUS_DISPUTED;
+            return InvoiceStatus::DISPUTED;
         }
         if (in_array(self::LOST_DISPUTE_STATUS, $statuses, true)) {
-            return Invoice::STATUS_CHARGEBACK;
+            return InvoiceStatus::CHARGEBACK;
         }
 
         return null;
@@ -1003,15 +1006,16 @@ class StripeGateway implements GatewayContract
     /**
      * Deriva o status genérico do par PaymentIntent + charge. Estorno não muda o status do
      * PaymentIntent na Stripe, então ele vem do charge. Contestação, quando existe, vence os
-     * dois: uma fatura disputada não lê como paga nem como estornada.
+     * dois: uma fatura disputada não lê como paga nem como estornada. `requires_capture` lê
+     * como `AUTHORIZED` e `processing` como `PROCESSING`; status de PaymentIntent fora do
+     * mapa devolve `UNKNOWN` com aviso no log.
      *
      * @param  \Stripe\PaymentIntent  $stripePaymentIntent
      * @param  object|null  $paidCharge
-     * @param  string|null  $disputeStatus  resultado de disputeStatus() para o charge pago
-     * @return string
-     * @throws GatewayException
+     * @param  InvoiceStatus|null  $disputeStatus  resultado de disputeStatus() para o charge pago
+     * @return InvoiceStatus
      */
-    private static function stripeStatusToMultiPayment(StripePaymentIntent $stripePaymentIntent, ?object $paidCharge, ?string $disputeStatus = null): string
+    private static function stripeStatusToMultiPayment(StripePaymentIntent $stripePaymentIntent, ?object $paidCharge, ?InvoiceStatus $disputeStatus = null): InvoiceStatus
     {
         if ($disputeStatus !== null) {
             return $disputeStatus;
@@ -1019,26 +1023,20 @@ class StripeGateway implements GatewayContract
 
         if ($paidCharge && $paidCharge->amount_refunded > 0) {
             return $paidCharge->refunded
-                ? Invoice::STATUS_REFUNDED
-                : Invoice::STATUS_PARTIALLY_REFUNDED;
+                ? InvoiceStatus::REFUNDED
+                : InvoiceStatus::PARTIALLY_REFUNDED;
         }
 
-        switch ($stripePaymentIntent->status) {
-            case 'succeeded':
-                return Invoice::STATUS_PAID;
-            case 'canceled':
-                return Invoice::STATUS_CANCELED;
+        return match ($stripePaymentIntent->status) {
+            'succeeded' => InvoiceStatus::PAID,
+            'canceled' => InvoiceStatus::CANCELED,
+            'requires_capture' => InvoiceStatus::AUTHORIZED,
+            'processing' => InvoiceStatus::PROCESSING,
             // pix expirado volta a requires_payment_method (não vira canceled) e segue
-            // re-cobrável — reportar PENDING preserva essa funcionalidade
-            case 'processing':
-            case 'requires_action':
-            case 'requires_confirmation':
-            case 'requires_payment_method':
-            case 'requires_capture':
-                return Invoice::STATUS_PENDING;
-            default:
-                throw new GatewayException('Unexpected Stripe payment intent status: ' . $stripePaymentIntent->status);
-        }
+            // re-cobrável; reportar PENDING preserva essa funcionalidade
+            'requires_action', 'requires_confirmation', 'requires_payment_method' => InvoiceStatus::PENDING,
+            default => InvoiceStatus::unknown((string) $stripePaymentIntent->status, 'stripe'),
+        };
     }
 
     /**
@@ -1113,12 +1111,12 @@ class StripeGateway implements GatewayContract
         });
         $parsedOriginal = $this->parseInvoice($original, new Invoice());
 
-        if ($parsedOriginal->status !== Invoice::STATUS_PENDING) {
+        if ($parsedOriginal->status !== InvoiceStatus::PENDING) {
             throw new GatewayException(
-                "Only pending invoices can be duplicated on the stripe gateway; invoice [{$invoice->id}] is [{$parsedOriginal->status}]"
+                "Only pending invoices can be duplicated on the stripe gateway; invoice [{$invoice->id}] is [{$parsedOriginal->status->value}]"
             );
         }
-        if ($parsedOriginal->paymentMethod !== Invoice::PAYMENT_METHOD_PIX) {
+        if ($parsedOriginal->paymentMethod !== PaymentMethod::PIX) {
             throw new GatewayException('Only pix invoices can be duplicated on the stripe gateway');
         }
         if (empty($parsedOriginal->customer) || empty($parsedOriginal->customer->id)) {
@@ -1141,7 +1139,7 @@ class StripeGateway implements GatewayContract
         $duplicated->customer = $customer;
         $duplicated->amount = $parsedOriginal->amount;
         $duplicated->items = $parsedOriginal->items;
-        $duplicated->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+        $duplicated->availablePaymentMethods = [PaymentMethod::PIX];
         $duplicated->expiresAt = $expiresAt;
         // preserva o metadata da original (inclusive chaves custom do consumidor);
         // as gatewayOptions do chamador vêm por último e podem sobrescrever

@@ -12,6 +12,9 @@ use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\PlanInterval;
 
 /**
  * Cobre o que só a sandbox prova: a serialização do SDK, os endpoints de plano e assinatura e
@@ -65,7 +68,7 @@ class SubscriptionTest extends TestCase
     private function createPlan(
         int $amount,
         string $sufixo,
-        string $interval = Plan::INTERVAL_MONTH,
+        PlanInterval $interval = PlanInterval::MONTH,
         int $intervalCount = 1
     ): Plan {
         $plan = new Plan();
@@ -87,7 +90,7 @@ class SubscriptionTest extends TestCase
         $builder = MultiPayment::setGateway(self::GATEWAY)->newSubscription()
             ->setPlanId($plan->identifier)
             ->setCustomerId($customer->id)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX]);
+            ->setAvailablePaymentMethods([PaymentMethod::PIX]);
 
         if ($nextBillingAt) {
             $builder->setNextBillingAt($nextBillingAt);
@@ -110,7 +113,7 @@ class SubscriptionTest extends TestCase
 
         $this->assertNotEmpty($plan->id);
         $this->assertSame(12345, $plan->amount);
-        $this->assertSame(Plan::INTERVAL_MONTH, $plan->interval);
+        $this->assertSame(PlanInterval::MONTH, $plan->interval);
         $this->assertSame('iugu', $plan->gateway);
 
         $porIdentifier = new Plan();
@@ -140,10 +143,10 @@ class SubscriptionTest extends TestCase
      */
     public function testShouldCreateAYearlyPlanAsTwelveMonths(): void
     {
-        $plan = $this->createPlan(120000, 'anual', Plan::INTERVAL_YEAR);
+        $plan = $this->createPlan(120000, 'anual', PlanInterval::YEAR);
 
         $this->assertNotEmpty($plan->id);
-        $this->assertSame(Plan::INTERVAL_YEAR, $plan->interval);
+        $this->assertSame(PlanInterval::YEAR, $plan->interval);
         $this->assertSame(1, $plan->intervalCount);
         $this->assertSame(12, $plan->original->interval);
         $this->assertSame('months', $plan->original->interval_type);
@@ -152,7 +155,7 @@ class SubscriptionTest extends TestCase
         $lido->id = $plan->id;
         $lido = $lido->get(self::GATEWAY);
 
-        $this->assertSame(Plan::INTERVAL_YEAR, $lido->interval);
+        $this->assertSame(PlanInterval::YEAR, $lido->interval);
         $this->assertSame(1, $lido->intervalCount);
     }
 
@@ -317,7 +320,7 @@ class SubscriptionTest extends TestCase
         $this->assertNotNull($trocada->latestInvoice);
         $this->faturasCriadas[] = $trocada->latestInvoice->id;
 
-        $this->assertSame(Invoice::STATUS_PENDING, $trocada->latestInvoice->status);
+        $this->assertSame(InvoiceStatus::PENDING, $trocada->latestInvoice->status);
         // a cobrança é imediata, e não a do próximo ciclo; comparar contra now() traria o fuso
         // do gateway para dentro do teste
         $this->assertTrue($trocada->latestInvoice->expiresAt->lessThan($proximaCobranca));

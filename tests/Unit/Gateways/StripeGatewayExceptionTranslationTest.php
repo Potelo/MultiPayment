@@ -25,6 +25,7 @@ use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Stripe\Exception\AuthenticationException as StripeAuthenticationException;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 /**
  * Cobre a tradução de falhas do stripe-php para as exceções do pacote: classe escolhida pelo
@@ -266,7 +267,7 @@ class StripeGatewayExceptionTranslationTest extends TestCase
         $invoice = new Invoice();
         $invoice->customer = new Customer();
         $invoice->customer->id = 'cus_fake123';
-        $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_CREDIT_CARD];
+        $invoice->availablePaymentMethods = [PaymentMethod::CREDIT_CARD];
         $invoice->creditCard = new CreditCard();
         $invoice->creditCard->id = 'pm_fake123';
         $item = new InvoiceItem();

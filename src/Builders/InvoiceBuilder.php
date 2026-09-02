@@ -10,6 +10,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 
 /**
@@ -48,7 +49,7 @@ class InvoiceBuilder extends Builder
     /**
      * Set the invoice available payment methods
      *
-     * @param  string[]  $paymentMethods
+     * @param  PaymentMethod[]|string[]  $paymentMethods
      *
      * @return InvoiceBuilder
      */
@@ -61,11 +62,11 @@ class InvoiceBuilder extends Builder
     /**
      * Add the invoice available payment methods
      *
-     * @param  string  $paymentMethod
+     * @param  PaymentMethod|string  $paymentMethod
      *
      * @return InvoiceBuilder
      */
-    public function addAvailablePaymentMethod(string $paymentMethod): InvoiceBuilder
+    public function addAvailablePaymentMethod(PaymentMethod|string $paymentMethod): InvoiceBuilder
     {
         $paymentMethods = is_array($this->model->availablePaymentMethods) ? $this->model->availablePaymentMethods : [];
         $paymentMethods[] = $paymentMethod;

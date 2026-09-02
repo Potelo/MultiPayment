@@ -25,6 +25,9 @@ use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -103,8 +106,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             }
         }
 
-        if (!empty($invoice->availablePaymentMethods)) {
-            $iuguInvoiceData['payable_with'] = $invoice->availablePaymentMethods;
+        // normaliza antes de ler: uma string apensada por `[]=` entra no array sem conversão
+        $payableWith = !empty($invoice->availablePaymentMethods)
+            ? PaymentMethod::normalizeSelectable($invoice->availablePaymentMethods, 'Invoice')
+            : [];
+
+        if (!empty($payableWith)) {
+            $iuguInvoiceData['payable_with'] = self::paymentMethodsToIuguPayableWith($payableWith);
         }
 
         if (!empty($invoice->automaticPix)) {
@@ -124,11 +132,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             }
         }
 
-        if (
-            !empty($invoice->availablePaymentMethods) &&
-            in_array(Invoice::PAYMENT_METHOD_CREDIT_CARD, $invoice->availablePaymentMethods) &&
-            !empty($invoice->creditCard)
-        ) {
+        if (in_array(PaymentMethod::CREDIT_CARD, $payableWith, true) && !empty($invoice->creditCard)) {
             if (empty($invoice->creditCard->id)) {
                 $invoice->creditCard = $this->createCreditCard($invoice->creditCard);
             }
@@ -320,39 +324,31 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Convert Iugu status to MultiPayment status.
+     * Converte o status da fatura Iugu no status genérico. Cada status lê como o caso
+     * homônimo, com duas exceções: `draft` lê como `PENDING` e `in_analysis` (primeira etapa
+     * da cobrança em duas etapas) como `AUTHORIZED`. Status fora do mapa devolve `UNKNOWN` e
+     * registra um aviso no log.
      *
-     * @param $iuguStatus
+     * @param  string|null  $iuguStatus
      *
-     * @return string
-     * @throws GatewayException
+     * @return InvoiceStatus
      */
-    private static function iuguStatusToMultiPayment($iuguStatus): string
+    private static function iuguStatusToMultiPayment(?string $iuguStatus): InvoiceStatus
     {
-        switch ($iuguStatus) {
-            case self::STATUS_PENDING:
-            case self::STATUS_IN_ANALYSIS:
-            case self::STATUS_DRAFT:
-            case self::STATUS_PARTIALLY_PAID:
-                return Invoice::STATUS_PENDING;
-            case self::STATUS_PAID:
-            case self::STATUS_EXTERNALLY_PAID:
-            case self::STATUS_AUTHORIZED:
-                return Invoice::STATUS_PAID;
-            case self::STATUS_IN_PROTEST:
-                return Invoice::STATUS_DISPUTED;
-            case self::STATUS_CANCELED:
-            case self::STATUS_EXPIRED:
-                return Invoice::STATUS_CANCELED;
-            case self::STATUS_REFUNDED:
-                return Invoice::STATUS_REFUNDED;
-            case self::STATUS_CHARGEBACK:
-                return Invoice::STATUS_CHARGEBACK;
-            case self::STATUS_PARTIALLY_REFUNDED:
-                return Invoice::STATUS_PARTIALLY_REFUNDED;
-            default:
-                throw new GatewayException('Unexpected Iugu status: ' . $iuguStatus);
-        }
+        return match ($iuguStatus) {
+            self::STATUS_PENDING, self::STATUS_DRAFT => InvoiceStatus::PENDING,
+            self::STATUS_IN_ANALYSIS, self::STATUS_AUTHORIZED => InvoiceStatus::AUTHORIZED,
+            self::STATUS_PAID => InvoiceStatus::PAID,
+            self::STATUS_PARTIALLY_PAID => InvoiceStatus::PARTIALLY_PAID,
+            self::STATUS_EXTERNALLY_PAID => InvoiceStatus::EXTERNALLY_PAID,
+            self::STATUS_PARTIALLY_REFUNDED => InvoiceStatus::PARTIALLY_REFUNDED,
+            self::STATUS_REFUNDED => InvoiceStatus::REFUNDED,
+            self::STATUS_IN_PROTEST => InvoiceStatus::DISPUTED,
+            self::STATUS_CHARGEBACK => InvoiceStatus::CHARGEBACK,
+            self::STATUS_CANCELED => InvoiceStatus::CANCELED,
+            self::STATUS_EXPIRED => InvoiceStatus::EXPIRED,
+            default => InvoiceStatus::unknown((string) $iuguStatus, 'iugu'),
+        };
     }
 
     /**
@@ -442,25 +438,39 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * Convert the iugu payment method to the MultiPayment payment method
      *
-     * @param $iuguPaymentMethod
+     * @param  mixed  $iuguPaymentMethod
      *
-     * @return string|null
+     * @return PaymentMethod|null
      */
-    private function iuguToMultiPaymentPaymentMethod($iuguPaymentMethod): ?string
+    private function iuguToMultiPaymentPaymentMethod($iuguPaymentMethod): ?PaymentMethod
     {
-        $multiPaymentPaymentMethod = [
-            Invoice::PAYMENT_METHOD_PIX,
-            Invoice::PAYMENT_METHOD_BANK_SLIP,
-            Invoice::PAYMENT_METHOD_CREDIT_CARD
-        ];
-        if (!empty($iuguPaymentMethod)) {
-            foreach ($multiPaymentPaymentMethod as $paymentMethod) {
-                if (str_contains($iuguPaymentMethod, $paymentMethod)) {
-                    return $paymentMethod;
-                }
+        if (empty($iuguPaymentMethod) || !is_string($iuguPaymentMethod)) {
+            return null;
+        }
+
+        // o nome da Iugu carrega o genérico como sufixo (`iugu_credit_card`, `iugu_pix`)
+        foreach ([PaymentMethod::PIX, PaymentMethod::BANK_SLIP, PaymentMethod::CREDIT_CARD] as $paymentMethod) {
+            if (str_contains($iuguPaymentMethod, $paymentMethod->value)) {
+                return $paymentMethod;
             }
         }
+
         return null;
+    }
+
+    /**
+     * Converte a lista genérica de métodos de pagamento nos valores de `payable_with` da Iugu.
+     *
+     * @param  PaymentMethod[]  $paymentMethods
+     *
+     * @return string[]
+     */
+    private static function paymentMethodsToIuguPayableWith(array $paymentMethods): array
+    {
+        return array_values(array_map(
+            static fn (PaymentMethod $paymentMethod) => $paymentMethod->value,
+            $paymentMethods
+        ));
     }
 
     /**
@@ -520,16 +530,16 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     private function assertInvoiceIsRefundable(Invoice $invoice, ?int $requestedAmount): void
     {
-        if ($invoice->paymentMethod === Invoice::PAYMENT_METHOD_BANK_SLIP) {
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
             throw RefundNotSupportedException::boletoNoRefund('iugu');
         }
 
-        if ($invoice->status === Invoice::STATUS_REFUNDED) {
-            throw RefundNotSupportedException::alreadyRefunded('iugu', $invoice->paymentMethod);
+        if ($invoice->status === InvoiceStatus::REFUNDED) {
+            throw RefundNotSupportedException::alreadyRefunded('iugu', $invoice->paymentMethod?->value);
         }
 
         if (
-            $invoice->paymentMethod === Invoice::PAYMENT_METHOD_PIX
+            $invoice->paymentMethod === PaymentMethod::PIX
             && !is_null($requestedAmount)
             && $requestedAmount !== $invoice->paidAmount
         ) {
@@ -543,7 +553,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         ) {
             throw RefundNotSupportedException::refundWindowExpired(
                 'iugu',
-                $invoice->paymentMethod,
+                $invoice->paymentMethod?->value,
                 $invoice->paidAt,
                 self::REFUND_WINDOW_DAYS
             );
@@ -938,23 +948,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $invoice->paymentMethod = $this->iuguToMultiPaymentPaymentMethod($iuguInvoice->payment_method);
         }
 
-        if (!empty(($iuguInvoice->payable_with))) {
-
-            $payableWith = $iuguInvoice->payable_with;
-            if (is_string($payableWith)) {
-                $payableWith = [$payableWith];
-            }
-
-            foreach ($payableWith as $pm) {
-                $method = $this->iuguToMultiPaymentPaymentMethod($pm);
-                if (is_null($method) && $pm === 'all') {
-                    $invoice->availablePaymentMethods = [
-                        Invoice::PAYMENT_METHOD_CREDIT_CARD,
-                        Invoice::PAYMENT_METHOD_BANK_SLIP,
-                        Invoice::PAYMENT_METHOD_PIX,
-                    ];
-                }
-            }
+        if (!empty($iuguInvoice->payable_with)) {
+            $invoice->availablePaymentMethods = $this->iuguPayableWithToPaymentMethods($iuguInvoice->payable_with);
         }
 
         if (empty($invoice->customer)) {
@@ -1717,7 +1712,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             !empty($subscription->availablePaymentMethods)
             && ($creating || !$this->isOriginalPayableWith($subscription))
         ) {
-            $data['payable_with'] = $subscription->availablePaymentMethods;
+            $data['payable_with'] = self::paymentMethodsToIuguPayableWith(
+                PaymentMethod::normalizeSelectable($subscription->availablePaymentMethods, 'Subscription')
+            );
         }
 
         if (!empty($subscription->metadata)) {
@@ -2065,10 +2062,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Diz se o resumo de fatura ainda tem valor a receber.
-     *
-     * `expired` conta: na Iugu a fatura vencida não foi paga nem cancelada, embora o pacote
-     * mapeie esse status para `Invoice::STATUS_CANCELED`.
+     * Diz se o resumo de fatura ainda tem valor a receber: `pending`, `partially_paid` e
+     * `expired` (na Iugu a fatura vencida segue devida até ser paga ou cancelada).
      *
      * @param  object  $iuguInvoice
      *
@@ -2198,16 +2193,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         $invoice = new Invoice();
         $invoice->id = $iuguInvoice->id;
-
-        try {
-            $invoice->status = isset($iuguInvoice->status)
-                ? self::iuguStatusToMultiPayment($iuguInvoice->status)
-                : null;
-        } catch (GatewayException $e) {
-            // status fora do mapa não derruba a leitura da assinatura; o status cru continua
-            // em `original`
-            $invoice->status = null;
-        }
+        $invoice->status = isset($iuguInvoice->status)
+            ? self::iuguStatusToMultiPayment($iuguInvoice->status)
+            : null;
 
         $invoice->expiresAt = !empty($iuguInvoice->due_date)
             ? new Carbon($iuguInvoice->due_date)
@@ -2294,22 +2282,23 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * Converte o intervalo genérico no par `interval` e `interval_type` da Iugu.
      *
      * A Iugu só tem `weeks` e `months`, então o intervalo anual é enviado como múltiplo de 12
-     * meses. A leitura inversa fica em `iuguIntervalToMultiPayment()`.
+     * meses e o diário lança `GatewayException`. A leitura inversa fica em
+     * `iuguIntervalToMultiPayment()`.
      *
-     * @param  string|null  $interval
+     * @param  PlanInterval|null  $interval
      * @param  int  $intervalCount
      *
      * @return array{interval: int, interval_type: string}
      * @throws GatewayException
      */
-    private function intervalToIuguData(?string $interval, int $intervalCount): array
+    private function intervalToIuguData(?PlanInterval $interval, int $intervalCount): array
     {
         $data = match ($interval) {
-            Plan::INTERVAL_WEEK => ['interval' => $intervalCount, 'interval_type' => 'weeks'],
-            Plan::INTERVAL_MONTH => ['interval' => $intervalCount, 'interval_type' => 'months'],
-            Plan::INTERVAL_YEAR => ['interval' => 12 * $intervalCount, 'interval_type' => 'months'],
+            PlanInterval::WEEK => ['interval' => $intervalCount, 'interval_type' => 'weeks'],
+            PlanInterval::MONTH => ['interval' => $intervalCount, 'interval_type' => 'months'],
+            PlanInterval::YEAR => ['interval' => 12 * $intervalCount, 'interval_type' => 'months'],
             default => throw new GatewayException(
-                "Iugu driver does not support the `{$interval}` plan interval; "
+                'Iugu driver does not support the `' . ($interval?->value ?? 'null') . '` plan interval; '
                 . 'use week, month or year (sent as 12 months).'
             ),
         };
@@ -2336,17 +2325,17 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @param  string|null  $intervalType
      * @param  int|null  $interval
      *
-     * @return array{0: string|null, 1: int|null}
+     * @return array{0: PlanInterval|null, 1: int|null}
      */
     private function iuguIntervalToMultiPayment(?string $intervalType, ?int $interval): array
     {
         if ($intervalType === 'months' && $interval > 0 && $interval % 12 === 0) {
-            return [Plan::INTERVAL_YEAR, intdiv($interval, 12)];
+            return [PlanInterval::YEAR, intdiv($interval, 12)];
         }
 
         $genericInterval = match ($intervalType) {
-            'weeks' => Plan::INTERVAL_WEEK,
-            'months' => Plan::INTERVAL_MONTH,
+            'weeks' => PlanInterval::WEEK,
+            'months' => PlanInterval::MONTH,
             default => null,
         };
 
@@ -2394,24 +2383,18 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * Converte o `payable_with` da Iugu na lista de métodos de pagamento do MultiPayment.
      *
-     * O valor `all` expande para os três métodos.
+     * O valor `all` expande para os três métodos selecionáveis; valor desconhecido é ignorado.
      *
      * @param  mixed  $payableWith
      *
-     * @return string[]
+     * @return PaymentMethod[]
      */
     private function iuguPayableWithToPaymentMethods($payableWith): array
     {
-        $todos = [
-            Invoice::PAYMENT_METHOD_CREDIT_CARD,
-            Invoice::PAYMENT_METHOD_BANK_SLIP,
-            Invoice::PAYMENT_METHOD_PIX,
-        ];
-
         $methods = [];
         foreach ((array) $payableWith as $iuguMethod) {
             if ($iuguMethod === 'all') {
-                return $todos;
+                return PaymentMethod::selectable();
             }
 
             $method = $this->iuguToMultiPaymentPaymentMethod($iuguMethod);

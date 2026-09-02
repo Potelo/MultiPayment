@@ -8,6 +8,8 @@ use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 /**
  * Cenários específicos do gateway Stripe na sandbox real. O fluxo de cartão é token-only:
@@ -47,15 +49,15 @@ class StripeGatewayTest extends TestCase
                 $customerData['phoneNumber']
             )
             ->addItem('Assinatura mensal', 12345, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_CREDIT_CARD])
+            ->setAvailablePaymentMethods([PaymentMethod::CREDIT_CARD])
             ->addCreditCardToken('pm_card_visa')
             ->create();
 
         $this->assertNotNull($invoice->id);
-        $this->assertEquals(Invoice::STATUS_PAID, $invoice->status);
+        $this->assertEquals(InvoiceStatus::PAID, $invoice->status);
         $this->assertEquals(12345, $invoice->amount);
         $this->assertEquals(12345, $invoice->paidAmount);
-        $this->assertEquals(Invoice::PAYMENT_METHOD_CREDIT_CARD, $invoice->paymentMethod);
+        $this->assertEquals(PaymentMethod::CREDIT_CARD, $invoice->paymentMethod);
         $this->assertEquals('4242', $invoice->creditCard->lastDigits);
         $this->assertNotNull($invoice->paidAt);
         $this->assertCount(1, $invoice->items);
@@ -64,7 +66,7 @@ class StripeGatewayTest extends TestCase
         sleep(3); // a balance transaction (fee) do cartão é assíncrona logo após o confirm
 
         $invoiceFetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
-        $this->assertEquals(Invoice::STATUS_PAID, $invoiceFetched->status);
+        $this->assertEquals(InvoiceStatus::PAID, $invoiceFetched->status);
         $this->assertEquals(12345, $invoiceFetched->paidAmount);
         $this->assertNotNull($invoiceFetched->fee);
         $this->assertEquals($invoice->id, $invoiceFetched->id);
@@ -89,7 +91,7 @@ class StripeGatewayTest extends TestCase
                 $customerData['phoneNumber']
             )
             ->addItem('Assinatura mensal', 9900, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_CREDIT_CARD])
+            ->setAvailablePaymentMethods([PaymentMethod::CREDIT_CARD])
             ->addCreditCardToken('pm_card_chargeDeclined');
 
         try {
@@ -153,13 +155,13 @@ class StripeGatewayTest extends TestCase
                 $customerData['taxDocument']
             )
             ->addItem('Assinatura mensal', 12345, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
             ->setExpiresAt(\Carbon\Carbon::now()->addHour())
             ->create();
 
         $this->assertNotNull($invoice->id);
-        $this->assertEquals(Invoice::STATUS_PENDING, $invoice->status);
-        $this->assertEquals(Invoice::PAYMENT_METHOD_PIX, $invoice->paymentMethod);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
+        $this->assertEquals(PaymentMethod::PIX, $invoice->paymentMethod);
         $this->assertNotNull($invoice->pix);
         $this->assertNotNull($invoice->pix->qrCodeText);
         $this->assertNotNull($invoice->pix->qrCodeImageUrl);
@@ -168,11 +170,11 @@ class StripeGatewayTest extends TestCase
 
         // além do pagamento mágico, espera a balance transaction (fee) materializar
         $invoiceFetched = $this->waitForInvoiceCondition($gateway, $invoice->id, function (Invoice $fetched) {
-            return $fetched->status === Invoice::STATUS_PAID && !is_null($fetched->fee);
+            return $fetched->status === InvoiceStatus::PAID && !is_null($fetched->fee);
         });
-        $this->assertEquals(Invoice::STATUS_PAID, $invoiceFetched->status);
+        $this->assertEquals(InvoiceStatus::PAID, $invoiceFetched->status);
         $this->assertEquals(12345, $invoiceFetched->paidAmount);
-        $this->assertEquals(Invoice::PAYMENT_METHOD_PIX, $invoiceFetched->paymentMethod);
+        $this->assertEquals(PaymentMethod::PIX, $invoiceFetched->paymentMethod);
         $this->assertNotNull($invoiceFetched->fee);
     }
 
@@ -188,13 +190,13 @@ class StripeGatewayTest extends TestCase
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
             ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
             ->addItem('Assinatura mensal', 5000, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
             ->create();
 
-        $this->assertEquals(Invoice::STATUS_PENDING, $invoice->status);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
 
         $invoiceCanceled = MultiPayment::setGateway($gateway)->cancelInvoice($invoice->id);
-        $this->assertEquals(Invoice::STATUS_CANCELED, $invoiceCanceled->status);
+        $this->assertEquals(InvoiceStatus::CANCELED, $invoiceCanceled->status);
     }
 
     /**
@@ -209,21 +211,21 @@ class StripeGatewayTest extends TestCase
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
             ->addCustomer($customerData['name'], 'expire_immediately@example.com', $customerData['taxDocument'])
             ->addItem('Assinatura mensal', 9900, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
             ->create();
 
-        $this->assertEquals(Invoice::STATUS_PENDING, $invoice->status);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
 
         // aguarda a sandbox processar a expiração mágica (o PI segue pendente e re-cobrável)
         $invoiceExpired = $this->waitForInvoiceCondition($gateway, $invoice->id, function (Invoice $fetched) {
             return empty($fetched->pix);
         });
-        $this->assertEquals(Invoice::STATUS_PENDING, $invoiceExpired->status);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoiceExpired->status);
 
         $invoicePaid = MultiPayment::setGateway($gateway)
             ->chargeInvoiceWithCreditCard($invoice->id, 'pm_card_visa');
-        $this->assertEquals(Invoice::STATUS_PAID, $invoicePaid->status);
-        $this->assertEquals(Invoice::PAYMENT_METHOD_CREDIT_CARD, $invoicePaid->paymentMethod);
+        $this->assertEquals(InvoiceStatus::PAID, $invoicePaid->status);
+        $this->assertEquals(PaymentMethod::CREDIT_CARD, $invoicePaid->paymentMethod);
         $this->assertEquals('4242', $invoicePaid->creditCard->lastDigits);
     }
 
@@ -262,14 +264,14 @@ class StripeGatewayTest extends TestCase
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
             ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
             ->addItem('Assinatura mensal', 9900, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_CREDIT_CARD])
+            ->setAvailablePaymentMethods([PaymentMethod::CREDIT_CARD])
             ->addCreditCardToken('pm_card_visa')
             ->create();
 
-        $this->assertEquals(Invoice::STATUS_PAID, $invoice->status);
+        $this->assertEquals(InvoiceStatus::PAID, $invoice->status);
 
         $invoiceRefunded = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id);
-        $this->assertEquals(Invoice::STATUS_REFUNDED, $invoiceRefunded->status);
+        $this->assertEquals(InvoiceStatus::REFUNDED, $invoiceRefunded->status);
         $this->assertEquals(9900, $invoiceRefunded->refundedAmount);
     }
 
@@ -285,16 +287,16 @@ class StripeGatewayTest extends TestCase
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
             ->addCustomer($customerData['name'], 'succeed_immediately@example.com', $customerData['taxDocument'])
             ->addItem('Assinatura mensal', 12345, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
             ->create();
 
         $invoicePaid = $this->waitForInvoiceCondition($gateway, $invoice->id, function (Invoice $fetched) {
-            return $fetched->status === Invoice::STATUS_PAID;
+            return $fetched->status === InvoiceStatus::PAID;
         });
-        $this->assertEquals(Invoice::STATUS_PAID, $invoicePaid->status);
+        $this->assertEquals(InvoiceStatus::PAID, $invoicePaid->status);
 
         $invoiceRefunded = MultiPayment::setGateway($gateway)->refundInvoice($invoice->id, 2345);
-        $this->assertEquals(Invoice::STATUS_PARTIALLY_REFUNDED, $invoiceRefunded->status);
+        $this->assertEquals(InvoiceStatus::PARTIALLY_REFUNDED, $invoiceRefunded->status);
         $this->assertEquals(2345, $invoiceRefunded->refundedAmount);
         $this->assertEquals(12345, $invoiceRefunded->paidAmount);
     }
@@ -311,18 +313,18 @@ class StripeGatewayTest extends TestCase
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
             ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
             ->addItem('Assinatura mensal', 5000, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
             ->setExpiresAt(\Carbon\Carbon::now()->addHour())
             ->create();
 
-        $this->assertEquals(Invoice::STATUS_PENDING, $invoice->status);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
 
         $newExpiresAt = \Carbon\Carbon::now()->addDays(2);
         $invoiceDuplicated = MultiPayment::setGateway($gateway)
             ->duplicateInvoice($invoice->id, $newExpiresAt);
 
         $this->assertNotEquals($invoice->id, $invoiceDuplicated->id);
-        $this->assertEquals(Invoice::STATUS_PENDING, $invoiceDuplicated->status);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoiceDuplicated->status);
         $this->assertEquals(5000, $invoiceDuplicated->amount);
         $this->assertNotNull($invoiceDuplicated->pix->qrCodeText);
         $this->assertEqualsWithDelta(
@@ -333,7 +335,7 @@ class StripeGatewayTest extends TestCase
         $this->assertEquals($invoice->customer->id, $invoiceDuplicated->customer->id);
 
         $originalFetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
-        $this->assertEquals(Invoice::STATUS_CANCELED, $originalFetched->status);
+        $this->assertEquals(InvoiceStatus::CANCELED, $originalFetched->status);
     }
 
     /**
@@ -352,7 +354,7 @@ class StripeGatewayTest extends TestCase
                 $customerData['taxDocument']
             )
             ->addItem('Assinatura mensal', 9900, 1)
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_BANK_SLIP]);
+            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP]);
 
         $this->expectException(GatewayException::class);
         $this->expectExceptionMessage('[createInvoice com boleto] no Stripe ainda não está implementada nesta lib');

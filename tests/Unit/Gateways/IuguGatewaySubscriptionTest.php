@@ -17,6 +17,10 @@ use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 
 class IuguGatewaySubscriptionTest extends TestCase
 {
@@ -64,7 +68,7 @@ class IuguGatewaySubscriptionTest extends TestCase
             'plan_id' => 'plano_mensal',
             'customer' => ['id' => 'cus_1'],
             'next_billing_at' => '2026-10-01',
-            'available_payment_methods' => [Invoice::PAYMENT_METHOD_PIX],
+            'available_payment_methods' => [PaymentMethod::PIX],
             'metadata' => ['origem' => 'teste'],
             'items' => [['description' => 'Consultas', 'amount' => 2500, 'quantity' => 2]],
             'discounts' => [['description' => 'Promo', 'amount_off' => 500]],
@@ -80,7 +84,7 @@ class IuguGatewaySubscriptionTest extends TestCase
             'customer_id' => 'cus_1',
             'plan_identifier' => 'plano_mensal',
             'expires_at' => '2026-10-01',
-            'payable_with' => [Invoice::PAYMENT_METHOD_PIX],
+            'payable_with' => ['pix'],
             'custom_variables' => [['name' => 'origem', 'value' => 'teste']],
             'subitems' => [
                 ['description' => 'Consultas', 'price_cents' => 2500, 'quantity' => 2, 'recurrent' => 1],
@@ -543,7 +547,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $plan->name = 'Mensal';
         $plan->identifier = 'mensal';
         $plan->amount = 10000;
-        $plan->interval = Plan::INTERVAL_MONTH;
+        $plan->interval = PlanInterval::MONTH;
         $plan->intervalCount = 1;
 
         $created = (new IuguGateway($api))->createPlan($plan);
@@ -551,7 +555,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('months', $api->calls[0]['data']['interval_type']);
         $this->assertSame(1, $api->calls[0]['data']['interval']);
         $this->assertSame(10000, $api->calls[0]['data']['value_cents']);
-        $this->assertSame(Plan::INTERVAL_MONTH, $created->interval);
+        $this->assertSame(PlanInterval::MONTH, $created->interval);
         $this->assertSame(10000, $created->amount);
         $this->assertSame('BRL', $created->currency);
     }
@@ -561,7 +565,7 @@ class IuguGatewaySubscriptionTest extends TestCase
      */
     #[DataProvider('intervalRoundTripProvider')]
     public function testCreatePlanTranslatesTheIntervalBothWays(
-        string $interval,
+        PlanInterval $interval,
         int $intervalCount,
         int $iuguInterval,
         string $iuguIntervalType
@@ -600,11 +604,11 @@ class IuguGatewaySubscriptionTest extends TestCase
     public static function intervalRoundTripProvider(): array
     {
         return [
-            'anual' => [Plan::INTERVAL_YEAR, 1, 12, 'months'],
-            'bianual' => [Plan::INTERVAL_YEAR, 2, 24, 'months'],
-            'mensal' => [Plan::INTERVAL_MONTH, 1, 1, 'months'],
-            'semestral' => [Plan::INTERVAL_MONTH, 6, 6, 'months'],
-            'quinzenal' => [Plan::INTERVAL_WEEK, 2, 2, 'weeks'],
+            'anual' => [PlanInterval::YEAR, 1, 12, 'months'],
+            'bianual' => [PlanInterval::YEAR, 2, 24, 'months'],
+            'mensal' => [PlanInterval::MONTH, 1, 1, 'months'],
+            'semestral' => [PlanInterval::MONTH, 6, 6, 'months'],
+            'quinzenal' => [PlanInterval::WEEK, 2, 2, 'weeks'],
         ];
     }
 
@@ -618,13 +622,13 @@ class IuguGatewaySubscriptionTest extends TestCase
         $plan->name = 'Anual';
         $plan->identifier = 'anual';
         $plan->amount = 100000;
-        $plan->interval = Plan::INTERVAL_YEAR;
+        $plan->interval = PlanInterval::YEAR;
 
         $created = (new IuguGateway($api))->createPlan($plan);
 
         $this->assertSame(12, $api->calls[0]['data']['interval']);
         $this->assertSame('months', $api->calls[0]['data']['interval_type']);
-        $this->assertSame(Plan::INTERVAL_YEAR, $created->interval);
+        $this->assertSame(PlanInterval::YEAR, $created->interval);
         $this->assertSame(1, $created->intervalCount);
     }
 
@@ -642,19 +646,19 @@ class IuguGatewaySubscriptionTest extends TestCase
         $plan->name = 'Doze';
         $plan->identifier = 'doze';
         $plan->amount = 100000;
-        $plan->interval = Plan::INTERVAL_MONTH;
+        $plan->interval = PlanInterval::MONTH;
         $plan->intervalCount = 12;
 
         $created = (new IuguGateway($api))->createPlan($plan);
 
         $this->assertSame(12, $api->calls[0]['data']['interval']);
-        $this->assertSame(Plan::INTERVAL_YEAR, $created->interval);
+        $this->assertSame(PlanInterval::YEAR, $created->interval);
         $this->assertSame(1, $created->intervalCount);
         $this->assertSame(12, $created->original->interval);
     }
 
     #[DataProvider('invalidIntervalProvider')]
-    public function testInvalidIntervalIsRejectedBeforeTheRequest(string $interval, int $intervalCount, string $message): void
+    public function testInvalidIntervalIsRejectedBeforeTheRequest(PlanInterval|string|null $interval, int $intervalCount, string $message): void
     {
         $api = new QueuedIuguApiRequest([]);
 
@@ -677,9 +681,11 @@ class IuguGatewaySubscriptionTest extends TestCase
     public static function invalidIntervalProvider(): array
     {
         return [
-            'intervalo desconhecido' => ['day', 1, '/does not support the `day` plan interval/'],
-            'anual acima do teto da Iugu' => [Plan::INTERVAL_YEAR, 50, '/from 1 to 599 months, 600 given/'],
-            'mensal acima do teto da Iugu' => [Plan::INTERVAL_MONTH, 600, '/from 1 to 599 months, 600 given/'],
+            'diário como string' => ['day', 1, '/does not support the `day` plan interval/'],
+            'diário como enum' => [PlanInterval::DAY, 1, '/does not support the `day` plan interval/'],
+            'intervalo ausente' => [null, 1, '/does not support the `null` plan interval/'],
+            'anual acima do teto da Iugu' => [PlanInterval::YEAR, 50, '/from 1 to 599 months, 600 given/'],
+            'mensal acima do teto da Iugu' => [PlanInterval::MONTH, 600, '/from 1 to 599 months, 600 given/'],
         ];
     }
 
@@ -691,12 +697,12 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $plan = new Plan();
         $plan->id = 'plan_1';
-        $plan->interval = Plan::INTERVAL_YEAR;
+        $plan->interval = PlanInterval::YEAR;
         $plan->intervalCount = 1;
 
         $found = (new IuguGateway($api))->getPlan($plan);
 
-        $this->assertSame(Plan::INTERVAL_YEAR, $found->interval);
+        $this->assertSame(PlanInterval::YEAR, $found->interval);
         $this->assertSame(1, $found->intervalCount);
     }
 
@@ -707,7 +713,7 @@ class IuguGatewaySubscriptionTest extends TestCase
     public function testGetPlanParsesTheIuguInterval(
         int|string $iuguInterval,
         string $iuguIntervalType,
-        string $interval,
+        PlanInterval $interval,
         int $intervalCount
     ): void {
         $api = new QueuedIuguApiRequest([
@@ -726,12 +732,12 @@ class IuguGatewaySubscriptionTest extends TestCase
     public static function iuguIntervalParseProvider(): array
     {
         return [
-            '12 meses vira 1 ano' => [12, 'months', Plan::INTERVAL_YEAR, 1],
-            '24 meses vira 2 anos' => [24, 'months', Plan::INTERVAL_YEAR, 2],
-            '6 meses continua mensal' => [6, 'months', Plan::INTERVAL_MONTH, 6],
-            '1 mês continua mensal' => [1, 'months', Plan::INTERVAL_MONTH, 1],
-            '12 semanas continua semanal' => [12, 'weeks', Plan::INTERVAL_WEEK, 12],
-            '12 como string vira 1 ano' => ['12', 'months', Plan::INTERVAL_YEAR, 1],
+            '12 meses vira 1 ano' => [12, 'months', PlanInterval::YEAR, 1],
+            '24 meses vira 2 anos' => [24, 'months', PlanInterval::YEAR, 2],
+            '6 meses continua mensal' => [6, 'months', PlanInterval::MONTH, 6],
+            '1 mês continua mensal' => [1, 'months', PlanInterval::MONTH, 1],
+            '12 semanas continua semanal' => [12, 'weeks', PlanInterval::WEEK, 12],
+            '12 como string vira 1 ano' => ['12', 'months', PlanInterval::YEAR, 1],
         ];
     }
 
@@ -801,7 +807,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
         $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
-        $this->assertSame(Invoice::STATUS_CANCELED, $subscription->latestInvoice->status);
+        $this->assertSame(InvoiceStatus::EXPIRED, $subscription->latestInvoice->status);
     }
 
     public function testPaidInvoiceWithOverdueDateIsNotPastDue(): void
@@ -860,10 +866,12 @@ class IuguGatewaySubscriptionTest extends TestCase
     }
 
     /**
-     * `recent_invoices` é um resumo.
+     * `recent_invoices` é um resumo: status fora do mapa vira `UNKNOWN` com aviso no log, e
+     * a leitura da assinatura segue.
      */
     public function testUnknownInvoiceStatusDoesNotBreakTheSubscriptionRead(): void
     {
+        Facade::getFacadeApplication()->instance('log', $logger = new RecordingLogger());
         $api = new QueuedIuguApiRequest([
             $this->subscriptionResponse([
                 'recent_invoices' => [(object) ['id' => 'inv_1', 'status' => 'status_novo_da_iugu']],
@@ -876,8 +884,10 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $this->assertSame(Subscription::STATUS_ACTIVE, $subscription->status);
         $this->assertSame('inv_1', $subscription->latestInvoice->id);
-        $this->assertNull($subscription->latestInvoice->status);
+        $this->assertSame(InvoiceStatus::UNKNOWN, $subscription->latestInvoice->status);
         $this->assertSame('status_novo_da_iugu', $subscription->latestInvoice->original->status);
+        $this->assertCount(1, $logger->records);
+        $this->assertSame(['status' => 'status_novo_da_iugu', 'gateway' => 'iugu'], $logger->records[0]['context']);
     }
 
     public function testSubscriptionWithoutRecentInvoicesHasNoLatestInvoice(): void
@@ -1071,18 +1081,18 @@ class IuguGatewaySubscriptionTest extends TestCase
         return [
             'lista' => [
                 ['credit_card', 'pix'],
-                [Invoice::PAYMENT_METHOD_CREDIT_CARD, Invoice::PAYMENT_METHOD_PIX],
+                [PaymentMethod::CREDIT_CARD, PaymentMethod::PIX],
             ],
             'metodo desconhecido e ignorado' => [
                 ['pix', 'crypto'],
-                [Invoice::PAYMENT_METHOD_PIX],
+                [PaymentMethod::PIX],
             ],
             'all expande nos tres' => [
                 'all',
                 [
-                    Invoice::PAYMENT_METHOD_CREDIT_CARD,
-                    Invoice::PAYMENT_METHOD_BANK_SLIP,
-                    Invoice::PAYMENT_METHOD_PIX,
+                    PaymentMethod::CREDIT_CARD,
+                    PaymentMethod::BANK_SLIP,
+                    PaymentMethod::PIX,
                 ],
             ],
         ];
@@ -1117,7 +1127,7 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $this->assertStringEndsWith('/plans/identifier/mensal', $api->calls[0]['url']);
         $this->assertSame(10000, $found->amount);
-        $this->assertSame(Plan::INTERVAL_MONTH, $found->interval);
+        $this->assertSame(PlanInterval::MONTH, $found->interval);
     }
 
     public function testGetPlanRequiresIdOrIdentifier(): void
@@ -1138,7 +1148,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertStringContainsString('limit=10', $api->calls[0]['url']);
         $this->assertStringContainsString('start=20', $api->calls[0]['url']);
         $this->assertCount(1, $plans);
-        $this->assertSame(Plan::INTERVAL_MONTH, $plans[0]->interval);
+        $this->assertSame(PlanInterval::MONTH, $plans[0]->interval);
         $this->assertNull($plans[0]->intervalCount);
     }
 
@@ -1342,10 +1352,10 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = $gateway->getSubscription($subscription);
 
-        $subscription->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+        $subscription->availablePaymentMethods = [PaymentMethod::PIX];
         $gateway->updateSubscription($subscription);
 
-        $this->assertSame([Invoice::PAYMENT_METHOD_PIX], $api->calls[1]['data']['payable_with']);
+        $this->assertSame(['pix'], $api->calls[1]['data']['payable_with']);
     }
 
     public function testDivergingNextBillingAndTrialEndAreStillRejected(): void
@@ -1770,7 +1780,7 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
         $this->assertSame('inv_paga', $subscription->latestInvoice->id);
-        $this->assertSame(Invoice::STATUS_PAID, $subscription->latestInvoice->status);
+        $this->assertSame(InvoiceStatus::PAID, $subscription->latestInvoice->status);
     }
 
     /**
@@ -1814,7 +1824,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $subscription->id = 'sub_1';
         $subscription = (new IuguGateway($api))->getSubscription($subscription);
 
-        $this->assertSame(Invoice::STATUS_PENDING, $subscription->latestInvoice->status);
+        $this->assertSame(InvoiceStatus::PARTIALLY_PAID, $subscription->latestInvoice->status);
         $this->assertSame(Subscription::STATUS_PAST_DUE, $subscription->status);
     }
 

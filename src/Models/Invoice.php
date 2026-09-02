@@ -3,37 +3,59 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
- * Invoice class
+ * Fatura.
+ *
+ * As três propriedades abaixo são enums: aceitam na escrita a string do valor ou o caso do
+ * enum e devolvem sempre o enum (ver `Model::ENUM_CASTS`).
+ *
+ * @property InvoiceStatus|null $status Status genérico; `UNKNOWN` para status que a lib não reconhece.
+ * @property PaymentMethod|null $paymentMethod Método com que a fatura foi (ou será) paga.
+ * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela fatura.
  */
 class Invoice extends Model
 {
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::PENDING`. */
     public const STATUS_PENDING = 'pending';
+
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::PAID`. */
     public const STATUS_PAID = 'paid';
+
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::CANCELED`. */
     public const STATUS_CANCELED = 'canceled';
+
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::REFUNDED`. */
     public const STATUS_REFUNDED = 'refunded';
+
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::PARTIALLY_REFUNDED`. */
     public const STATUS_PARTIALLY_REFUNDED = 'partially_refunded';
 
-    /**
-     * Contestação aberta sobre uma fatura paga, com resolução pendente. Enquanto a disputa
-     * corre, o gateway pode ou não reter o valor (a Stripe retém no chargeback formal, não
-     * na inquiry). Se ganha, a fatura volta a `paid`; se perdida, vira `chargeback`.
-     */
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::DISPUTED`. */
     public const STATUS_DISPUTED = 'disputed';
 
-    /**
-     * Contestação perdida: o valor foi devolvido ao cliente pelo gateway. Estado terminal,
-     * distinto de `refunded`, que é o estorno voluntário feito pela aplicação.
-     */
+    /** @deprecated desde 2026-09-02, use `InvoiceStatus::CHARGEBACK`. */
     public const STATUS_CHARGEBACK = 'chargeback';
 
+    /** @deprecated desde 2026-09-02, use `PaymentMethod::CREDIT_CARD`. */
     public const PAYMENT_METHOD_CREDIT_CARD = 'credit_card';
+
+    /** @deprecated desde 2026-09-02, use `PaymentMethod::BANK_SLIP`. */
     public const PAYMENT_METHOD_BANK_SLIP = 'bank_slip';
+
+    /** @deprecated desde 2026-09-02, use `PaymentMethod::PIX`. */
     public const PAYMENT_METHOD_PIX = 'pix';
+
+    protected const ENUM_CASTS = [
+        'status' => InvoiceStatus::class,
+        'paymentMethod' => PaymentMethod::class,
+        'availablePaymentMethods' => [PaymentMethod::class],
+    ];
 
     /**
      * @var string|null
@@ -41,9 +63,9 @@ class Invoice extends Model
     public ?string $id = null;
 
     /**
-     * @var string|null
+     * @var InvoiceStatus|null
      */
-    public ?string $status = null;
+    protected ?InvoiceStatus $status = null;
 
     /**
      * @var Carbon|null
@@ -86,14 +108,14 @@ class Invoice extends Model
     public ?array $items = null;
 
     /**
-     * @var string|null
+     * @var PaymentMethod|null
      */
-    public ?string $paymentMethod = null;
+    protected ?PaymentMethod $paymentMethod = null;
 
     /**
-     * @var string[]|null
+     * @var PaymentMethod[]|null
      */
-    public ?array $availablePaymentMethods = null;
+    protected ?array $availablePaymentMethods = null;
 
     /**
      * @var CreditCard|null
@@ -253,25 +275,19 @@ class Invoice extends Model
     }
 
     /**
+     * Garante que `availablePaymentMethods` é uma lista de métodos selecionáveis
+     * (`PaymentMethod::selectable()`), convertendo string que tenha entrado por escrita
+     * indireta no array.
+     *
      * @return void
      * @throws ModelAttributeValidationException
      */
     public function validateAvailablePaymentMethodsAttribute()
     {
-        $meethods = [
-            self::PAYMENT_METHOD_CREDIT_CARD,
-            self::PAYMENT_METHOD_BANK_SLIP,
-            self::PAYMENT_METHOD_PIX,
-        ];
-
-        if (!is_array($this->availablePaymentMethods)) {
-            throw ModelAttributeValidationException::invalid('Invoice', 'availablePaymentMethods', 'availablePaymentMethods must be an array of payment methods');
-        }
-        foreach ($this->availablePaymentMethods as $method) {
-            if (!in_array($method, $meethods)) {
-                throw ModelAttributeValidationException::invalid('Invoice', 'availablePaymentMethods', 'availablePaymentMethods must be one of: ' . implode(', ', $meethods));
-            }
-        }
+        $this->availablePaymentMethods = PaymentMethod::normalizeSelectable(
+            $this->availablePaymentMethods,
+            $this->getClassName()
+        );
     }
 
     /**
@@ -309,34 +325,51 @@ class Invoice extends Model
     }
 
     /**
-     * Responde "o dinheiro desta fatura foi recebido?" sem que o consumidor precise conhecer
-     * cada status: verdadeiro para `paid` e `partially_refunded`. Fatura em disputa não conta
-     * como recebida enquanto a contestação estiver aberta.
+     * Diz se o dinheiro da fatura foi recebido; delega a `InvoiceStatus::isSettled()`. String
+     * fora do enum devolve falso.
      *
-     * @param  string  $status
+     * @deprecated desde 2026-09-02, use `$invoice->status->isSettled()`.
+     * @param  InvoiceStatus|string  $status
      * @return bool
      */
-    public static function isSettled(string $status): bool
+    public static function isSettled(InvoiceStatus|string $status): bool
     {
-        return in_array($status, [
-            self::STATUS_PAID,
-            self::STATUS_PARTIALLY_REFUNDED,
-        ], true);
+        trigger_error(
+            'Invoice::isSettled() está obsoleto desde 2026-09-02; use $invoice->status->isSettled()',
+            E_USER_DEPRECATED
+        );
+
+        return self::statusFromHelperArgument($status)?->isSettled() ?? false;
     }
 
     /**
-     * Responde "existe contestação sobre esta fatura?": verdadeiro para `disputed` (aberta) e
-     * `chargeback` (perdida).
+     * Diz se existe contestação sobre a fatura; delega a `InvoiceStatus::isContested()`.
+     * String fora do enum devolve falso.
      *
-     * @param  string  $status
+     * @deprecated desde 2026-09-02, use `$invoice->status->isContested()`.
+     * @param  InvoiceStatus|string  $status
      * @return bool
      */
-    public static function isContested(string $status): bool
+    public static function isContested(InvoiceStatus|string $status): bool
     {
-        return in_array($status, [
-            self::STATUS_DISPUTED,
-            self::STATUS_CHARGEBACK,
-        ], true);
+        trigger_error(
+            'Invoice::isContested() está obsoleto desde 2026-09-02; use $invoice->status->isContested()',
+            E_USER_DEPRECATED
+        );
+
+        return self::statusFromHelperArgument($status)?->isContested() ?? false;
+    }
+
+    /**
+     * Converte o argumento dos helpers estáticos obsoletos em `InvoiceStatus`, sem log para
+     * string fora do enum.
+     *
+     * @param  InvoiceStatus|string  $status
+     * @return InvoiceStatus|null
+     */
+    private static function statusFromHelperArgument(InvoiceStatus|string $status): ?InvoiceStatus
+    {
+        return $status instanceof InvoiceStatus ? $status : InvoiceStatus::tryFrom($status);
     }
 
     /**

@@ -8,6 +8,7 @@ use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Gateways\IuguGateway;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 class IuguGatewayInvoiceTest extends TestCase
 {
@@ -58,6 +59,57 @@ class IuguGatewayInvoiceTest extends TestCase
         $this->assertSame(['bank_slip', 'pix'], $payload['payable_with']);
         $this->assertSame('2026-10-01', $payload['due_date']);
         $this->assertSame(['expires_in' => 5, 'payable_with' => ['bank_slip', 'pix']], $invoice->gatewayOptions);
+    }
+
+    /**
+     * `availablePaymentMethods` vai para a Iugu como `payable_with` de strings; uma string
+     * apensada por `[]=` (que entra no array sem conversão) é normalizada antes do envio.
+     */
+    public function testCreateInvoiceSendsAvailablePaymentMethodsAsIuguStrings(): void
+    {
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse()]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'expires_at' => '2026-10-01',
+        ]);
+        $invoice->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $invoice->availablePaymentMethods[] = 'pix';
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertStringEndsWith('/invoices', $api->calls[0]['url']);
+        $this->assertSame(['bank_slip', 'pix'], $api->calls[0]['data']['payable_with']);
+    }
+
+    /**
+     * Cartão em `availablePaymentMethods` com um cartão salvo vai por `POST /charge`, com o
+     * id do cartão em `customer_payment_method_id`; a fatura cobrada é lida em seguida.
+     */
+    public function testCreateInvoiceWithCreditCardChargesTheSavedCard(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => true, 'invoice_id' => 'inv_1'],
+            $this->pendingInvoiceResponse(),
+        ]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'available_payment_methods' => ['credit_card'],
+            'credit_card' => ['id' => 'pm_1'],
+        ]);
+
+        (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertStringEndsWith('/charge', $api->calls[0]['url']);
+        $this->assertSame('pm_1', $api->calls[0]['data']['customer_payment_method_id']);
+        $this->assertSame(['credit_card'], $api->calls[0]['data']['payable_with']);
+        $this->assertStringEndsWith('/invoices/inv_1', $api->calls[1]['url']);
     }
 
     public function testCreateInvoiceWithoutGatewayOptionsKeepsTheDefaultExpiresIn(): void

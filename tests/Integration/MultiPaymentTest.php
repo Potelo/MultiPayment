@@ -10,6 +10,8 @@ use Potelo\MultiPayment\Facades\MultiPayment;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 class MultiPaymentTest extends TestCase
 {
@@ -27,7 +29,7 @@ class MultiPaymentTest extends TestCase
 
         $reference = 'multipayment-' . now()->format('YmdHis');
         $invoice = MultiPayment::setGateway('iugu')->newInvoice()
-            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_PIX)
+            ->addAvailablePaymentMethod(PaymentMethod::PIX)
             ->addCustomer(
                 'Automatic Pix Sandbox',
                 "{$reference}@example.com",
@@ -129,7 +131,7 @@ class MultiPaymentTest extends TestCase
     {
         $gateway = 'iugu';
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
-            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_CREDIT_CARD)
+            ->addAvailablePaymentMethod(PaymentMethod::CREDIT_CARD)
             ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
             ->addItem('teste', 1000, 1)
             ->addCreditCardToken(self::iuguCreditCardToken())
@@ -267,7 +269,7 @@ class MultiPaymentTest extends TestCase
     {
         $gateway = 'iugu';
         $invoice = MultiPayment::setGateway($gateway)->newInvoice()
-            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_PIX)
+            ->addAvailablePaymentMethod(PaymentMethod::PIX)
             ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
             ->addItem('teste', 1000, 1)
             ->create();
@@ -275,7 +277,7 @@ class MultiPaymentTest extends TestCase
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
         $new = $multiPayment->duplicateInvoice($invoice->id, now()->addDays(7));
         $this->assertNotEquals($new->id, $invoice->id);
-        $this->assertEquals($new->status, Invoice::STATUS_PENDING);
+        $this->assertEquals($new->status, InvoiceStatus::PENDING);
         $this->assertTrue($new->expiresAt->isSameDay((now()->addDays(7))));
 
     }
@@ -319,7 +321,7 @@ class MultiPaymentTest extends TestCase
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
     #[DataProvider('shouldRefundInvoiceDataProvider')]
-    public function testShouldRefundInvoice(string $gateway, array $data, string $status, ?int $refundedAmount)
+    public function testShouldRefundInvoice(string $gateway, array $data, InvoiceStatus $status, ?int $refundedAmount)
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
 
@@ -355,12 +357,12 @@ class MultiPaymentTest extends TestCase
         if (is_null($refundedAmount)) {
             $refundedAmount = $total;
         }
-        $this->assertEquals($status, $refundedInvoice->status);
+        $this->assertSame($status, $refundedInvoice->status);
         $this->assertEquals($refundedAmount, $refundedInvoice->refundedAmount);
         $this->assertEquals($total - $refundedAmount, $refundedInvoice->paidAmount);
 
         // na Iugu a guarda lê a fatura real antes: já estornada é recusada sem novo POST
-        if ($gateway === 'iugu' && $status === Invoice::STATUS_REFUNDED) {
+        if ($gateway === 'iugu' && $status === InvoiceStatus::REFUNDED) {
             try {
                 $multiPayment->refundInvoice($invoice->id);
                 $this->fail('Esperava RefundNotSupportedException');
@@ -385,7 +387,7 @@ class MultiPaymentTest extends TestCase
                     'paymentMethod' => 'credit_card',
                     'creditCard' => self::creditCard(),
                 ],
-                'status' => Invoice::STATUS_REFUNDED,
+                'status' => InvoiceStatus::REFUNDED,
                 'refundedAmount' => null,
             ],
         ];
@@ -397,7 +399,7 @@ class MultiPaymentTest extends TestCase
      *
      * @param  string  $gateway
      * @param  array  $data
-     * @param  string  $status
+     * @param  InvoiceStatus  $status
      * @param  string  $creditCardDataMethod
      * @return void
      * @throws \Potelo\MultiPayment\Exceptions\ChargingException
@@ -408,7 +410,7 @@ class MultiPaymentTest extends TestCase
      * @throws \Potelo\MultiPayment\Exceptions\MultiPaymentException
      */
     #[DataProvider('shouldChargeInvoiceWithCreditCard')]
-    public function testShouldChargeInvoiceWithCreditCard(string $gateway, array $data, string $status, string $creditCardDataMethod)
+    public function testShouldChargeInvoiceWithCreditCard(string $gateway, array $data, InvoiceStatus $status, string $creditCardDataMethod)
     {
         $multiPayment = new \Potelo\MultiPayment\MultiPayment($gateway);
 
@@ -445,7 +447,7 @@ class MultiPaymentTest extends TestCase
             $invoice = $multiPayment->chargeInvoiceWithCreditCard($invoice->id, null, $creditCard->id);
         }
 
-        $this->assertEquals($status, $invoice->status);
+        $this->assertSame($status, $invoice->status);
     }
 
     /**
@@ -461,7 +463,7 @@ class MultiPaymentTest extends TestCase
                     'customer' => self::customerWithoutAddress(),
                     'paymentMethod' => 'credit_card',
                 ],
-                'status' => Invoice::STATUS_PAID,
+                'status' => InvoiceStatus::PAID,
                 'creditCardDataMethod' => 'creditCard',
             ],
             'iugu - credit card token' => [
@@ -471,7 +473,7 @@ class MultiPaymentTest extends TestCase
                     'customer' => self::customerWithoutAddress(),
                     'paymentMethod' => 'credit_card',
                 ],
-                'status' => Invoice::STATUS_PAID,
+                'status' => InvoiceStatus::PAID,
                 'creditCardDataMethod' => 'token',
             ],
             'iugu - credit card id' => [
@@ -481,7 +483,7 @@ class MultiPaymentTest extends TestCase
                     'customer' => self::customerWithoutAddress(),
                     'paymentMethod' => 'credit_card',
                 ],
-                'status' => Invoice::STATUS_PAID,
+                'status' => InvoiceStatus::PAID,
                 'creditCardDataMethod' => 'id',
             ],
         ];

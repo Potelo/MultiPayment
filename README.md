@@ -9,6 +9,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
 - [Gateways](#gateways)
   - [Suporte por gateway](#suporte-por-gateway)
   - [Status da fatura](#status-da-fatura)
+  - [Migração das constantes para enum](#migração-das-constantes-para-enum)
   - [Particularidades do Stripe](#particularidades-do-stripe)
   - [Opções extras do gateway](#opções-extras-do-gateway)
 - [Utilizando](#utilizando)
@@ -126,38 +127,120 @@ Cada célula é uma de três coisas:
 
 ### Status da fatura
 
-`Invoice::$status` usa sempre o vocabulário do pacote; o status específico de cada gateway fica
-em `original`. Mapa atual:
+`Invoice::$status` é o enum `Potelo\MultiPayment\Enums\InvoiceStatus`, sempre no vocabulário do
+pacote; o status específico de cada gateway fica em `original`. Os treze estados:
 
-| Status genérico | Significado | Iugu | Stripe |
-|---|---|---|---|
-| `pending` | Aguardando pagamento | `pending`, `in_analysis`, `draft`, `partially_paid` | PaymentIntent em `processing`, `requires_action`, `requires_confirmation`, `requires_payment_method`, `requires_capture` |
-| `paid` | Valor recebido | `paid`, `externally_paid`, `authorized` | PaymentIntent `succeeded` sem estorno nem contestação |
-| `canceled` | Cancelada ou vencida sem pagamento | `canceled`, `expired` | PaymentIntent `canceled` |
-| `refunded` | Estorno voluntário, integral | `refunded` | charge com `refunded = true` |
-| `partially_refunded` | Estorno voluntário, parcial | `partially_refunded` | charge com `amount_refunded` menor que o total |
-| `disputed` | Contestação aberta sobre fatura paga, resolução pendente | `in_protest` | charge `disputed` com dispute em `warning_needs_response`, `warning_under_review`, `needs_response` ou `under_review` |
-| `chargeback` | Contestação perdida: valor devolvido ao cliente pelo gateway. Terminal | `chargeback` | dispute em `lost` |
+| `InvoiceStatus` | Significado | Iugu | Stripe | Helper que responde |
+|---|---|---|---|---|
+| `PENDING` | Aguardando pagamento | `pending`, `draft` | PaymentIntent em `requires_payment_method`, `requires_action`, `requires_confirmation` | `isOpen()` |
+| `AUTHORIZED` | Valor reservado no cartão, aguardando captura ou análise | `in_analysis`, `authorized` | PaymentIntent `requires_capture` | `isOpen()` |
+| `PROCESSING` | Pagamento em processamento no gateway | (não emite) | PaymentIntent `processing` | `isOpen()` |
+| `PAID` | Valor recebido | `paid` | PaymentIntent `succeeded` sem estorno nem contestação | `isSettled()` |
+| `PARTIALLY_PAID` | Parte do valor recebida, restante em aberto | `partially_paid` | (não emite em venda avulsa) | `isSettled()` e `isOpen()` |
+| `EXTERNALLY_PAID` | Quitada fora do gateway, por baixa manual | `externally_paid` | (não emite em venda avulsa) | `isSettled()` |
+| `PARTIALLY_REFUNDED` | Estorno voluntário, parcial | `partially_refunded` | charge com `amount_refunded` menor que o total | `isSettled()` |
+| `REFUNDED` | Estorno voluntário, integral | `refunded` | charge com `refunded = true` | `isTerminal()` |
+| `DISPUTED` | Contestação aberta sobre fatura paga, resolução pendente | `in_protest` | charge `disputed` com dispute em `warning_needs_response`, `warning_under_review`, `needs_response` ou `under_review` | `isContested()` |
+| `CHARGEBACK` | Contestação perdida: valor devolvido ao cliente pelo gateway | `chargeback` | dispute em `lost` | `isContested()` e `isTerminal()` |
+| `CANCELED` | Cancelada antes do pagamento | `canceled` | PaymentIntent `canceled` | `isTerminal()` |
+| `EXPIRED` | Venceu sem pagamento | `expired` | (não emite em venda avulsa) | `isTerminal()` |
+| `UNKNOWN` | Status que a lib não reconhece | qualquer outro | qualquer outro | nenhum responde verdadeiro |
 
 Dispute ganha (`won`), encerrada sem virar chargeback (`warning_closed`) ou prevenida
-(`prevented`) não altera o status: a fatura volta a ler como `paid` (ou como estornada, se
-houve estorno). Um status fora do mapa lança `GatewayException`. Estados próprios para captura
-tardia, vencimento e pagamento parcial estão planejados para uma versão futura.
+(`prevented`) não altera o status: a fatura volta a ler como `PAID` (ou como estornada, se
+houve estorno). Um status fora do mapa vira `UNKNOWN`, com um aviso no log da aplicação (nível
+`warning`) contendo o valor original e o gateway, e o valor cru continua em `original`.
 
-Para não comparar status um a um, a `Invoice` traz dois helpers estáticos:
+Os helpers do enum respondem às perguntas de negócio sem comparar status um a um:
 
 ```php
-Invoice::isSettled($invoice->status);   // recebi o dinheiro? paid ou partially_refunded
-Invoice::isContested($invoice->status); // tem briga aberta? disputed ou chargeback
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+
+$invoice->status->isSettled();    // recebi dinheiro? PAID, PARTIALLY_PAID, EXTERNALLY_PAID, PARTIALLY_REFUNDED
+$invoice->status->isOpen();       // ainda pode receber pagamento? PENDING, AUTHORIZED, PROCESSING, PARTIALLY_PAID
+$invoice->status->isContested();  // tem briga? DISPUTED, CHARGEBACK
+$invoice->status->isTerminal();   // acabou? REFUNDED, CHARGEBACK, CANCELED, EXPIRED
+
+match ($invoice->status) {
+    InvoiceStatus::DISPUTED => $this->openDisputeTicket($invoice),
+    InvoiceStatus::CHARGEBACK => $this->writeOff($invoice),
+    InvoiceStatus::EXPIRED => $this->offerNewPix($invoice),
+    default => null,
+};
 ```
+
+`PARTIALLY_PAID` responde verdadeiro a `isSettled()` e a `isOpen()` ao mesmo tempo: parte do
+dinheiro entrou e o restante segue cobrável. Os helpers estáticos `Invoice::isSettled()` e
+`Invoice::isContested()` continuam existindo, delegam ao enum e estão obsoletos (emitem
+`E_USER_DEPRECATED`).
 
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, fatura Iugu em `in_protest` lia como
 > `paid` e fatura em `chargeback` lia como `refunded`; no Stripe, charge contestado lia como
-> `paid`. A partir desta versão elas leem como `disputed` e `chargeback`. Quem compara com
-> `Invoice::STATUS_PAID` para decidir se recebeu **deixa de ver faturas em disputa como pagas**,
-> e quem compara com `STATUS_REFUNDED` deixa de confundir chargeback com estorno voluntário. Se
-> a aplicação precisava do comportamento antigo, use `Invoice::isSettled()` para "pago" e trate
-> `disputed` e `chargeback` explicitamente.
+> `paid`. A partir desta versão elas leem como `DISPUTED` e `CHARGEBACK`. Quem compara com
+> `PAID` para decidir se recebeu **deixa de ver faturas em disputa como pagas**, e quem compara
+> com `REFUNDED` deixa de confundir chargeback com estorno voluntário. Na mesma versão, a Iugu
+> deixou de ser achatada: `in_analysis` lia como `pending` e agora é `AUTHORIZED`;
+> `partially_paid` lia como `pending` e agora é `PARTIALLY_PAID`; `externally_paid` lia como
+> `paid` e agora é `EXTERNALLY_PAID`; `expired` lia como `canceled` e agora é `EXPIRED`. No
+> Stripe, `requires_capture` lia como `pending` e agora é `AUTHORIZED`; `processing` lia como
+> `pending` e agora é `PROCESSING`. Status desconhecido lançava `GatewayException` e agora vira
+> `UNKNOWN` com log. Se a aplicação precisava do comportamento antigo, use `isSettled()` para
+> "pago", `isOpen()` para "ainda cobrável" e trate `DISPUTED` e `CHARGEBACK` explicitamente.
+
+### Migração das constantes para enum
+
+Status da fatura, método de pagamento e intervalo do plano são enums do namespace
+`Potelo\MultiPayment\Enums`: `InvoiceStatus`, `PaymentMethod` (`CREDIT_CARD`, `BANK_SLIP`,
+`PIX`, `AUTOMATIC_PIX`) e `PlanInterval` (`DAY`, `WEEK`, `MONTH`, `YEAR`). As propriedades
+`Invoice::$status`, `Invoice::$paymentMethod`, `Invoice::$availablePaymentMethods`,
+`Subscription::$paymentMethod`, `Subscription::$availablePaymentMethods` e `Plan::$interval`
+devolvem o enum na leitura e aceitam, na escrita, tanto o caso do enum quanto a string do valor
+(as constantes antigas). O mesmo vale para `fill()` e para os builders.
+
+As constantes antigas (`Invoice::STATUS_*`, `Invoice::PAYMENT_METHOD_*`, `Plan::INTERVAL_*`)
+continuam existindo, com os mesmos valores de string dos enums, e estão marcadas como
+`@deprecated`. O que muda é a **comparação**: a propriedade agora devolve um enum, então
+compará-la diretamente com a string antiga é sempre falso.
+
+```php
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\PlanInterval;
+
+// antes
+if ($invoice->status === Invoice::STATUS_PAID) { ... }
+if (in_array($invoice->paymentMethod, [Invoice::PAYMENT_METHOD_PIX, Invoice::PAYMENT_METHOD_BANK_SLIP])) { ... }
+$invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
+$plan->interval = Plan::INTERVAL_MONTH;
+$model->status_pagamento = $invoice->status;              // gravando no banco
+
+// depois (recomendado)
+if ($invoice->status === InvoiceStatus::PAID) { ... }
+if (in_array($invoice->paymentMethod, [PaymentMethod::PIX, PaymentMethod::BANK_SLIP], true)) { ... }
+$invoice->paymentMethod = PaymentMethod::CREDIT_CARD;
+$plan->interval = PlanInterval::MONTH;
+$model->status_pagamento = $invoice->status->value;       // 'paid'
+
+// transição: a constante antiga ainda vale como valor de string
+if ($invoice->status->value === Invoice::STATUS_PAID) { ... }
+$invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;  // convertido para PaymentMethod::CREDIT_CARD
+```
+
+Onde a string vai para fora do PHP (banco, JSON, log, comparação com valor vindo do gateway),
+use `->value`. `toArray()` já emite o valor de string, e `json_encode($invoice)` também.
+
+Valor de string fora do enum tem dois tratamentos: em `status`, vira `InvoiceStatus::UNKNOWN`
+com aviso no log; em `paymentMethod`, `availablePaymentMethods` e `interval`, lança
+`ModelAttributeValidationException` na escrita, com a lista de valores aceitos. Em
+`availablePaymentMethods` só entram `CREDIT_CARD`, `BANK_SLIP` e `PIX`; `AUTOMATIC_PIX` é
+recusado na validação, porque a fatura com Pix Automático é criada com `PIX` e o objeto
+`automaticPix` preenchido. Nenhum driver emite `AUTOMATIC_PIX` em `paymentMethod` hoje.
+
+> **Mudança de comportamento (versão 5.0.0).** `$invoice->status === Invoice::STATUS_PAID` e
+> comparações equivalentes com `paymentMethod` e `interval` passam a ser **falsas**, porque a
+> propriedade devolve um enum. Revise cada comparação com constante ou string literal e troque
+> pelo caso do enum ou compare `->value`. Método de pagamento e intervalo inválidos lançam já
+> na escrita da propriedade (até a 4.1.0, só `validate()` acusava).
 
 ### Particularidades do Stripe
 
@@ -209,9 +292,9 @@ chave é `gateway_options`; nos builders, `setGatewayOptions()`.
 
 ```php
 $invoice = $payment->newInvoice()
-    ->setPaymentMethod('pix')
+    ->addAvailablePaymentMethod(PaymentMethod::PIX)
     ->addCustomer('Nome', 'email@example.com', '01234567891')
-    ->addItem('Produto', 1, 10000)
+    ->addItem('Produto', 10000, 1)
     ->setGatewayOptions(['expires_in' => 3])   // opção da Iugu, sem equivalente genérico
     ->create();
 
@@ -296,12 +379,14 @@ $payment->setGateway('iugu');
 ```
 #### InvoiceBuilder
 ```php
+use Potelo\MultiPayment\Enums\PaymentMethod;
+
 $multiPayment = new \Potelo\MultiPayment\MultiPayment('iugu');
 $invoiceBuilder = $multiPayment->newInvoice();
-$invoice = $invoiceBuilder->setPaymentMethod('payment_method')
+$invoice = $invoiceBuilder->addAvailablePaymentMethod(PaymentMethod::PIX) // ou a string 'pix'
     ->addCustomer('name', 'email', 'tax_document', 'phone_area', 'phone_number')
     ->addCustomerAddress('zip_code', 'street', 'number')
-    ->addItem('description', 'quantity', 'price')
+    ->addItem('description', 'price', 'quantity')
     ->create();
 ```
 Confira `src/MultiPayment/Builders/InvoiceBuilder.php` para saber quais métodos estão disponíveis.
@@ -403,12 +488,13 @@ operações para ele.
 
 ```php
 use Potelo\MultiPayment\Models\Plan;
+use Potelo\MultiPayment\Enums\PlanInterval;
 
 $plan = new Plan();
 $plan->name = 'Mensal';
 $plan->identifier = 'plano_mensal';
 $plan->amount = 10000; // centavos
-$plan->interval = Plan::INTERVAL_MONTH; // week, month ou year
+$plan->interval = PlanInterval::MONTH; // DAY, WEEK, MONTH ou YEAR (a Iugu recusa DAY)
 $plan->intervalCount = 1;
 $plan->save('iugu');
 
@@ -452,9 +538,10 @@ Particularidades da Iugu:
   ao fim do período, suspenda na data.
 - **Desconto é sempre valor fixo.** `percentOff` lança `GatewayException`, e `cycles` só aceita
   `1` (uma fatura) ou `null` (até ser removido).
-- **Plano anual é 12 meses.** A Iugu só tem intervalos em semanas e meses, então
-  `Plan::INTERVAL_YEAR` é enviado como `12 * intervalCount` meses. Na leitura vale a heurística
-  inversa: todo plano em meses cujo intervalo é múltiplo de 12 volta como `year` com
+- **Plano anual é 12 meses, e plano diário não existe.** A Iugu só tem intervalos em semanas e
+  meses, então `PlanInterval::YEAR` é enviado como `12 * intervalCount` meses e
+  `PlanInterval::DAY` lança `GatewayException` antes de chamar a API. Na leitura vale a
+  heurística inversa: todo plano em meses cujo intervalo é múltiplo de 12 volta como `YEAR` com
   `intervalCount` dividido por 12 (um plano criado direto na Iugu com 24 meses lê como 2 anos).
   Quem precisar do valor cru lê `original`. A Iugu aceita intervalo de 1 a 599, então um plano
   anual vai até `intervalCount` 49; acima disso o driver lança `GatewayException` antes de
@@ -496,11 +583,10 @@ Particularidades da Iugu:
 - **O plano de uma assinatura existente não muda por `save()`**; use `changePlan()`.
 - **Plano não é atualizável.** `save()` num `Plan` que já tem `id` lança `GatewayException`; para
   mudar preço ou intervalo, crie outro plano e troque as assinaturas com `changePlan()`.
-- **Fatura vencida lê como `canceled` (limitação conhecida).** A Iugu chama de `expired` a
-  fatura que venceu sem pagamento, e o pacote ainda não tem um estado próprio para isso: ela é
-  mapeada para `Invoice::STATUS_CANCELED`, embora continue contando como dívida na derivação de
-  `past_due` da assinatura. Um estado próprio `expired` está planejado para uma versão futura,
-  junto com o enum completo de status da fatura.
+- **Fatura vencida lê como `EXPIRED` e continua sendo dívida.** A Iugu chama de `expired` a
+  fatura que venceu sem pagamento; ela conta como fatura em aberto na derivação de `past_due`
+  da assinatura, embora `InvoiceStatus::EXPIRED->isOpen()` seja falso (na Iugu a fatura vencida
+  ainda pode ser paga; em outros gateways, vencida é terminal).
 - **A assinatura lida traz o cliente resumido.** `Subscription::get()` preenche `customer` com
   id, nome e e-mail — documento, endereço e telefone não vêm da Iugu. Eles sobrevivem se o
   `customer` local já tiver o mesmo id; se o id for outro, ou o local não tiver id, o pacote
@@ -566,7 +652,7 @@ try {
     $invoice = $payment->refundInvoice($invoiceId);         // integral
     $invoice = $payment->refundInvoice($invoiceId, 5000);   // parcial
 
-    $invoice->status;        // refunded ou partially_refunded
+    $invoice->status;        // InvoiceStatus::REFUNDED ou InvoiceStatus::PARTIALLY_REFUNDED
     $invoice->lastRefundId;  // id do estorno no gateway (Stripe: re_...; a Iugu não devolve id)
 } catch (RefundNotSupportedException $e) {
     // a lib recusou sem chamar o gateway; $e->reason diz por quê
@@ -669,8 +755,8 @@ $payment->setGateway('iugu')->charge($options);
 | `items.description`           | **obrigatório**                                                     | string                         | descrição do item                         | `'Produto 1'`                         |
 | `items.quantity`              | **obrigatório**                                                     | int                            | quantidade do item                        | `1`                                   |
 | `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                               |
-| `payment_method`              |                                                                     | `'credit_card'`,`'bank_slip'`,`'pix'` | método de pagamento                | `'credit_card'`                       |
-| `available_payment_methods`   | **obrigatório** no Stripe (exatamente um método) quando não há `credit_card` | array de métodos               | métodos aceitos pela fatura               | `['pix']`                             |
+| `payment_method`              |                                                                     | `PaymentMethod` ou a string `'credit_card'`, `'bank_slip'`, `'pix'` | método de pagamento                | `'credit_card'`                       |
+| `available_payment_methods`   | **obrigatório** no Stripe (exatamente um método) quando não há `credit_card` | array de `PaymentMethod` ou de strings | métodos aceitos pela fatura               | `['pix']`                             |
 | `expires_at`                  | **obrigatório** na Iugu caso `payment_method` seja `'bank_slip'` ou `'pix'`; opcional no Stripe (pix — a data precisa cair na janela de 10 segundos a 14 dias no futuro) | string no formato `yyyy-mm-dd` | data de expiração da fatura               | `2021-10-10`                          |
 | `credit_card`                 | **obrigatório** caso `payment_method` seja `'credit_card'`          | array                          | array com os dados do cartão de crédito   | `['number' => '1234567890123456',...` |
 | `credit_card.token`           |                                                                     | string                         | token do cartão para o gateway escolhido  | `'abc123...'` (Iugu) / `'pm_...'` (Stripe) |
@@ -695,6 +781,8 @@ echo $customer->id; // 7D96C7C932F2427CAF54F042345A13C60CD7
 ```
 #### Invoice
 ```php
+use Potelo\MultiPayment\Enums\PaymentMethod;
+
 $invoice = new Invoice();
 $invoice->customer = $customer;
 $item = new InvoiceItem();
@@ -702,7 +790,7 @@ $item->description = 'Teste';
 $item->price = 10000;
 $item->quantity = 1;
 $invoice->items[] = $item;
-$invoice->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
+$invoice->paymentMethod = PaymentMethod::CREDIT_CARD; // a string 'credit_card' também é aceita
 $invoice->creditCard = new CreditCard();
 $invoice->creditCard->number = '4111111111111111';
 $invoice->creditCard->firstName = 'João';
@@ -728,7 +816,7 @@ $plan = new Plan();
 $plan->name = 'Mensal';
 $plan->identifier = 'plano_mensal';
 $plan->amount = 10000;
-$plan->interval = Plan::INTERVAL_MONTH;
+$plan->interval = PlanInterval::MONTH;
 $plan->save('iugu');
 echo $plan->id;
 ```

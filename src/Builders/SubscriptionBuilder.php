@@ -116,7 +116,7 @@ class SubscriptionBuilder extends Builder
     /**
      * Define os métodos de pagamento aceitos pela assinatura.
      *
-     * @param  string[]  $paymentMethods
+     * @param  \Potelo\MultiPayment\Enums\PaymentMethod[]|string[]  $paymentMethods
      *
      * @return $this
      */

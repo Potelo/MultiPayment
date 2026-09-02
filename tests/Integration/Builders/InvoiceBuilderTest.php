@@ -9,6 +9,8 @@ use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 class InvoiceBuilderTest extends TestCase
 {
@@ -27,7 +29,7 @@ class InvoiceBuilderTest extends TestCase
 
         $reference = 'multipayment-' . Carbon::now()->format('YmdHis');
         $invoice = (new \Potelo\MultiPayment\MultiPayment('iugu'))->newInvoice()
-            ->addAvailablePaymentMethod(Invoice::PAYMENT_METHOD_PIX)
+            ->addAvailablePaymentMethod(PaymentMethod::PIX)
             ->addCustomer(
                 'Automatic Pix Sandbox',
                 "{$reference}@example.com",
@@ -168,7 +170,7 @@ class InvoiceBuilderTest extends TestCase
         }
 
         if (isset($data['paymentMethod'])) {
-            $this->assertEquals($data['paymentMethod'], $invoice->paymentMethod);
+            $this->assertEquals($data['paymentMethod'], $invoice->paymentMethod?->value);
         }
 
         if (isset($data['creditCard'])) {
@@ -202,7 +204,7 @@ class InvoiceBuilderTest extends TestCase
             if (array_key_exists('payable_with', $data['gatewayOptions']) && $gateway == 'iugu') {
                 $this->assertEqualsCanonicalizing(
                     $data['gatewayOptions']['payable_with'],
-                    (array) $invoice->original->payable_with
+                    array_map(fn (PaymentMethod $method) => $method->value, $invoice->availablePaymentMethods)
                 );
             }
             if (array_key_exists('expires_in', $data['gatewayOptions'])) {
@@ -237,8 +239,8 @@ class InvoiceBuilderTest extends TestCase
             $this->assertEquals($data['expiresAt'], $invoice->expiresAt->format('Y-m-d'));
         }
 
-        if (isset($data['paymentMethod']) && $invoice->status === $invoice::STATUS_PAID) {
-            $this->assertEquals($data['paymentMethod'], $invoice->paymentMethod);
+        if (isset($data['paymentMethod']) && $invoice->status === InvoiceStatus::PAID) {
+            $this->assertEquals($data['paymentMethod'], $invoice->paymentMethod?->value);
         }
 
         if (isset($data['customer']['address'])) {

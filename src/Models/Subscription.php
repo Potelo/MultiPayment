@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -11,6 +12,12 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
  * Assinatura recorrente de um cliente a um plano.
+ *
+ * As duas propriedades abaixo são enums: aceitam na escrita a string do valor ou o caso do
+ * enum e devolvem sempre o enum (ver `Model::ENUM_CASTS`).
+ *
+ * @property PaymentMethod|null $paymentMethod Método de pagamento da assinatura.
+ * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela assinatura.
  */
 class Subscription extends Model
 {
@@ -21,6 +28,11 @@ class Subscription extends Model
     public const STATUS_PAST_DUE = 'past_due';
     public const STATUS_EXPIRED = 'expired';
     public const STATUS_CANCELED = 'canceled';
+
+    protected const ENUM_CASTS = [
+        'paymentMethod' => PaymentMethod::class,
+        'availablePaymentMethods' => [PaymentMethod::class],
+    ];
 
     /**
      * @var string|null
@@ -61,14 +73,14 @@ class Subscription extends Model
     public ?int $amount = null;
 
     /**
-     * @var string|null
+     * @var PaymentMethod|null
      */
-    public ?string $paymentMethod = null;
+    protected ?PaymentMethod $paymentMethod = null;
 
     /**
-     * @var string[]|null
+     * @var PaymentMethod[]|null
      */
-    public ?array $availablePaymentMethods = null;
+    protected ?array $availablePaymentMethods = null;
 
     /**
      * @var Carbon|null
@@ -267,34 +279,19 @@ class Subscription extends Model
     }
 
     /**
+     * Garante que `availablePaymentMethods` é uma lista de métodos selecionáveis
+     * (`PaymentMethod::selectable()`), convertendo string que tenha entrado por escrita
+     * indireta no array.
+     *
      * @return void
      * @throws ModelAttributeValidationException
      */
     protected function validateAvailablePaymentMethodsAttribute(): void
     {
-        $methods = [
-            Invoice::PAYMENT_METHOD_CREDIT_CARD,
-            Invoice::PAYMENT_METHOD_BANK_SLIP,
-            Invoice::PAYMENT_METHOD_PIX,
-        ];
-
-        if (!is_array($this->availablePaymentMethods)) {
-            throw ModelAttributeValidationException::invalid(
-                $this->getClassName(),
-                'availablePaymentMethods',
-                'availablePaymentMethods must be an array of payment methods'
-            );
-        }
-
-        foreach ($this->availablePaymentMethods as $method) {
-            if (!in_array($method, $methods, true)) {
-                throw ModelAttributeValidationException::invalid(
-                    $this->getClassName(),
-                    'availablePaymentMethods',
-                    'availablePaymentMethods must be one of: ' . implode(', ', $methods)
-                );
-            }
-        }
+        $this->availablePaymentMethods = PaymentMethod::normalizeSelectable(
+            $this->availablePaymentMethods,
+            $this->getClassName()
+        );
     }
 
     /**

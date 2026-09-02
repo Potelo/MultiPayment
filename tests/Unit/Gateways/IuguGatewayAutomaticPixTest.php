@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
 
 class IuguGatewayAutomaticPixTest extends TestCase
 {
@@ -236,7 +237,7 @@ class IuguGatewayAutomaticPixTest extends TestCase
 
         $this->assertSame('PUT', $apiRequest->method);
         $this->assertSame('/v1/invoices/invoice-id/cancel', parse_url($apiRequest->url, PHP_URL_PATH));
-        $this->assertSame(Invoice::STATUS_CANCELED, $result->status);
+        $this->assertSame(InvoiceStatus::CANCELED, $result->status);
         $this->assertSame('invoice-id', $result->id);
     }
 

@@ -3,6 +3,7 @@
 namespace Potelo\MultiPayment\Models;
 
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\AcceptsUnknownValue;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
@@ -12,8 +13,18 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
  * @property array $gatewayAdicionalOptions Obsoleto desde 2026-09-02, use $gatewayOptions. Alias
  *                                          que lê e escreve o mesmo array, com aviso de deprecação.
  */
-abstract class Model
+abstract class Model implements \JsonSerializable
 {
+    /**
+     * Propriedades convertidas para enum ao serem escritas, por nome. O valor é a classe do
+     * enum ou, para uma lista de enums, a classe dentro de um array (`[PaymentMethod::class]`).
+     * Essas propriedades são declaradas `protected` no model e passam pelos métodos mágicos,
+     * que aceitam a string do valor ou o próprio caso do enum e devolvem sempre o enum.
+     *
+     * @var array<string, class-string<\BackedEnum>|array{0: class-string<\BackedEnum>}>
+     */
+    protected const ENUM_CASTS = [];
+
     /**
      * Opções extras enviadas direto ao gateway. Cada driver mescla este array ao payload que
      * monta a partir do model, e as chaves daqui sobrepõem as geradas.
@@ -23,7 +34,8 @@ abstract class Model
     public array $gatewayOptions = [];
 
     /**
-     * Resolve a leitura do nome antigo `gatewayAdicionalOptions` para `gatewayOptions`.
+     * Devolve uma propriedade de enum (ver `ENUM_CASTS`) ou resolve a leitura do nome antigo
+     * `gatewayAdicionalOptions` para `gatewayOptions`.
      *
      * Devolve por referência para que `$model->gatewayAdicionalOptions['chave'] = 'valor'`
      * continue alterando o array, como fazia quando a propriedade existia.
@@ -33,6 +45,10 @@ abstract class Model
      */
     public function &__get(string $name): mixed
     {
+        if (isset(static::ENUM_CASTS[$name])) {
+            return $this->{$name};
+        }
+
         if ($name === 'gatewayAdicionalOptions') {
             self::warnGatewayAdicionalOptionsDeprecated();
 
@@ -46,15 +62,23 @@ abstract class Model
     }
 
     /**
-     * Resolve a escrita no nome antigo `gatewayAdicionalOptions` para `gatewayOptions`.
+     * Escreve numa propriedade de enum (ver `ENUM_CASTS`), convertendo string no caso do enum,
+     * ou resolve a escrita no nome antigo `gatewayAdicionalOptions` para `gatewayOptions`.
      * Qualquer outro nome segue o comportamento padrão do PHP (propriedade dinâmica).
      *
      * @param  string  $name
      * @param  mixed  $value
      * @return void
+     * @throws ModelAttributeValidationException
      */
     public function __set(string $name, mixed $value): void
     {
+        if (isset(static::ENUM_CASTS[$name])) {
+            $this->{$name} = $this->castToEnum($name, $value);
+
+            return;
+        }
+
         if ($name === 'gatewayAdicionalOptions') {
             self::warnGatewayAdicionalOptionsDeprecated();
             $this->gatewayOptions = $value;
@@ -66,13 +90,18 @@ abstract class Model
     }
 
     /**
-     * Mantém `isset()` e `empty()` funcionando sobre o nome antigo `gatewayAdicionalOptions`.
+     * Mantém `isset()` e `empty()` funcionando sobre as propriedades de enum e sobre o nome
+     * antigo `gatewayAdicionalOptions`.
      *
      * @param  string  $name
      * @return bool
      */
     public function __isset(string $name): bool
     {
+        if (isset(static::ENUM_CASTS[$name])) {
+            return isset($this->{$name});
+        }
+
         return $name === 'gatewayAdicionalOptions';
     }
 
@@ -87,6 +116,103 @@ abstract class Model
             'Model::$gatewayAdicionalOptions está obsoleto desde 2026-09-02; use $gatewayOptions',
             E_USER_DEPRECATED
         );
+    }
+
+    /**
+     * Converte o valor escrito numa propriedade de `ENUM_CASTS` para o enum declarado.
+     *
+     * Aceita o caso do enum, a string do valor ou nulo; numa lista, um array desses. Enum que
+     * implementa `AcceptsUnknownValue` recebe a string desconhecida e decide o que fazer; nos
+     * demais, string fora do enum lança `ModelAttributeValidationException` com os valores
+     * aceitos.
+     *
+     * @param  string  $property
+     * @param  mixed  $value
+     * @return \BackedEnum|\BackedEnum[]|null
+     * @throws ModelAttributeValidationException
+     */
+    private function castToEnum(string $property, mixed $value): mixed
+    {
+        $cast = static::ENUM_CASTS[$property];
+
+        if (!is_array($cast)) {
+            return $this->castScalarToEnum($property, $cast, $value);
+        }
+
+        if (is_null($value)) {
+            return null;
+        }
+
+        if (!is_array($value)) {
+            throw ModelAttributeValidationException::invalid(
+                static::getClassName(),
+                $property,
+                "{$property} must be an array"
+            );
+        }
+
+        return array_map(fn ($item) => $this->castScalarToEnum($property, $cast[0], $item), $value);
+    }
+
+    /**
+     * Converte um único valor no caso do enum informado.
+     *
+     * @param  string  $property
+     * @param  class-string<\BackedEnum>  $enumClass
+     * @param  mixed  $value
+     * @return \BackedEnum|null
+     * @throws ModelAttributeValidationException
+     */
+    private function castScalarToEnum(string $property, string $enumClass, mixed $value): ?\BackedEnum
+    {
+        if (is_null($value) || $value instanceof $enumClass) {
+            return $value;
+        }
+
+        $accepted = implode(', ', array_column($enumClass::cases(), 'value'));
+
+        if (!is_string($value)) {
+            throw ModelAttributeValidationException::invalid(
+                static::getClassName(),
+                $property,
+                "{$property} must be one of: {$accepted}"
+            );
+        }
+
+        if (is_subclass_of($enumClass, AcceptsUnknownValue::class)) {
+            $gateway = property_exists($this, 'gateway') ? $this->gateway : null;
+
+            return $enumClass::fromValue($value, $gateway);
+        }
+
+        return $enumClass::tryFrom($value) ?? throw ModelAttributeValidationException::invalid(
+            static::getClassName(),
+            $property,
+            "{$property} must be one of: {$accepted}"
+        );
+    }
+
+    /**
+     * Converte enum em valor de string, inclusive dentro de uma lista; qualquer outro valor
+     * passa intacto.
+     *
+     * @param  mixed  $value
+     * @return mixed
+     */
+    private static function enumToValue(mixed $value): mixed
+    {
+        if ($value instanceof \BackedEnum) {
+            return $value->value;
+        }
+
+        if (is_array($value)) {
+            return array_map(
+                static fn ($item) => $item instanceof \BackedEnum ? $item->value : $item,
+                $value
+            );
+        }
+
+        return $value;
     }
 
     /**
@@ -178,11 +304,13 @@ abstract class Model
     }
 
     /**
-     * Fill the model with an array of attributes.
+     * Fill the model with an array of attributes. Chave em `snake_case` vira a propriedade em
+     * `camelCase`; valor de propriedade de enum (ver `ENUM_CASTS`) pode vir como string.
      *
      * @param  array  $data
      *
      * @return void
+     * @throws ModelAttributeValidationException
      */
     public function fill(array $data): void
     {
@@ -193,13 +321,14 @@ abstract class Model
                 $key = 'gatewayOptions';
             }
             if (property_exists($this, $key)) {
-                $this->{$key} = $value;
+                $this->{$key} = isset(static::ENUM_CASTS[$key]) ? $this->castToEnum($key, $value) : $value;
             }
         }
     }
 
     /**
-     * Convert the model instance to an array.
+     * Convert the model instance to an array. Chave em `snake_case`; propriedade de enum sai
+     * como o valor de string do enum.
      *
      * @return array
      */
@@ -207,15 +336,30 @@ abstract class Model
     {
         $array = [];
         $reflect = new \ReflectionClass($this);
-        $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC);
+        $props = $reflect->getProperties(\ReflectionProperty::IS_PUBLIC | \ReflectionProperty::IS_PROTECTED);
         foreach ($props as $prop) {
-            if (!empty($this->{$prop->getName()})) {
-                $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $prop->getName()));
-                $array[$key] = $this->{$prop->getName()};
+            $name = $prop->getName();
+            if ($prop->isProtected() && !isset(static::ENUM_CASTS[$name])) {
+                continue;
+            }
+            if (!empty($this->{$name})) {
+                $key = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $name));
+                $array[$key] = self::enumToValue($this->{$name});
             }
 
         }
         return $array;
+    }
+
+    /**
+     * Serializa o model para `json_encode()` com o nome da propriedade em `camelCase` como
+     * chave, incluindo as propriedades de enum, que saem como valor de string.
+     *
+     * @return array
+     */
+    public function jsonSerialize(): array
+    {
+        return get_object_vars($this);
     }
 
     /**

@@ -2,18 +2,31 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
  * Plano recorrente ao qual uma assinatura se vincula.
+ *
+ * @property PlanInterval|null $interval Unidade do intervalo de cobrança; aceita a string do
+ *                                       valor ou o caso do enum na escrita (ver `Model::ENUM_CASTS`).
  */
 class Plan extends Model
 {
+    /** @deprecated desde 2026-09-02, use `PlanInterval::WEEK`. */
     public const INTERVAL_WEEK = 'week';
+
+    /** @deprecated desde 2026-09-02, use `PlanInterval::MONTH`. */
     public const INTERVAL_MONTH = 'month';
+
+    /** @deprecated desde 2026-09-02, use `PlanInterval::YEAR`. */
     public const INTERVAL_YEAR = 'year';
+
+    protected const ENUM_CASTS = [
+        'interval' => PlanInterval::class,
+    ];
 
     /**
      * @var string|null
@@ -38,9 +51,9 @@ class Plan extends Model
     public ?int $amount = null;
 
     /**
-     * @var string|null
+     * @var PlanInterval|null
      */
-    public ?string $interval = null;
+    protected ?PlanInterval $interval = null;
 
     /**
      * @var int|null
@@ -89,23 +102,6 @@ class Plan extends Model
         }
 
         parent::save($gateway, $validate);
-    }
-
-    /**
-     * @return void
-     * @throws ModelAttributeValidationException
-     */
-    protected function validateIntervalAttribute(): void
-    {
-        $intervals = [self::INTERVAL_WEEK, self::INTERVAL_MONTH, self::INTERVAL_YEAR];
-
-        if (!in_array($this->interval, $intervals, true)) {
-            throw ModelAttributeValidationException::invalid(
-                $this->getClassName(),
-                'interval',
-                'interval must be one of: ' . implode(', ', $intervals)
-            );
-        }
     }
 
     /**

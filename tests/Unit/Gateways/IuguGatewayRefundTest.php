@@ -13,6 +13,8 @@ use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 class IuguGatewayRefundTest extends TestCase
 {
@@ -55,7 +57,7 @@ class IuguGatewayRefundTest extends TestCase
         $exception = $this->refundExpectingRefusal($api, $this->invoiceWithId());
 
         $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $exception->reason);
-        $this->assertSame(Invoice::PAYMENT_METHOD_BANK_SLIP, $exception->paymentMethod);
+        $this->assertSame(PaymentMethod::BANK_SLIP->value, $exception->paymentMethod);
         $this->assertTrue($exception->manualRefundRequired);
         $this->assertOnlyTheInvoiceWasRead($api);
     }
@@ -64,8 +66,8 @@ class IuguGatewayRefundTest extends TestCase
     {
         $api = new QueuedIuguApiRequest([]);
         $invoice = $this->invoiceWithId();
-        $invoice->paymentMethod = Invoice::PAYMENT_METHOD_BANK_SLIP;
-        $invoice->status = Invoice::STATUS_PAID;
+        $invoice->paymentMethod = PaymentMethod::BANK_SLIP;
+        $invoice->status = InvoiceStatus::PAID;
         $invoice->paidAt = Carbon::parse('2026-08-20');
 
         $exception = $this->refundExpectingRefusal($api, $invoice);
@@ -83,7 +85,7 @@ class IuguGatewayRefundTest extends TestCase
         $exception = $this->refundExpectingRefusal($api, $invoice);
 
         $this->assertSame(RefundNotSupportedException::REASON_PIX_PARTIAL_NOT_SUPPORTED, $exception->reason);
-        $this->assertSame(Invoice::PAYMENT_METHOD_PIX, $exception->paymentMethod);
+        $this->assertSame(PaymentMethod::PIX->value, $exception->paymentMethod);
         $this->assertFalse($exception->manualRefundRequired);
         $this->assertStringContainsString('5000', $exception->getMessage());
         $this->assertStringContainsString('10000', $exception->getMessage());
@@ -103,7 +105,7 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertSame('POST', $api->calls[1]['method']);
         $this->assertStringEndsWith('/invoices/inv_1/refund', $api->calls[1]['url']);
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
         $this->assertSame(10000, $result->refundedAmount);
         $this->assertNull($result->lastRefundId);
     }
@@ -124,7 +126,7 @@ class IuguGatewayRefundTest extends TestCase
         $result = (new IuguGateway($api))->refundInvoice($invoice);
 
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
     }
 
     public function testPartialCardRefundSendsThePartialValue(): void
@@ -140,7 +142,7 @@ class IuguGatewayRefundTest extends TestCase
 
         $this->assertSame('POST', $api->calls[1]['method']);
         $this->assertSame(['partial_value_refund_cents' => 2500], $api->calls[1]['data']);
-        $this->assertSame(Invoice::STATUS_PARTIALLY_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->status);
         $this->assertSame(2500, $result->refundedAmount);
         $this->assertSame(7500, $result->paidAmount);
     }
@@ -162,7 +164,7 @@ class IuguGatewayRefundTest extends TestCase
 
         $this->assertCount(2, $api->calls);
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
     }
 
     /**
@@ -213,8 +215,8 @@ class IuguGatewayRefundTest extends TestCase
             $this->paidPixInvoiceResponse(['status' => 'refunded', 'refunded_cents' => 10000, 'paid_cents' => 0]),
         ]);
         $invoice = $this->invoiceWithId();
-        $invoice->paymentMethod = Invoice::PAYMENT_METHOD_PIX;
-        $invoice->status = Invoice::STATUS_PAID;
+        $invoice->paymentMethod = PaymentMethod::PIX;
+        $invoice->status = InvoiceStatus::PAID;
         $invoice->paidAt = Carbon::parse('2026-08-20');
         $invoice->refundedAmount = 10000;
 
@@ -223,7 +225,7 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertCount(2, $api->calls);
         $this->assertSame('GET', $api->calls[0]['method']);
         $this->assertSame([], $api->calls[1]['data']);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
     }
 
     /**
@@ -262,7 +264,7 @@ class IuguGatewayRefundTest extends TestCase
         $exception = $this->refundExpectingRefusal($api, $this->invoiceWithId());
 
         $this->assertSame(RefundNotSupportedException::REASON_ALREADY_REFUNDED, $exception->reason);
-        $this->assertSame(Invoice::PAYMENT_METHOD_CREDIT_CARD, $exception->paymentMethod);
+        $this->assertSame(PaymentMethod::CREDIT_CARD->value, $exception->paymentMethod);
         $this->assertFalse($exception->manualRefundRequired);
         $this->assertOnlyTheInvoiceWasRead($api);
     }
@@ -276,7 +278,7 @@ class IuguGatewayRefundTest extends TestCase
         $exception = $this->refundExpectingRefusal($api, $this->invoiceWithId());
 
         $this->assertSame(RefundNotSupportedException::REASON_REFUND_WINDOW_EXPIRED, $exception->reason);
-        $this->assertSame(Invoice::PAYMENT_METHOD_CREDIT_CARD, $exception->paymentMethod);
+        $this->assertSame(PaymentMethod::CREDIT_CARD->value, $exception->paymentMethod);
         $this->assertTrue($exception->manualRefundRequired);
         $this->assertStringContainsString('2026-06-03', $exception->getMessage());
         $this->assertOnlyTheInvoiceWasRead($api);
@@ -292,7 +294,7 @@ class IuguGatewayRefundTest extends TestCase
         $result = (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
 
         $this->assertCount(2, $api->calls);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
     }
 
     /**
@@ -309,7 +311,7 @@ class IuguGatewayRefundTest extends TestCase
         $result = (new IuguGateway($api))->refundInvoice($this->invoiceWithId());
 
         $this->assertCount(2, $api->calls);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
     }
 
     public function testRefundOnTheDayAfterTheWindowThrowsBeforeTheNetwork(): void
@@ -342,7 +344,7 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertCount(2, $api->calls);
         $this->assertSame('GET', $api->calls[0]['method']);
         $this->assertSame('POST', $api->calls[1]['method']);
-        $this->assertSame(Invoice::STATUS_REFUNDED, $result->status);
+        $this->assertSame(InvoiceStatus::REFUNDED, $result->status);
     }
 
     public function testGatewayErrorOnRefundBecomesGatewayException(): void
@@ -368,8 +370,8 @@ class IuguGatewayRefundTest extends TestCase
         $this->assertSame('GET', $api->calls[0]['method']);
         $this->assertStringEndsWith('/invoices/inv_1', $api->calls[0]['url']);
         $this->assertSame('inv_1', $result->id);
-        $this->assertSame(Invoice::STATUS_PAID, $result->status);
-        $this->assertSame(Invoice::PAYMENT_METHOD_CREDIT_CARD, $result->paymentMethod);
+        $this->assertSame(InvoiceStatus::PAID, $result->status);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $result->paymentMethod);
         $this->assertSame(10000, $result->paidAmount);
         $this->assertSame('2026-08-20', $result->paidAt->toDateString());
         $this->assertNull($result->lastRefundId);

@@ -20,6 +20,8 @@ use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\MultiPaymentException;
 use Potelo\MultiPayment\Exceptions\AuthenticationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
 
 /**
  * Cobre a tradução de falhas do SDK da Iugu para as exceções do pacote: classe escolhida pelo
@@ -286,8 +288,8 @@ class IuguGatewayExceptionTranslationTest extends TestCase
             'cancelInvoice' => [fn (IuguGateway $g) => $g->cancelInvoice($invoice())],
             'refundInvoice' => [function (IuguGateway $g) use ($invoice) {
                 $paid = $invoice();
-                $paid->paymentMethod = Invoice::PAYMENT_METHOD_CREDIT_CARD;
-                $paid->status = Invoice::STATUS_PAID;
+                $paid->paymentMethod = PaymentMethod::CREDIT_CARD;
+                $paid->status = InvoiceStatus::PAID;
                 $paid->paidAt = Carbon::now();
 
                 return $g->refundInvoice($paid);
@@ -334,7 +336,7 @@ class IuguGatewayExceptionTranslationTest extends TestCase
             'createInvoice (Iugu_Invoice::create)' => [function (IuguGateway $g) {
                 $invoice = new Invoice();
                 $invoice->customer = self::customerWithId();
-                $invoice->availablePaymentMethods = [Invoice::PAYMENT_METHOD_PIX];
+                $invoice->availablePaymentMethods = [PaymentMethod::PIX];
                 $item = new InvoiceItem();
                 $item->description = 'Item';
                 $item->price = 1000;
@@ -578,7 +580,7 @@ class IuguGatewayExceptionTranslationTest extends TestCase
         );
 
         $this->assertSame('inv_2', $duplicated->id);
-        $this->assertSame(Invoice::STATUS_PENDING, $duplicated->status);
+        $this->assertSame(InvoiceStatus::PENDING, $duplicated->status);
         $this->assertSame(['ignore_due_email' => true, 'due_date' => '2026-10-01'], $api->calls[0]['data']);
     }
 

@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
 
 class AutomaticPixTest extends TestCase
 {
@@ -193,7 +194,7 @@ class AutomaticPixTest extends TestCase
     {
         $cancelledInvoice = new Invoice();
         $cancelledInvoice->id = 'invoice-id';
-        $cancelledInvoice->status = Invoice::STATUS_CANCELED;
+        $cancelledInvoice->status = InvoiceStatus::CANCELED;
 
         $gateway = Mockery::mock(GatewayContract::class);
         $gateway->shouldReceive('cancelInvoice')

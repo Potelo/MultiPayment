@@ -19,6 +19,9 @@ use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\PlanInterval;
 
 class SubscriptionTest extends TestCase
 {
@@ -117,11 +120,22 @@ class SubscriptionTest extends TestCase
         $subscription->validate();
     }
 
-    public function testSubscriptionRejectsUnknownPaymentMethod(): void
+    public function testSubscriptionRejectsUnknownPaymentMethodOnWrite(): void
     {
         $subscription = new Subscription();
         $subscription->fill(['customer' => ['name' => 'Fulano'], 'plan_id' => 'plano']);
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches('/availablePaymentMethods must be one of/');
+
         $subscription->availablePaymentMethods = ['bitcoin'];
+    }
+
+    public function testSubscriptionValidationRejectsNonSelectablePaymentMethod(): void
+    {
+        $subscription = new Subscription();
+        $subscription->fill(['customer' => ['name' => 'Fulano'], 'plan_id' => 'plano']);
+        $subscription->availablePaymentMethods = [PaymentMethod::AUTOMATIC_PIX];
 
         $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches('/availablePaymentMethods must be one of/');
@@ -164,7 +178,7 @@ class SubscriptionTest extends TestCase
             'plan_id' => 'plano',
             'items' => [['description' => 'Consultas', 'amount' => 1000, 'quantity' => 1]],
             'discounts' => [['description' => 'Promo', 'amount_off' => 500]],
-            'available_payment_methods' => [Invoice::PAYMENT_METHOD_CREDIT_CARD, Invoice::PAYMENT_METHOD_PIX],
+            'available_payment_methods' => [PaymentMethod::CREDIT_CARD, PaymentMethod::PIX],
         ]);
 
         $subscription->validate();
@@ -285,24 +299,23 @@ class SubscriptionTest extends TestCase
         $discount->validate();
     }
 
-    public function testPlanRejectsUnknownInterval(): void
+    public function testPlanRejectsUnknownIntervalOnWrite(): void
     {
         $plan = new Plan();
         $plan->name = 'Mensal';
         $plan->amount = 10000;
-        $plan->interval = 'day';
 
         $this->expectException(ModelAttributeValidationException::class);
-        $this->expectExceptionMessageMatches('/interval must be one of/');
+        $this->expectExceptionMessageMatches('/interval must be one of: day, week, month, year/');
 
-        $plan->validate();
+        $plan->interval = 'quinzena';
     }
 
     public function testPlanRequiresNameAmountAndInterval(): void
     {
         $plan = new Plan();
         $plan->amount = 10000;
-        $plan->interval = Plan::INTERVAL_MONTH;
+        $plan->interval = PlanInterval::MONTH;
 
         $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches('/`name` attribute is required/');
@@ -315,12 +328,12 @@ class SubscriptionTest extends TestCase
         $plan = new Plan();
         $plan->name = 'Mensal';
         $plan->amount = 10000;
-        $plan->interval = Plan::INTERVAL_MONTH;
+        $plan->interval = PlanInterval::MONTH;
         $plan->intervalCount = 1;
 
         $plan->validate();
 
-        $this->assertSame(Plan::INTERVAL_MONTH, $plan->interval);
+        $this->assertSame(PlanInterval::MONTH, $plan->interval);
     }
 
     /**
@@ -394,7 +407,7 @@ class SubscriptionTest extends TestCase
         $subscription = new Subscription();
         $subscription->fill([
             'id' => 'sub_1',
-            'latest_invoice' => ['id' => 'inv_1', 'status' => Invoice::STATUS_PENDING],
+            'latest_invoice' => ['id' => 'inv_1', 'status' => InvoiceStatus::PENDING],
         ]);
 
         $this->assertInstanceOf(Invoice::class, $subscription->latestInvoice);
@@ -499,13 +512,13 @@ class SubscriptionTest extends TestCase
             ->setItems([$item])
             ->addAmountDiscount('Descartado', 999)
             ->setDiscounts([])
-            ->setAvailablePaymentMethods([Invoice::PAYMENT_METHOD_PIX])
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
             ->setTrialEndsAt('2026-09-15')
             ->get();
 
         $this->assertSame([$item], $subscription->items);
         $this->assertSame([], $subscription->discounts);
-        $this->assertSame([Invoice::PAYMENT_METHOD_PIX], $subscription->availablePaymentMethods);
+        $this->assertSame([PaymentMethod::PIX], $subscription->availablePaymentMethods);
         $this->assertSame('2026-09-15', $subscription->trialEndsAt->format('Y-m-d'));
     }
 
@@ -574,7 +587,7 @@ class SubscriptionTest extends TestCase
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
-        $subscription->availablePaymentMethods = ['bitcoin'];
+        $subscription->availablePaymentMethods = [PaymentMethod::AUTOMATIC_PIX];
 
         $this->expectException(ModelAttributeValidationException::class);
 
@@ -587,7 +600,7 @@ class SubscriptionTest extends TestCase
         $plan->id = 'plan_1';
         $plan->name = 'Mensal';
         $plan->amount = 10000;
-        $plan->interval = Plan::INTERVAL_MONTH;
+        $plan->interval = PlanInterval::MONTH;
 
         $this->expectException(GatewayException::class);
         $this->expectExceptionMessageMatches('/cannot be updated/');
