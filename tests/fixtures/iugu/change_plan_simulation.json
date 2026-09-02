@@ -1,0 +1,8 @@
+{
+    "cost": 30000,
+    "discount": 0,
+    "cycles": 1,
+    "expires_at": "2026-10-02",
+    "new_plan": "multipayment-teste-destino",
+    "old_plan": "multipayment-teste-origem"
+}

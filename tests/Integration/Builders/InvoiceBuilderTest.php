@@ -183,7 +183,7 @@ class InvoiceBuilderTest extends TestCase
             $this->assertNotEmpty($invoice->creditCard->id);
         }
 
-        if ((isset($data['availablePaymentMethods']) && in_array('bank_slip', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'bank_slip') || (isset($data['gatewayOptions']) && in_array('payable_with', $data['gatewayOptions']) && in_array('bank_slip', $data['gatewayOptions']['payable_with']))) {
+        if ((isset($data['availablePaymentMethods']) && in_array('bank_slip', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'bank_slip') || (isset($data['gatewayOptions']) && array_key_exists('payable_with', $data['gatewayOptions']) && in_array('bank_slip', $data['gatewayOptions']['payable_with']))) {
             $this->assertNotEmpty($invoice->bankSlip);
             $this->assertNotEmpty($invoice->bankSlip->url);
             $this->assertNotEmpty($invoice->bankSlip->number);
@@ -191,7 +191,7 @@ class InvoiceBuilderTest extends TestCase
             $this->assertNotEmpty($invoice->bankSlip->barcodeImage);
         }
 
-        if ((isset($data['availablePaymentMethods']) && in_array('pix', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'pix') || (isset($data['gatewayOptions']) && in_array('payable_with', $data['gatewayOptions']) && in_array('pix', $data['gatewayOptions']['payable_with']))) {
+        if ((isset($data['availablePaymentMethods']) && in_array('pix', $data['availablePaymentMethods'])) || (isset($data['paymentMethod']) && $data['paymentMethod'] === 'pix') || (isset($data['gatewayOptions']) && array_key_exists('payable_with', $data['gatewayOptions']) && in_array('pix', $data['gatewayOptions']['payable_with']))) {
 
             $this->assertNotEmpty($invoice->pix);
             $this->assertNotEmpty($invoice->pix->qrCodeImageUrl);
@@ -199,12 +199,13 @@ class InvoiceBuilderTest extends TestCase
         }
 
         if (isset($data['gatewayOptions'])) {
-            if (in_array('payable_with', $data['gatewayOptions']) && $gateway == 'iugu') {
-                foreach ($invoice->original->payable_with as $value) {
-                    $this->assertContains($value, $data['gatewayOptions']['payable_with']);
-                }
+            if (array_key_exists('payable_with', $data['gatewayOptions']) && $gateway == 'iugu') {
+                $this->assertEqualsCanonicalizing(
+                    $data['gatewayOptions']['payable_with'],
+                    (array) $invoice->original->payable_with
+                );
             }
-            if (in_array('expires_in', $data['gatewayOptions'])) {
+            if (array_key_exists('expires_in', $data['gatewayOptions'])) {
                 $this->assertEquals($data['gatewayOptions'], $invoice->gatewayOptions);
                 if ($gateway == 'iugu') {
                     foreach ($invoice->gatewayOptions as $key => $value) {

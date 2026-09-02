@@ -386,34 +386,36 @@ class IuguGatewaySubscriptionTest extends TestCase
     }
 
     /**
-     * Simulação com `cost` em centavos e sem linhas: o parse lê o valor e deixa `items` nulo.
+     * Resposta real de `change_plan_simulation` gravada na sandbox, de uma assinatura com
+     * subitem e desconto ativos: só `cost`, `discount`, `cycles`, `expires_at`, `new_plan` e
+     * `old_plan`, com `discount` em 0 e sem linhas. O parse lê `cost` e deixa `items` nulo.
      */
     public function testPreviewPlanChangeReadsTheSimulationResponse(): void
     {
         $api = new QueuedIuguApiRequest([
-            (object) [
-                'cost' => 30000,
-                'discount' => 0,
-                'cycles' => 1,
-                'expires_at' => '2026-12-01',
-                'new_plan' => 'plano_anual',
-                'old_plan' => 'plano_mensal',
-            ],
+            json_decode(
+                file_get_contents(__DIR__ . '/../../fixtures/iugu/change_plan_simulation.json'),
+                flags: JSON_THROW_ON_ERROR
+            ),
         ]);
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'plano_anual');
+        $planChange = (new IuguGateway($api))
+            ->previewSubscriptionPlanChange($subscription, 'multipayment-teste-destino');
 
         $this->assertStringEndsWith(
-            '/subscriptions/sub_1/change_plan_simulation/plano_anual',
+            '/subscriptions/sub_1/change_plan_simulation/multipayment-teste-destino',
             $api->calls[0]['url']
         );
         $this->assertSame(30000, $planChange->amount);
-        $this->assertSame('2026-12-01', $planChange->effectiveAt->format('Y-m-d'));
+        $this->assertSame('2026-10-02', $planChange->effectiveAt->format('Y-m-d'));
         $this->assertNull($planChange->items);
-        $this->assertSame('plano_anual', $planChange->original->new_plan);
+        $this->assertSame(0, $planChange->original->discount);
+        $this->assertSame(1, $planChange->original->cycles);
+        $this->assertSame('multipayment-teste-destino', $planChange->original->new_plan);
+        $this->assertSame('multipayment-teste-origem', $planChange->original->old_plan);
     }
 
     public function testPreviewPlanChangeFallsBackToPriceCentsAndSubitems(): void

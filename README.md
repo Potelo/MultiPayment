@@ -174,6 +174,12 @@ Invoice::isContested($invoice->status); // tem briga aberta? disputed ou chargeb
   `authentication_required`, `expired_card`, `insufficient_funds`, `incorrect_cvc`...).
   `GatewayNotAvailableException` também sinaliza "tente outro gateway"; `AuthenticationException`
   sinaliza credencial errada e não deve gerar fallback (ver [Tratamento de erros](#tratamento-de-erros)).
+- **Cartão salvo não garante cobrança futura.** Salvar o cartão (`newCreditCard()->create()`)
+  faz só o `attach` do PaymentMethod ao cliente, sem autenticar com o emissor. Um cartão que
+  exige autenticação (3DS) é salvo normalmente e recusado na primeira cobrança `off_session`,
+  com `ChargingException::$reason` igual a `authentication_required`. Essa razão pede ação do
+  pagador (autenticar o cartão ou informar outro); o gateway respondeu normalmente e não cabe
+  fallback. Autenticar no momento de salvar (SetupIntent) está planejado para uma versão futura.
 - **Pix exige `tax_document` do cliente** (CPF/CNPJ vai nos billing details do pagamento).
 - **`expires_at` do pix é opcional** (default do Stripe: 4 horas) e, quando informado, deve
   ficar entre 10 segundos e 14 dias no futuro — diferente da Iugu, onde `expires_at` é a
