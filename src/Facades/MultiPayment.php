@@ -26,6 +26,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static int refundableAmount(string $id)
  * @method static Invoice duplicateInvoice(Invoice|string $invoice, \Carbon\Carbon $expiresAt, array $gatewayOptions = [], ?string $idempotencyKey = null)
  * @method static CreditCard getCard(string $customerId, string $creditCardId)
+ * @method static CreditCard confirmCreditCardSetup(string $setupId, ?string $idempotencyKey = null)
  * @method static void deleteCard(string $customerId, string $creditCardId, ?string $idempotencyKey = null)
  * @method static \Potelo\MultiPayment\MultiPayment setGateway($gateway)
  * @method static \Potelo\MultiPayment\Contracts\GatewayContract gateway($gateway = null)

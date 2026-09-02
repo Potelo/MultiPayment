@@ -621,6 +621,23 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * Na Iugu o cartão salvo por `createCreditCard()` já volta cobrável (o Zero Auth só
+     * confere a validade do cartão, com uma autorização de valor zero, sem autenticar o
+     * portador), então `CARD_SETUP_AUTHENTICATION` fica fora das listas do driver e este
+     * método lança sempre `UnsupportedOperationException` com `reason` `gateway_limitation`.
+     */
+    public function confirmCreditCardSetup(string $setupId, ?string $idempotencyKey = null): CreditCard
+    {
+        throw UnsupportedOperationException::forGateway(
+            $this,
+            Capability::CARD_SETUP_AUTHENTICATION,
+            'Na Iugu o cartão salvo por createCreditCard() já é cobrável; não há setup a confirmar.'
+        );
+    }
+
+    /**
+     * @inheritDoc
      */
     public function getInvoice(Invoice $invoice): Invoice
     {

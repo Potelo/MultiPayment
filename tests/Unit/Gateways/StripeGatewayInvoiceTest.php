@@ -98,25 +98,44 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame('stripe', $result->gateway);
     }
 
+    /**
+     * O token vira cartão salvo por um SetupIntent confirmado (que anexa o PaymentMethod ao
+     * cliente) antes do PaymentIntent da cobrança.
+     */
     public function testCreatesCreditCardInvoiceSavingTokenizedCardFirst(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([
-            $this->paymentMethodResponse(),
+            [
+                'id' => 'seti_fake123',
+                'object' => 'setup_intent',
+                'status' => 'succeeded',
+                'customer' => 'cus_fake123',
+                'usage' => 'off_session',
+                'client_secret' => 'seti_fake123_secret_fake',
+                'created' => 1786700000,
+                'metadata' => [],
+                'next_action' => null,
+                'last_setup_error' => null,
+                'payment_method' => $this->paymentMethodResponse('cus_fake123'),
+            ],
             $this->paidCardPaymentIntentResponse(),
         ]);
 
         $invoice = $this->creditCardInvoiceModel();
         $invoice->creditCard = new CreditCard();
         $invoice->creditCard->token = 'pm_fake123';
-        (new StripeGateway())->createInvoice($invoice);
+        $result = (new StripeGateway())->createInvoice($invoice);
 
         $paths = array_map(static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH), $httpClient->calls);
         $this->assertSame([
-            'post /v1/payment_methods/pm_fake123/attach',
+            'post /v1/setup_intents',
             'post /v1/payment_intents',
         ], $paths);
         $this->assertSame('cus_fake123', $httpClient->calls[0][2]['customer']);
+        $this->assertSame('pm_fake123', $httpClient->calls[0][2]['payment_method']);
         $this->assertSame('pm_fake123', $httpClient->calls[1][2]['payment_method']);
+        $this->assertSame('pm_fake123', $result->creditCard->id);
+        $this->assertFalse($result->creditCard->requiresAction);
     }
 
     public function testRejectsInvoiceWithMultiplePaymentMethods(): void

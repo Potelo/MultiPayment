@@ -98,6 +98,7 @@ class IdempotencyKeyPropagationTest extends TestCase
             'setCustomerDefaultCard' => fn (Customer $c) => $c,
             'cancelAutomaticPixRecurrence' => fn () => new AutomaticPixCancellation(),
             'cancelAutomaticPixScheduledPayment' => fn () => new AutomaticPixCancellation(),
+            'confirmCreditCardSetup' => fn () => new CreditCard(),
         ]);
 
         $payment = new MultiPayment($gateway);
@@ -105,8 +106,10 @@ class IdempotencyKeyPropagationTest extends TestCase
         $payment->setDefaultCard('cus_1', 'pm_1', 'k-default');
         $payment->cancelAutomaticPixRecurrence('rec_1', 'k-rec');
         $payment->cancelAutomaticPixScheduledPayment('pay_1', 'E1', 'k-pay');
+        $payment->confirmCreditCardSetup('seti_1', 'k-confirm');
 
-        [$delete, $default, $recurrence, $payment] = array_column($this->calls, 1);
+        [$delete, $default, $recurrence, $payment, $confirm] = array_column($this->calls, 1);
+        $this->assertSame(['seti_1', 'k-confirm'], $confirm);
         $this->assertSame(['pm_1', 'cus_1', 'k-delete'], [$delete[0]->id, $delete[0]->customer->id, $delete[1]]);
         $this->assertSame(['cus_1', 'pm_1', 'k-default'], [$default[0]->id, $default[1], $default[2]]);
         $this->assertInstanceOf(AutomaticPix::class, $recurrence[0]);
@@ -210,6 +213,7 @@ class IdempotencyKeyPropagationTest extends TestCase
             'createCustomer' => fn (Customer $c) => $c,
             'updateCustomer' => fn (Customer $c) => $c,
             'deleteCreditCard' => fn () => null,
+            'confirmCreditCardSetup' => fn () => new CreditCard(),
         ]);
 
         $customer = new Customer();
@@ -223,11 +227,17 @@ class IdempotencyKeyPropagationTest extends TestCase
         $creditCard->id = 'pm_1';
         $creditCard->delete($gateway, 'k-delete');
 
+        $pendingCard = new CreditCard();
+        $pendingCard->setupId = 'seti_1';
+        $pendingCard->confirmSetup($gateway, 'k-confirm');
+
         $this->assertSame([
             ['createCustomer', 'k-create'],
             ['updateCustomer', 'k-update'],
             ['deleteCreditCard', 'k-delete'],
+            ['confirmCreditCardSetup', 'k-confirm'],
         ], array_map(fn (array $call) => [$call[0], $call[1][1]], $this->calls));
+        $this->assertSame('seti_1', $this->calls[3][1][0]);
     }
 
     public function testInvoiceSaveCreatesTheCustomerWithADerivedKey(): void

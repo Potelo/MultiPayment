@@ -377,6 +377,22 @@ class CapabilityGuardsTest extends TestCase
         $this->assertSame('inv_1', $invoice->id);
     }
 
+    /**
+     * A Iugu não autentica o portador ao salvar o cartão: concluir um setup é limitação do
+     * gateway, recusada antes de qualquer requisição.
+     */
+    public function testConfirmCreditCardSetupOnIuguIsAGatewayLimitation(): void
+    {
+        $this->assertUnsupported(
+            Capability::CARD_SETUP_AUTHENTICATION,
+            UnsupportedOperationException::REASON_GATEWAY_LIMITATION,
+            'iugu',
+            fn () => (new MultiPayment('iugu'))->confirmCreditCardSetup('seti_1')
+        );
+        $this->assertFalse((new MultiPayment('iugu'))->supports(Capability::CARD_SETUP_AUTHENTICATION));
+        $this->assertTrue((new MultiPayment('stripe'))->supports(Capability::CARD_SETUP_AUTHENTICATION));
+    }
+
     public function testFacadeExposesTheDeclarations(): void
     {
         $multiPayment = new MultiPayment('stripe');
@@ -399,7 +415,7 @@ class CapabilityGuardsTest extends TestCase
     {
         $docblock = (new \ReflectionClass(\Potelo\MultiPayment\Facades\MultiPayment::class))->getDocComment();
 
-        foreach (['gateway(', 'supports(', 'capabilities(', 'notYetImplemented('] as $method) {
+        foreach (['gateway(', 'supports(', 'capabilities(', 'notYetImplemented(', 'confirmCreditCardSetup('] as $method) {
             $this->assertMatchesRegularExpression('/@method static .*' . preg_quote($method, '/') . '/', $docblock, $method);
         }
     }

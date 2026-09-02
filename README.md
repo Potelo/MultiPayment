@@ -21,6 +21,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)
     - [Assinaturas e planos](#assinaturas-e-planos)
     - [CustomerBuilder](#customerbuilder)
+    - [Salvar cartão (CreditCardBuilder)](#salvar-cartão-creditcardbuilder)
     - [getInvoice](#getinvoice)
     - [Outras operações de fatura](#outras-operações-de-fatura)
     - [Estorno](#estorno)
@@ -165,6 +166,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `AUTOMATIC_PIX` | Recorrência de Pix Automático criada junto com a fatura, com reagendamento e cancelamento pela lib. | sim | não implementado |  |
 | `MULTIPLE_PAYMENT_METHODS` | Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. | sim | não implementado |  |
 | `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |  |
+| `CARD_SETUP_AUTHENTICATION` | Autenticação do portador com o emissor (3DS) ao salvar o cartão: cartão que exige ação do pagador volta com `CreditCard::$requiresAction` verdadeiro e `id` nulo, e `confirmCreditCardSetup()` conclui o salvamento depois da autenticação. | limitação do gateway | sim |  |
 | `INSTALLMENTS` | Parcelamento da cobrança no cartão de crédito. | sim | limitação do gateway | Iugu: O número de parcelas vai em gatewayOptions['months'], até 12 (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments); a lib não lê as parcelas da fatura paga. |
 | `DELAYED_CAPTURE` | Cobrança em duas etapas no cartão: reserva do valor agora e captura depois. | não implementado | não implementado |  |
 | `PARTIAL_REFUND_CARD` | Estorno de parte do valor numa fatura paga com cartão. | sim | sim |  |
@@ -192,6 +194,10 @@ Sobre as restrições e algumas células:
   A bandeira fora da restrição de `CREDIT_CARD` chega depois, na cobrança, como
   `CardDeclinedException` com `DeclineCode::BRAND_NOT_SUPPORTED`; por isso vale consultar
   `restriction()->allowsBrand()` antes de tokenizar.
+- **`CARD_SETUP_AUTHENTICATION`** faz `newCreditCard()->create()` devolver um cartão com
+  `requiresAction` quando o emissor exige autenticação; na Iugu, que só valida o cartão
+  (Zero Auth, sem 3DS), o cartão volta sempre cobrável (ver
+  [Salvar cartão](#salvar-cartão-creditcardbuilder)).
 - **`INSTALLMENTS` na Iugu** é informado em `gateway_options['months']`; a lib não modela parcelas
   nem lê os campos da fatura parcelada. O máximo publicado em `maxInstallments` vem de
   `multi-payment.gateways.iugu.max_installments` (`IUGU_MAX_INSTALLMENTS`, 12 por padrão) e
@@ -412,12 +418,15 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
   `retryable` diz se vale repetir com o mesmo cartão (ver [Códigos de recusa](#códigos-de-recusa)).
   `GatewayNotAvailableException` também sinaliza "tente outro gateway"; `AuthenticationException`
   sinaliza credencial errada e não deve gerar fallback (ver [Tratamento de erros](#tratamento-de-erros)).
-- **Cartão salvo não garante cobrança futura.** Salvar o cartão (`newCreditCard()->create()`)
-  faz só o `attach` do PaymentMethod ao cliente, sem autenticar com o emissor. Um cartão que
-  exige autenticação (3DS) é salvo normalmente e recusado na primeira cobrança `off_session`,
-  com `CardDeclinedException::$declineCode` igual a `DeclineCode::AUTHENTICATION_REQUIRED`. Esse
-  código pede ação do pagador (autenticar o cartão ou informar outro); o gateway respondeu
-  normalmente e não cabe fallback. Autenticar no momento de salvar (SetupIntent) está planejado para uma versão futura.
+- **Salvar cartão autentica o portador quando o emissor exige.** `newCreditCard()->create()`
+  cria e confirma um SetupIntent (`usage: off_session`): o cartão que o emissor aprova volta
+  salvo e cobrável; o cartão que exige autenticação (3DS) volta com `requiresAction`
+  verdadeiro, sem `id`, e só fica cobrável depois de `confirmCreditCardSetup()` (ver
+  [Salvar cartão](#salvar-cartão-creditcardbuilder)). Na venda avulsa com token
+  (`addCreditCardToken()`), um cartão que exige autenticação lança `CardDeclinedException` com
+  `DeclineCode::AUTHENTICATION_REQUIRED` antes de criar a fatura: a cobrança fora de sessão não
+  tem como atendê-la. Esse código pede ação do pagador (autenticar o cartão ou informar outro);
+  o gateway respondeu normalmente e não cabe fallback.
 - **Pix exige `tax_document` do cliente** (CPF/CNPJ vai nos billing details do pagamento).
 - **A expiração do QR Code do Pix é `pixExpiresAt`** (opcional; default do Stripe: 4 horas) e,
   quando informada, deve ficar entre 10 segundos e 14 dias no futuro. Sem ela, `dueDate` faz o
@@ -669,6 +678,7 @@ deduplica por conta própria com a `IdempotencyStore` (abaixo):
 | Criar assinatura | gateway | (não implementado) |
 | Atualizar cliente, definir cartão padrão | store da lib | gateway |
 | Salvar cartão, excluir cartão | store da lib | gateway |
+| Concluir o setup do cartão (`confirmCreditCardSetup`) | (limitação do gateway) | gateway, nas escritas secundárias (`{chave}:attach`, `{chave}:metadata`, `{chave}:default`); a leitura do setup não leva chave |
 | Estornar, cancelar, duplicar fatura | store da lib | gateway |
 | Suspender, retomar, cancelar, atualizar assinatura, trocar de plano | store da lib | (não implementado) |
 | Criar plano | store da lib | (não implementado) |
@@ -750,7 +760,7 @@ MultiPaymentException
     RefundNotSupportedException         estorno recusado pela lib antes da requisição (limitação do gateway ou estado da fatura)
     AuthenticationException             credencial recusada (401, 403) ou não configurada
     GatewayNotAvailableException        5xx, falha de conexão ou timeout
-    CardDeclinedException               cobrança recusada: declineCode, gatewayCode, retryable
+    CardDeclinedException               cartão recusado, na cobrança ou ao salvar: declineCode, gatewayCode, retryable
         ChargingException               nome antigo, deprecado; é a classe que os drivers lançam
     GatewayException                    resposta de erro do gateway: httpStatus e getErrors()
         ValidationException             400 ou 422: fieldErrors por campo
@@ -761,7 +771,7 @@ MultiPaymentException
 
 | Exceção | Quando | O que fazer |
 |---|---|---|
-| `CardDeclinedException` | O gateway respondeu e a cobrança foi recusada pelo emissor, pelo adquirente ou pelo antifraude. `declineCode` (`DeclineCode`) é o motivo normalizado, `gatewayCode` o código original (`decline_code` da Stripe, LR da Iugu), `retryable` diz se vale repetir com o mesmo cartão | Ramificar por `declineCode`: outro gateway em `BRAND_NOT_SUPPORTED`, nova tentativa só se `retryable`, ação do pagador nos demais (ver [Códigos de recusa](#códigos-de-recusa)) |
+| `CardDeclinedException` | O gateway respondeu e a cobrança foi recusada pelo emissor, pelo adquirente ou pelo antifraude. `declineCode` (`DeclineCode`) é o motivo normalizado, `gatewayCode` o código original (`decline_code` da Stripe, LR da Iugu), `retryable` diz se vale repetir com o mesmo cartão. Também é a recusa ao salvar o cartão (`newCreditCard()->create()`, `confirmCreditCardSetup()`); quando vem do estado do setup lido (`last_setup_error`), `httpStatus` é nulo e o SetupIntent vai em `chargeResponse` | Ramificar por `declineCode`: outro gateway em `BRAND_NOT_SUPPORTED`, nova tentativa só se `retryable`, ação do pagador nos demais (ver [Códigos de recusa](#códigos-de-recusa)) |
 | `ChargingException` | Nome antigo de `CardDeclinedException`, deprecado. É a classe que os drivers lançam, então `catch` por qualquer um dos dois nomes captura a mesma exceção | Migrar o `catch` para `CardDeclinedException` |
 | `ValidationException` | O gateway recusou o payload (400 ou 422 na Iugu, `invalid_request_error` na Stripe); `fieldErrors` traz as mensagens por campo (`base` para erro sem campo) | Corrigir a chamada; repetir igual falha de novo |
 | `NotFoundException` | Recurso inexistente no gateway (404 na Iugu, `resource_missing` na Stripe): id errado, de outra conta ou removido | Conferir o id; não repetir |
@@ -834,7 +844,7 @@ do pagador antes de qualquer nova tentativa.
 | `INVALID_CARD` | Outros dados inválidos: validade, conta inexistente, cartão não desbloqueado | não | `invalid_expiry_month`, `invalid_expiry_year`, `invalid_account`, `new_account_information_available`, `incorrect_address`, `incorrect_zip` | 1, 12, 15, 30, 46, 56, 78, 101, 111, 115, 122, 6P, AV, BM, BP, BR, CF, CG, DF, DQ, G4, KA, KE, U3 |
 | `LOST_OR_STOLEN` | Perdido, roubado, retido ou bloqueado pelo emissor; não exibir o motivo ao pagador | não | `lost_card`, `stolen_card`, `pickup_card`, `restricted_card` | 4, 41, 43, 62, 146, BN |
 | `FRAUD_SUSPECTED` | Suspeita de fraude ou antifraude; tratar como recusa genérica diante do pagador | não | `fraudulent`, `merchant_blacklist` | 7, 59, AF01, AF02, BP171 |
-| `AUTHENTICATION_REQUIRED` | O emissor exige autenticação (3DS); a cobrança fora de sessão não atende | não | `authentication_required`, `authentication_not_handled`, `mobile_device_authentication_required` | AI |
+| `AUTHENTICATION_REQUIRED` | O emissor exige autenticação (3DS); a cobrança fora de sessão não atende | não | `authentication_required`, `authentication_not_handled`, `mobile_device_authentication_required`, `setup_intent_authentication_failure`, `payment_intent_authentication_failure` | AI |
 | `BRAND_NOT_SUPPORTED` | Bandeira, função (crédito ou débito) ou moeda não aceita nesta cobrança; candidato a outro gateway | não | `card_not_supported`, `currency_not_supported` | 39, 52, 53, 57, 79, 5C, AB, AC, AH, C1, DS, EK, G5 |
 | `DO_NOT_HONOR` | O emissor recusou sem detalhar e orienta o pagador a procurá-lo | não | `do_not_honor`, `call_issuer`, `no_action_taken`, `not_permitted`, `security_violation`, `service_not_allowed`, `stop_payment_order`, `transaction_not_allowed`, `revocation_of_authorization`, `revocation_of_all_authorizations`, `do_not_try_again` | 5, 6, 60, 63, 67, 93, 99, 100, 109, 110, 116, 121, 181, 200, B1, B2, BP176, C2, C3, FC, FG, GA, GD, GF, GK, GT, N7, NR, R0, R1, R2, R3, RE, RP, SC |
 | `TRY_AGAIN` | Falha temporária no emissor, no adquirente ou na comunicação | sim | `processing_error`, `issuer_not_available`, `reenter_transaction`, `try_again_later`, `approve_with_id` | 19, 28, 85, 89, 90, 91, 92, 96, 98, 911, 912, 999, 99A, 99B, 99C, 99TA, 99Z, AA, AF, AG, BD, BO, BP900, BP901, BP902 |
@@ -1322,6 +1332,69 @@ $customer = $customerBuilder->setName('Nome')
     ->create();
 ```
 Confira `src/MultiPayment/Builders/CustomerBuilder.php` para saber quais métodos estão disponíveis.
+
+#### Salvar cartão (CreditCardBuilder)
+
+O cartão salvo fica vinculado ao cliente e pode ser cobrado depois por `addCreditCardId()`,
+`setCreditCard()` na assinatura ou `chargeInvoiceWithCreditCard()`. No Stripe o token é o
+PaymentMethod criado no navegador com Stripe.js (`pm_...`); na Iugu, o token do iugu.js ou os
+dados do cartão (`setNumber()`, `setCvv()`...), que só a Iugu aceita (`RAW_CARD_DATA`).
+
+```php
+$payment = new \Potelo\MultiPayment\MultiPayment('stripe');   // ou 'iugu'
+
+$card = $payment->newCreditCard()
+    ->setCustomerId($customer->id)
+    ->setToken($request->payment_method_id)
+    ->setDescription('Cartão principal')
+    ->setAsDefault()
+    ->withIdempotencyKey("card-{$request->uuid}")
+    ->create();
+
+if ($card->requiresAction) {
+    // o emissor exige autenticação do pagador (3DS) antes de o cartão ficar cobrável; o cartão
+    // ainda não foi salvo (id nulo). O navegador conclui com o SDK do gateway:
+    // stripe.confirmCardSetup($card->clientSecret) e, depois, o servidor confirma abaixo
+    return response()->json(['setup_id' => $card->setupId, 'client_secret' => $card->clientSecret]);
+}
+
+$card->id;   // cartão salvo e cobrável
+```
+
+```php
+// depois que o pagador autenticou no navegador
+$card = $payment->confirmCreditCardSetup($setupId);   // ou $card->confirmSetup()
+
+if ($card->requiresAction) {
+    // o pagador ainda não concluiu a autenticação; peça de novo ou desista do cartão
+}
+$card->id;   // cartão salvo; a descrição e a marcação de padrão pedidas na criação já foram aplicadas
+```
+
+Regras do fluxo:
+
+- **Quem autentica é o gateway com `CARD_SETUP_AUTHENTICATION`** (Stripe). Na Iugu a
+  capability é limitação do gateway: o Zero Auth confere a validade do cartão com uma
+  autorização de valor zero e não autentica o portador, então `requiresAction` é sempre falso,
+  `setupId` é nulo e `confirmCreditCardSetup()` lança `UnsupportedOperationException`.
+- **Página hospedada de autenticação.** No Stripe, `setGatewayOptions(['return_url' => ...])`
+  faz a Stripe devolver a página de 3DS em `actionUrl`; sem `return_url`, `actionUrl` fica
+  nulo e a autenticação é pelo Stripe.js com `clientSecret`.
+- **Recusa é `CardDeclinedException`**, na criação ou na confirmação: cartão recusado pelo
+  emissor no setup, autenticação que falhou (`DeclineCode::AUTHENTICATION_REQUIRED`, com
+  `gatewayCode` `setup_intent_authentication_failure`) ou setup cancelado
+  (`DeclineCode::UNKNOWN`). O SetupIntent vai em `chargeResponse`.
+- **Idempotência.** A chave de `withIdempotencyKey()` vai no SetupIntent; a confirmação aceita
+  a própria chave como segundo argumento (`confirmCreditCardSetup($setupId, $key)`).
+
+> **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `newCreditCard()->create()` no
+> Stripe fazia só o `attach` do PaymentMethod: um cartão que exigia autenticação era salvo
+> como cobrável e recusado na primeira cobrança `off_session`, com
+> `DeclineCode::AUTHENTICATION_REQUIRED`. Agora esse cartão volta com `requiresAction` e sem
+> `id`, e só é salvo depois da autenticação. Quem persiste `$card->id` logo após o `create()`
+> precisa tratar `requiresAction` antes. A recusa do emissor passa a chegar no setup, e
+> `retryable` segue o `advice_code` que a Stripe envia nesse ponto, que pode diferir do que
+> vinha na cobrança.
 
 #### getInvoice
 ```php

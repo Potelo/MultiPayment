@@ -47,6 +47,8 @@ final class DeclineCodes
         'authentication_required' => DeclineCode::AUTHENTICATION_REQUIRED,
         'authentication_not_handled' => DeclineCode::AUTHENTICATION_REQUIRED,
         'mobile_device_authentication_required' => DeclineCode::AUTHENTICATION_REQUIRED,
+        'setup_intent_authentication_failure' => DeclineCode::AUTHENTICATION_REQUIRED,
+        'payment_intent_authentication_failure' => DeclineCode::AUTHENTICATION_REQUIRED,
 
         'card_not_supported' => DeclineCode::BRAND_NOT_SUPPORTED,
         'currency_not_supported' => DeclineCode::BRAND_NOT_SUPPORTED,

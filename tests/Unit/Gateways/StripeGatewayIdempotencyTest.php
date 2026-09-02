@@ -309,9 +309,9 @@ class StripeGatewayIdempotencyTest extends TestCase
 
                     return $g->createInvoice($invoice, $key);
                 },
-                [self::paymentMethodResponse(), self::paidCardPaymentIntentResponse()],
+                [self::setupIntentResponse(), self::paidCardPaymentIntentResponse()],
                 [
-                    'post /v1/payment_methods/pm_fake123/attach' => 'chave-1:card',
+                    'post /v1/setup_intents' => 'chave-1:card',
                     'post /v1/payment_intents' => 'chave-1',
                 ],
             ],
@@ -406,12 +406,12 @@ class StripeGatewayIdempotencyTest extends TestCase
                     return $g->createCreditCard($creditCard, $key);
                 },
                 [
-                    self::paymentMethodResponse(),
-                    self::paymentMethodResponse(),
+                    self::setupIntentResponse(metadata: ['description' => 'principal', 'set_as_default' => '1']),
+                    self::paymentMethodResponse('cus_fake123'),
                     self::stripeCustomerResponse(),
                 ],
                 [
-                    'post /v1/payment_methods/pm_fake123/attach' => 'chave-1',
+                    'post /v1/setup_intents' => 'chave-1',
                     'post /v1/payment_methods/pm_fake123' => 'chave-1:metadata',
                     'post /v1/customers/cus_fake123' => 'chave-1:default',
                 ],
@@ -423,10 +423,31 @@ class StripeGatewayIdempotencyTest extends TestCase
 
                     return $g->createCreditCard($creditCard, $key);
                 },
-                [self::paymentMethodResponse(), self::paymentMethodResponse()],
+                [self::paymentMethodResponse(), self::setupIntentResponse()],
                 [
                     'post /v1/payment_methods' => 'chave-1:payment_method',
-                    'post /v1/payment_methods/pm_fake123/attach' => 'chave-1',
+                    'post /v1/setup_intents' => 'chave-1',
+                ],
+            ],
+            'createCreditCard anexando o cartão que a Stripe devolveu sem cliente' => [
+                fn (StripeGateway $g, ?string $key) => $g->createCreditCard(self::creditCardModel(), $key),
+                [self::setupIntentResponse(paymentMethodCustomer: null), self::paymentMethodResponse('cus_fake123')],
+                [
+                    'post /v1/setup_intents' => 'chave-1',
+                    'post /v1/payment_methods/pm_fake123/attach' => 'chave-1:attach',
+                ],
+            ],
+            'confirmCreditCardSetup' => [
+                fn (StripeGateway $g, ?string $key) => $g->confirmCreditCardSetup('seti_fake123', $key),
+                [
+                    self::setupIntentResponse(metadata: ['description' => 'principal', 'set_as_default' => '1']),
+                    self::paymentMethodResponse('cus_fake123'),
+                    self::stripeCustomerResponse(),
+                ],
+                [
+                    'get /v1/setup_intents/seti_fake123' => null,
+                    'post /v1/payment_methods/pm_fake123' => 'chave-1:metadata',
+                    'post /v1/customers/cus_fake123' => 'chave-1:default',
                 ],
             ],
             'deleteCreditCard' => [
@@ -571,6 +592,27 @@ class StripeGatewayIdempotencyTest extends TestCase
             'billing_details' => ['name' => 'Faker Teste'],
             'metadata' => [],
             'card' => ['brand' => 'visa', 'last4' => '4242', 'exp_month' => 8, 'exp_year' => 2027],
+        ];
+    }
+
+    /**
+     * SetupIntent confirmado, com o PaymentMethod expandido (anexado ao cliente por padrão).
+     */
+    private static function setupIntentResponse(?string $paymentMethodCustomer = 'cus_fake123', array $metadata = []): array
+    {
+        return [
+            'id' => 'seti_fake123',
+            'object' => 'setup_intent',
+            'status' => 'succeeded',
+            'customer' => 'cus_fake123',
+            'usage' => 'off_session',
+            'client_secret' => 'seti_fake123_secret_fake',
+            'created' => 1786700000,
+            'payment_method_types' => ['card'],
+            'metadata' => $metadata,
+            'next_action' => null,
+            'last_setup_error' => null,
+            'payment_method' => self::paymentMethodResponse($paymentMethodCustomer),
         ];
     }
 

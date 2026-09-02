@@ -71,6 +71,7 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::AUTOMATIC_PIX->name =>            [self::SUPPORTED,      self::NOT_IMPLEMENTED],
             Capability::MULTIPLE_PAYMENT_METHODS->name => [self::SUPPORTED,      self::NOT_IMPLEMENTED],
             Capability::RAW_CARD_DATA->name =>            [self::SUPPORTED,      self::LIMITATION],
+            Capability::CARD_SETUP_AUTHENTICATION->name => [self::LIMITATION,    self::SUPPORTED],
             Capability::INSTALLMENTS->name =>             [self::SUPPORTED,      self::LIMITATION],
             Capability::DELAYED_CAPTURE->name =>          [self::NOT_IMPLEMENTED, self::NOT_IMPLEMENTED],
             Capability::PARTIAL_REFUND_CARD->name =>      [self::SUPPORTED,      self::SUPPORTED],

@@ -8,6 +8,7 @@ use Stripe\Invoice as StripeInvoice;
 use Stripe\Customer as StripeCustomer;
 use Stripe\PaymentIntent as StripePaymentIntent;
 use Stripe\PaymentMethod as StripePaymentMethod;
+use Stripe\SetupIntent as StripeSetupIntent;
 use Stripe\Exception\CardException;
 use Stripe\Exception\ApiErrorException;
 use Stripe\Exception\PermissionException;
@@ -85,6 +86,16 @@ class StripeGateway implements GatewayContract
      */
     private const INVOICE_EXPAND = ['payments.data.payment.payment_intent'];
 
+    /**
+     * Expand de toda leitura ou criação de SetupIntent: o PaymentMethod expandido traz a
+     * bandeira e os últimos dígitos do cartão e diz se a Stripe já o anexou ao cliente.
+     */
+    private const SETUP_INTENT_EXPAND = ['payment_method'];
+
+    /** Chaves de `metadata` do SetupIntent que guardam o que aplicar ao cartão quando o setup conclui. */
+    private const SETUP_METADATA_DESCRIPTION = 'description';
+    private const SETUP_METADATA_DEFAULT = 'set_as_default';
+
     /** Prefixo do id de um objeto Invoice da Stripe; o de PaymentIntent é `pi_`. */
     private const STRIPE_INVOICE_ID_PREFIX = 'in_';
 
@@ -153,6 +164,7 @@ class StripeGateway implements GatewayContract
         return [
             Capability::CREDIT_CARD,
             Capability::PIX,
+            Capability::CARD_SETUP_AUTHENTICATION,
             Capability::PARTIAL_REFUND_CARD,
             Capability::PARTIAL_REFUND_PIX,
             Capability::INVOICE_DUPLICATION,
@@ -662,18 +674,33 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Traduz uma recusa de cartão do stripe-php para `ChargingException`: o `decline_code` (ou,
-     * na falta dele, o `code`) vira `DeclineCode`, o `advice_code` decide `retryable` quando
-     * presente, e a resposta bruta vai em `chargeResponse`. Código fora da tabela vira
-     * `DeclineCode::UNKNOWN`, com o original preservado em `gatewayCode` e registro em nível
-     * `info`.
+     * Traduz uma recusa de cartão do stripe-php para `ChargingException` a partir do erro da
+     * exceção, com ela em `previous` e o status HTTP da resposta.
      *
      * @param  CardException  $e
      * @return ChargingException
      */
     private function cardDeclined(CardException $e): ChargingException
     {
-        $error = $e->getError();
+        return $this->declinedFromStripeError($e->getError(), $e->getMessage(), $e, $e->getHttpStatus());
+    }
+
+    /**
+     * Monta a `ChargingException` de uma recusa de cartão a partir do objeto de erro da Stripe
+     * (o de uma `CardException` ou o `last_setup_error` de um SetupIntent): o `decline_code`
+     * (ou, na falta dele, o `code`) vira `DeclineCode`, o `advice_code` decide `retryable`
+     * quando presente, e o erro bruto vai em `chargeResponse`. Código fora da tabela vira
+     * `DeclineCode::UNKNOWN`, com o original preservado em `gatewayCode` e registro em nível
+     * `info`.
+     *
+     * @param  object|null  $error  `\Stripe\ErrorObject` ou `\Stripe\StripeObject` com `code`, `decline_code` e `advice_code`
+     * @param  string  $message
+     * @param  \Throwable|null  $previous
+     * @param  int|null  $httpStatus
+     * @return ChargingException
+     */
+    private function declinedFromStripeError(?object $error, string $message, ?\Throwable $previous, ?int $httpStatus): ChargingException
+    {
         $code = $error?->code ?? null;
         $stripeDeclineCode = $error?->decline_code ?? null;
         $gatewayCode = $stripeDeclineCode ?: $code;
@@ -690,13 +717,13 @@ class StripeGateway implements GatewayContract
             'stripe',
             $declineCode,
             $gatewayCode,
-            $e->getMessage(),
-            $e,
-            $e->getHttpStatus(),
+            $message,
+            $previous,
+            $httpStatus,
             StripeDeclineCodes::retryableFromAdvice($error?->advice_code ?? null)
         );
         // array em vez do ErrorObject, para o formato ser o mesmo em qualquer operação
-        $exception->chargeResponse = $error?->toArray();
+        $exception->chargeResponse = is_object($error) && method_exists($error, 'toArray') ? $error->toArray() : $error;
         $exception->reason = self::chargeFailureReason($code, $stripeDeclineCode);
 
         return $exception;
@@ -776,7 +803,11 @@ class StripeGateway implements GatewayContract
     }
 
     /**
-     * Cria e confirma um PaymentIntent de cartão (síncrono: succeeded ou recusa na hora).
+     * Cria e confirma um PaymentIntent de cartão (síncrono: succeeded ou recusa na hora). Um
+     * cartão informado por token é salvo antes por `createCreditCard()`; se o emissor exigir
+     * autenticação do pagador para salvá-lo, a cobrança fora de sessão não tem como atendê-la
+     * e a fatura não é criada: `ChargingException` com `DeclineCode::AUTHENTICATION_REQUIRED`
+     * e o SetupIntent em `chargeResponse`.
      *
      * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
      * @param  string|null  $idempotencyKey
@@ -793,11 +824,23 @@ class StripeGateway implements GatewayContract
             if (empty($invoice->creditCard->customer)) {
                 $invoice->creditCard->customer = $invoice->customer;
             }
-            // a Stripe valida o cartão já no attach; a recusa nesse ponto é ChargingException
+            // a Stripe valida o cartão já no setup; a recusa nesse ponto é ChargingException
             $invoice->creditCard = $this->createCreditCard(
                 $invoice->creditCard,
                 self::derivedIdempotencyKey($idempotencyKey, 'card')
             );
+            if ($invoice->creditCard->requiresAction) {
+                $exception = ChargingException::declined(
+                    'stripe',
+                    DeclineCode::AUTHENTICATION_REQUIRED,
+                    'authentication_required',
+                    'O emissor exige autenticação do pagador para este cartão; salve-o com createCreditCard(),'
+                    . ' conclua a autenticação com confirmCreditCardSetup() e cobre pelo id do cartão salvo.'
+                );
+                $exception->chargeResponse = $invoice->creditCard->original?->toArray();
+
+                throw $exception;
+            }
         }
 
         $stripePaymentIntentData = $this->invoiceToStripeData($invoice);
@@ -2132,11 +2175,23 @@ class StripeGateway implements GatewayContract
     /**
      * @inheritDoc
      *
-     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do attach; as requisições
+     * O cartão é salvo por um SetupIntent criado e confirmado na mesma requisição
+     * (`usage: off_session`), que autentica o portador com o emissor quando ele exige. Em
+     * `succeeded` a Stripe anexa o PaymentMethod ao cliente e o cartão volta cobrável, com
+     * `id`. Em `requires_action` nada é anexado: o cartão volta com `requiresAction`
+     * verdadeiro, `setupId`, `clientSecret` (para `stripe.confirmCardSetup()` no navegador) e
+     * `actionUrl` quando `gatewayOptions['return_url']` foi informado (página hospedada de
+     * 3DS), com `id` nulo até `confirmCreditCardSetup()`. Recusa no setup é
+     * `ChargingException`. A descrição e a marcação de padrão vão em `metadata` do SetupIntent
+     * (mesclado ao `metadata` de `gatewayOptions`, quando há) e são aplicadas quando o setup
+     * conclui, nesta chamada ou na confirmação.
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` do SetupIntent; as requisições
      * secundárias usam chaves derivadas: `{chave}:payment_method` na conversão de token legado,
+     * `{chave}:attach` no anexo (só quando a Stripe devolve o PaymentMethod sem cliente),
      * `{chave}:metadata` na descrição e `{chave}:default` ao marcar como padrão.
      *
-     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     * @throws ChargingException|ModelAttributeValidationException|UnsupportedOperationException
      */
     public function createCreditCard(CreditCard $creditCard, ?string $idempotencyKey = null): CreditCard
     {
@@ -2153,37 +2208,206 @@ class StripeGateway implements GatewayContract
             );
         }
 
-        $stripePaymentMethod = $this->stripeRequest(function () use ($creditCard, $idempotencyKey) {
+        $stripeSetupIntent = $this->stripeRequest(function () use ($creditCard, $idempotencyKey) {
             $paymentMethodId = $this->resolvePaymentMethodId(
                 $creditCard->token,
                 self::derivedIdempotencyKey($idempotencyKey, 'payment_method')
             );
 
-            $stripePaymentMethod = $this->client->paymentMethods->attach(
-                $paymentMethodId,
-                ['customer' => $creditCard->customer->id],
+            $stripeSetupIntentData = [
+                'customer' => $creditCard->customer->id,
+                'payment_method' => $paymentMethodId,
+                'payment_method_types' => ['card'],
+                'usage' => 'off_session',
+                'confirm' => true,
+            ];
+            $stripeSetupIntentData = $this->mergeGatewayOptions($stripeSetupIntentData, $creditCard);
+            // o metadata do consumidor (gatewayOptions) convive com as chaves do setup
+            $metadata = array_merge($stripeSetupIntentData['metadata'] ?? [], self::cardSetupMetadata($creditCard));
+            if (!empty($metadata)) {
+                $stripeSetupIntentData['metadata'] = $metadata;
+            }
+
+            return $this->client->setupIntents->create(
+                $this->withExpand($stripeSetupIntentData, self::SETUP_INTENT_EXPAND),
                 self::stripeOptions($idempotencyKey)
             );
-
-            // o PaymentMethod da Stripe não tem campo de descrição — vai para metadata
-            if (!empty($creditCard->description)) {
-                $stripePaymentMethod = $this->client->paymentMethods->update(
-                    $stripePaymentMethod->id,
-                    ['metadata' => ['description' => $creditCard->description]],
-                    self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'metadata'))
-                );
-            }
-
-            if (!empty($creditCard->default)) {
-                $this->client->customers->update($creditCard->customer->id, [
-                    'invoice_settings' => ['default_payment_method' => $stripePaymentMethod->id],
-                ], self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'default')));
-            }
-
-            return $stripePaymentMethod;
         });
 
-        return $this->parseStripeCard($stripePaymentMethod, $creditCard);
+        return $this->finishCardSetup($stripeSetupIntent, $creditCard, $idempotencyKey);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Lê o SetupIntent e aplica o desfecho: `succeeded` anexa o cartão ao cliente quando a
+     * Stripe ainda não o fez, aplica a descrição e a marcação de padrão guardadas em `metadata`
+     * do setup e devolve o cartão cobrável; `requires_action` devolve o cartão ainda com
+     * `requiresAction` (o pagador não concluiu a autenticação); os demais estados lançam
+     * `ChargingException` com o `last_setup_error` quando há um. Um SetupIntent sem cliente
+     * (criado fora de `createCreditCard()`) é recusado com `ModelAttributeValidationException`
+     * antes de qualquer escrita. A chave de idempotência vai nas escritas secundárias,
+     * derivada: `{chave}:attach`, `{chave}:metadata` e `{chave}:default`.
+     *
+     * @throws ModelAttributeValidationException
+     */
+    public function confirmCreditCardSetup(string $setupId, ?string $idempotencyKey = null): CreditCard
+    {
+        $stripeSetupIntent = $this->stripeRequest(function () use ($setupId) {
+            return $this->client->setupIntents->retrieve($setupId, ['expand' => self::SETUP_INTENT_EXPAND]);
+        });
+
+        $customerId = is_object($stripeSetupIntent->customer)
+            ? $stripeSetupIntent->customer->id
+            : $stripeSetupIntent->customer;
+        if (empty($customerId)) {
+            throw ModelAttributeValidationException::invalid(
+                'CreditCard',
+                'setupId',
+                "SetupIntent [{$setupId}] has no customer; only a setup created by createCreditCard() can be confirmed as a saved card"
+            );
+        }
+
+        $creditCard = new CreditCard();
+        $creditCard->customer = new Customer();
+        $creditCard->customer->id = $customerId;
+
+        return $this->finishCardSetup($stripeSetupIntent, $creditCard, $idempotencyKey);
+    }
+
+    /**
+     * `metadata` do SetupIntent com o que aplicar ao cartão quando o setup conclui: a
+     * descrição (o PaymentMethod da Stripe não tem campo de descrição) e a marcação de padrão.
+     * Vazio quando o model não informa nenhum dos dois.
+     *
+     * @param  \Potelo\MultiPayment\Models\CreditCard  $creditCard
+     * @return array<string, string>
+     */
+    private static function cardSetupMetadata(CreditCard $creditCard): array
+    {
+        $metadata = [];
+        if (!empty($creditCard->description)) {
+            $metadata[self::SETUP_METADATA_DESCRIPTION] = $creditCard->description;
+        }
+        if (!empty($creditCard->default)) {
+            $metadata[self::SETUP_METADATA_DEFAULT] = '1';
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Converte o SetupIntent, com `payment_method` expandido, no `CreditCard` que a operação
+     * devolve. `succeeded`: anexa o PaymentMethod ao cliente quando ele voltou sem cliente (a
+     * Stripe anexa ao confirmar um SetupIntent com cliente, e este anexo só cobre a resposta
+     * em que isso não aconteceu), grava a descrição em `metadata` do PaymentMethod e o marca
+     * como padrão do cliente (`default` verdadeiro no model), conforme `metadata` do setup.
+     * `requires_action`: cartão com
+     * `requiresAction`, `setupId`, `clientSecret`, `actionUrl` (quando `next_action` é
+     * `redirect_to_url`), os dados do cartão para exibição e `id` nulo. Os demais estados
+     * (`requires_payment_method` depois de uma autenticação que falhou, `canceled`,
+     * `processing`, `requires_confirmation`) lançam `ChargingException`.
+     *
+     * @param  \Stripe\SetupIntent  $stripeSetupIntent
+     * @param  \Potelo\MultiPayment\Models\CreditCard  $creditCard  model a preencher, com `customer->id`
+     * @param  string|null  $idempotencyKey
+     * @return \Potelo\MultiPayment\Models\CreditCard
+     * @throws ChargingException|GatewayException|GatewayNotAvailableException
+     */
+    private function finishCardSetup(StripeSetupIntent $stripeSetupIntent, CreditCard $creditCard, ?string $idempotencyKey): CreditCard
+    {
+        $stripePaymentMethod = is_object($stripeSetupIntent->payment_method) ? $stripeSetupIntent->payment_method : null;
+        $metadata = !empty($stripeSetupIntent->metadata) ? $stripeSetupIntent->metadata->toArray() : [];
+
+        if ($stripeSetupIntent->status === StripeSetupIntent::STATUS_SUCCEEDED) {
+            $stripePaymentMethod = $this->stripeRequest(function () use ($stripeSetupIntent, $stripePaymentMethod, $metadata, $creditCard, $idempotencyKey) {
+                $paymentMethodId = $stripePaymentMethod?->id ?? $stripeSetupIntent->payment_method;
+                if (empty($stripePaymentMethod?->customer)) {
+                    $stripePaymentMethod = $this->client->paymentMethods->attach(
+                        $paymentMethodId,
+                        ['customer' => $creditCard->customer->id],
+                        self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'attach'))
+                    );
+                }
+
+                if (!empty($metadata[self::SETUP_METADATA_DESCRIPTION])) {
+                    $stripePaymentMethod = $this->client->paymentMethods->update(
+                        $paymentMethodId,
+                        ['metadata' => [self::SETUP_METADATA_DESCRIPTION => $metadata[self::SETUP_METADATA_DESCRIPTION]]],
+                        self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'metadata'))
+                    );
+                }
+
+                if (!empty($metadata[self::SETUP_METADATA_DEFAULT])) {
+                    $this->client->customers->update($creditCard->customer->id, [
+                        'invoice_settings' => ['default_payment_method' => $paymentMethodId],
+                    ], self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'default')));
+                }
+
+                return $stripePaymentMethod;
+            });
+
+            $creditCard = $this->parseStripeCard($stripePaymentMethod, $creditCard);
+            if (!empty($metadata[self::SETUP_METADATA_DEFAULT])) {
+                $creditCard->default = true;
+            }
+            $creditCard->setupId = $stripeSetupIntent->id;
+            $creditCard->requiresAction = false;
+            $creditCard->actionUrl = null;
+            $creditCard->clientSecret = null;
+
+            return $creditCard;
+        }
+
+        if ($stripeSetupIntent->status === StripeSetupIntent::STATUS_REQUIRES_ACTION) {
+            $this->fillCardFields($creditCard, $stripePaymentMethod?->card ?? null);
+            $creditCard->id = null;
+            $creditCard->description = $metadata[self::SETUP_METADATA_DESCRIPTION] ?? $creditCard->description;
+            $creditCard->requiresAction = true;
+            $creditCard->setupId = $stripeSetupIntent->id;
+            $creditCard->clientSecret = $stripeSetupIntent->client_secret;
+            $creditCard->actionUrl = $stripeSetupIntent->next_action->redirect_to_url->url ?? null;
+            $creditCard->gateway = 'stripe';
+            $creditCard->original = $stripeSetupIntent;
+            $creditCard->createdAt = Carbon::createFromTimestamp($stripeSetupIntent->created);
+
+            return $creditCard;
+        }
+
+        throw $this->cardSetupFailed($stripeSetupIntent);
+    }
+
+    /**
+     * `ChargingException` de um SetupIntent que não chegou a `succeeded` nem parou em
+     * `requires_action`: com `last_setup_error`, a recusa segue a tradução normal do código
+     * (`setup_intent_authentication_failure` vira `DeclineCode::AUTHENTICATION_REQUIRED`); sem
+     * ele (setup cancelado, por exemplo), `DeclineCode::UNKNOWN` com `cancellation_reason` ou
+     * o status em `gatewayCode`. O SetupIntent vai em `chargeResponse` nos dois casos.
+     *
+     * @param  \Stripe\SetupIntent  $stripeSetupIntent
+     * @return ChargingException
+     */
+    private function cardSetupFailed(StripeSetupIntent $stripeSetupIntent): ChargingException
+    {
+        $error = $stripeSetupIntent->last_setup_error ?? null;
+        if (is_object($error)) {
+            $exception = $this->declinedFromStripeError(
+                $error,
+                (string) ($error->message ?? "SetupIntent {$stripeSetupIntent->id} em {$stripeSetupIntent->status}"),
+                null,
+                null
+            );
+        } else {
+            $exception = ChargingException::declined(
+                'stripe',
+                DeclineCode::UNKNOWN,
+                $stripeSetupIntent->cancellation_reason ?? $stripeSetupIntent->status,
+                "SetupIntent {$stripeSetupIntent->id} em {$stripeSetupIntent->status}; o cartão não foi salvo."
+            );
+        }
+        $exception->chargeResponse = $stripeSetupIntent->toArray();
+
+        return $exception;
     }
 
     /**
@@ -2280,14 +2504,8 @@ class StripeGateway implements GatewayContract
             $creditCard = new CreditCard();
         }
 
-        $card = isset($stripePaymentMethod->card) ? $stripePaymentMethod->card : null;
         $creditCard->id = $stripePaymentMethod->id;
-        $creditCard->brand = $card->brand ?? null;
-        $creditCard->lastDigits = $card->last4 ?? null;
-        $creditCard->month = isset($card->exp_month)
-            ? str_pad((string) $card->exp_month, 2, '0', STR_PAD_LEFT)
-            : null;
-        $creditCard->year = isset($card->exp_year) ? (string) $card->exp_year : null;
+        $this->fillCardFields($creditCard, isset($stripePaymentMethod->card) ? $stripePaymentMethod->card : null);
 
         $metadata = !empty($stripePaymentMethod->metadata) ? $stripePaymentMethod->metadata->toArray() : [];
         $creditCard->description = $metadata['description'] ?? $creditCard->description;
@@ -2303,6 +2521,24 @@ class StripeGateway implements GatewayContract
         $creditCard->createdAt = Carbon::createFromTimestamp($stripePaymentMethod->created);
 
         return $creditCard;
+    }
+
+    /**
+     * Preenche bandeira, últimos dígitos e validade a partir do objeto `card` de um
+     * PaymentMethod da Stripe; nulos quando o objeto não veio.
+     *
+     * @param  \Potelo\MultiPayment\Models\CreditCard  $creditCard
+     * @param  object|null  $card
+     * @return void
+     */
+    private function fillCardFields(CreditCard $creditCard, ?object $card): void
+    {
+        $creditCard->brand = $card->brand ?? null;
+        $creditCard->lastDigits = $card->last4 ?? null;
+        $creditCard->month = isset($card->exp_month)
+            ? str_pad((string) $card->exp_month, 2, '0', STR_PAD_LEFT)
+            : null;
+        $creditCard->year = isset($card->exp_year) ? (string) $card->exp_year : null;
     }
 
     /**

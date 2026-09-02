@@ -171,6 +171,38 @@ class ModelFillTest extends TestCase
         $this->assertTrue($card->default);
     }
 
+    /**
+     * O cartão que aguarda autenticação serializa `requires_action`, `setup_id`,
+     * `client_secret` e `action_url`, e volta igual por `fill()`; sem autenticação pendente,
+     * `requires_action` (falso) fica fora do array.
+     */
+    public function testCreditCardPendingAuthenticationRoundTripsThroughToArrayAndFill(): void
+    {
+        $card = new CreditCard();
+        $card->requiresAction = true;
+        $card->setupId = 'seti_1';
+        $card->clientSecret = 'seti_1_secret';
+        $card->actionUrl = 'https://exemplo.com/3ds';
+
+        $array = $card->toArray();
+        $this->assertSame(
+            ['requires_action' => true, 'action_url' => 'https://exemplo.com/3ds', 'client_secret' => 'seti_1_secret', 'setup_id' => 'seti_1'],
+            array_intersect_key($array, array_flip(['requires_action', 'action_url', 'client_secret', 'setup_id']))
+        );
+
+        $copy = new CreditCard();
+        $copy->fill($array);
+        $this->assertTrue($copy->requiresAction);
+        $this->assertSame('seti_1', $copy->setupId);
+        $this->assertSame('seti_1_secret', $copy->clientSecret);
+        $this->assertSame('https://exemplo.com/3ds', $copy->actionUrl);
+
+        $saved = new CreditCard();
+        $saved->id = 'pm_1';
+        $this->assertArrayNotHasKey('requires_action', $saved->toArray());
+        $this->assertFalse($saved->requiresAction);
+    }
+
     public function testFillableKeysAreTheSnakeCasePropertiesIncludingEnums(): void
     {
         $this->assertSame(['description', 'price', 'quantity', 'gateway_options'], InvoiceItem::fillableKeys());
@@ -181,6 +213,9 @@ class ModelFillTest extends TestCase
         }
         // o nome antigo é alias, fora da lista, como `gateway_adicional_options`
         $this->assertNotContains('expires_at', $keys);
+        foreach (['requires_action', 'action_url', 'client_secret', 'setup_id'] as $key) {
+            $this->assertContains($key, CreditCard::fillableKeys());
+        }
         foreach (['payment_method', 'credit_card', 'trial_days', 'trial_ends_at'] as $key) {
             $this->assertContains($key, Subscription::fillableKeys());
         }

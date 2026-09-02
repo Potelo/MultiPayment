@@ -112,7 +112,9 @@ class StripeGatewayTest extends TestCase
             $this->assertEquals('card_declined', $exception->reason);
             $this->assertSame(DeclineCode::GENERIC, $exception->declineCode);
             $this->assertSame('generic_decline', $exception->gatewayCode);
-            $this->assertFalse($exception->retryable);
+            // a recusa acontece no SetupIntent que salva o token, onde a Stripe envia
+            // advice_code try_again_later para este cartão de teste
+            $this->assertTrue($exception->retryable);
             $this->assertNotEmpty($exception->chargeResponse);
         }
     }
@@ -165,17 +167,23 @@ class StripeGatewayTest extends TestCase
             ->setCustomerId($customer->id)
             ->setToken('pm_card_visa')
             ->setDescription('cartão de teste')
+            ->setAsDefault()
             ->create();
 
         $this->assertNotNull($creditCard->id);
+        $this->assertFalse($creditCard->requiresAction);
+        $this->assertStringStartsWith('seti_', $creditCard->setupId);
         $this->assertEquals('visa', $creditCard->brand);
         $this->assertEquals('4242', $creditCard->lastDigits);
         $this->assertEquals('cartão de teste', $creditCard->description);
         $this->assertEquals($gateway, $creditCard->gateway);
 
+        // a descrição e a marcação de padrão viajam em metadata do SetupIntent e são aplicadas no setup concluído
         $cardFetched = MultiPayment::setGateway($gateway)->getCard($customer->id, $creditCard->id);
         $this->assertEquals($creditCard->id, $cardFetched->id);
         $this->assertEquals('4242', $cardFetched->lastDigits);
+        $this->assertEquals('cartão de teste', $cardFetched->description);
+        $this->assertEquals($creditCard->id, MultiPayment::setGateway($gateway)->getCustomer($customer->id)->defaultCard->id);
 
         $customerUpdated = MultiPayment::setGateway($gateway)->setDefaultCard($customer->id, $creditCard->id);
         $this->assertEquals($creditCard->id, $customerUpdated->defaultCard->id);
@@ -185,6 +193,42 @@ class StripeGatewayTest extends TestCase
         // após o detach o PaymentMethod não pertence mais ao customer
         $this->expectException(UnsupportedOperationException::class);
         MultiPayment::setGateway($gateway)->getCard($customer->id, $creditCard->id);
+    }
+
+    /**
+     * Cartão que exige autenticação do portador (`pm_card_authenticationRequired`) volta com
+     * `requiresAction` e sem id, e a confirmação antes de o pagador autenticar devolve o mesmo
+     * estado; nada é anexado ao cliente.
+     *
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldReturnRequiresActionForACardThatNeedsAuthentication($gateway)
+    {
+        $customer = $this->createCustomer($gateway, self::customerWithoutAddress());
+
+        $creditCard = MultiPayment::setGateway($gateway)->newCreditCard()
+            ->setCustomerId($customer->id)
+            ->setToken('pm_card_authenticationRequired')
+            ->setDescription('cartão com autenticação')
+            ->create();
+
+        $this->assertTrue($creditCard->requiresAction);
+        $this->assertNull($creditCard->id);
+        $this->assertStringStartsWith('seti_', $creditCard->setupId);
+        $this->assertNotEmpty($creditCard->clientSecret);
+        $this->assertNull($creditCard->actionUrl, 'sem return_url a autenticação é pelo Stripe.js');
+        $this->assertEquals('3184', $creditCard->lastDigits);
+        $this->assertEquals('cartão com autenticação', $creditCard->description);
+
+        $confirmed = MultiPayment::setGateway($gateway)->confirmCreditCardSetup($creditCard->setupId);
+        $this->assertTrue($confirmed->requiresAction);
+        $this->assertNull($confirmed->id);
+        $this->assertEquals($creditCard->setupId, $confirmed->setupId);
+        $this->assertEquals($customer->id, $confirmed->customer->id);
+
+        $attached = $this->stripeClient()->paymentMethods->all(['customer' => $customer->id, 'type' => 'card']);
+        $this->assertCount(0, $attached->data, 'o cartão só é anexado depois da autenticação');
     }
 
     /**

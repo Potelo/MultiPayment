@@ -30,6 +30,13 @@ enum Capability: string
      */
     case RAW_CARD_DATA = 'raw_card_data';
 
+    /**
+     * Autenticação do portador com o emissor (3DS) ao salvar o cartão: cartão que exige ação
+     * do pagador volta com `CreditCard::$requiresAction` verdadeiro e `id` nulo, e
+     * `confirmCreditCardSetup()` conclui o salvamento depois da autenticação.
+     */
+    case CARD_SETUP_AUTHENTICATION = 'card_setup_authentication';
+
     /** Parcelamento da cobrança no cartão de crédito. */
     case INSTALLMENTS = 'installments';
 

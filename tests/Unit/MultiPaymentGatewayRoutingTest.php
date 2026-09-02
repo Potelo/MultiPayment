@@ -40,6 +40,34 @@ class MultiPaymentGatewayRoutingTest extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * O cartão devolvido com `requiresAction` traz `gateway` preenchido, então
+     * `confirmSetup()` sem argumento resolve o mesmo gateway pela configuração.
+     */
+    public function testConfirmSetupOnTheReturnedCardResolvesTheGatewayFromTheModel(): void
+    {
+        $requiresAction = json_decode(file_get_contents(__DIR__ . '/../fixtures/stripe/setup_intents/requires_action.json'), true);
+        $httpClient = RecordingStripeHttpClient::withResponses([$requiresAction, $requiresAction]);
+
+        $card = (new MultiPayment('stripe'))->newCreditCard()
+            ->setCustomerId('cus_VBjzroZKS8d5LY')
+            ->setToken('pm_fake123')
+            ->create();
+        $this->assertTrue($card->requiresAction);
+        $this->assertSame('stripe', $card->gateway);
+
+        $confirmed = $card->confirmSetup();
+
+        $paths = array_map(static fn ($call) => $call[0] . ' ' . parse_url($call[1], PHP_URL_PATH), $httpClient->calls);
+        $this->assertSame([
+            'post /v1/setup_intents',
+            'get /v1/setup_intents/seti_1UBMViPjx0CusuMrBNDQEzqv',
+        ], $paths);
+        $this->assertSame($card, $confirmed);
+        $this->assertTrue($card->requiresAction);
+        $this->assertSame('stripe', $card->gateway);
+    }
+
     public function testDuplicateInvoiceUsesTheSelectedGatewayInsteadOfTheDefault(): void
     {
         $pendingPix = [

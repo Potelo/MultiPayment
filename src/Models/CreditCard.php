@@ -3,6 +3,8 @@
 namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
+use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -75,6 +77,41 @@ class CreditCard extends Model
      * @var bool|null
      */
     public ?bool $default = null;
+
+    /**
+     * Verdadeiro quando o gateway exige ação do pagador (autenticação com o emissor) antes de
+     * o cartão ficar cobrável: `id` fica nulo, `setupId` e `clientSecret` (e `actionUrl`,
+     * quando há) dizem como concluir, e `confirmCreditCardSetup()` termina o salvamento.
+     * Falso por padrão e sempre falso na Iugu.
+     *
+     * @var bool|null
+     */
+    public ?bool $requiresAction = false;
+
+    /**
+     * Página hospedada pelo gateway para o pagador autenticar o cartão, quando ele a oferece
+     * (no Stripe, só com `return_url` em `gatewayOptions`). Nula quando a autenticação é feita
+     * pelo SDK do gateway no navegador, com `clientSecret`.
+     *
+     * @var string|null
+     */
+    public ?string $actionUrl = null;
+
+    /**
+     * Segredo do setup para o SDK do gateway no navegador concluir a autenticação (no Stripe,
+     * `stripe.confirmCardSetup(clientSecret)`). Preenchido só quando `requiresAction`.
+     *
+     * @var string|null
+     */
+    public ?string $clientSecret = null;
+
+    /**
+     * Id do setup que salva o cartão no gateway (SetupIntent `seti_` no Stripe), argumento de
+     * `confirmCreditCardSetup()`. Nulo na Iugu.
+     *
+     * @var string|null
+     */
+    public ?string $setupId = null;
 
     /**
      * @var string|null
@@ -171,6 +208,40 @@ class CreditCard extends Model
                 throw ModelAttributeValidationException::invalid($this->getClassName(), 'month and year', 'CreditCard month and year must be in the future.');
             }
         }
+    }
+
+    /**
+     * Conclui o salvamento deste cartão depois que o pagador autenticou, pelo `setupId` que
+     * `create()` devolveu com `requiresAction`. Atualiza este model com o que o gateway
+     * devolveu (cartão cobrável, ou ainda com `requiresAction`) e o devolve; o `customer` já
+     * preenchido é mantido. Recusa do gateway é `CardDeclinedException` (ver
+     * `CreditCardContract::confirmCreditCardSetup()`).
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return $this
+     * @throws ModelAttributeValidationException  `setupId` vazio
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\CardDeclinedException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
+     */
+    public function confirmSetup(GatewayContract|string|null $gateway = null, ?string $idempotencyKey = null): static
+    {
+        if (empty($this->setupId)) {
+            throw ModelAttributeValidationException::required($this->getClassName(), 'setupId');
+        }
+        $gateway = ConfigurationHelper::resolveGateway($gateway ?? $this->gateway);
+
+        $confirmed = $gateway->confirmCreditCardSetup($this->setupId, $idempotencyKey);
+        foreach (get_object_vars($confirmed) as $property => $value) {
+            if ($property === 'customer' && !empty($this->customer)) {
+                continue;
+            }
+            $this->{$property} = $value;
+        }
+
+        return $this;
     }
 
     /**

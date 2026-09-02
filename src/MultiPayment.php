@@ -506,6 +506,22 @@ class MultiPayment
     }
 
     /**
+     * Conclui o salvamento de um cartão que voltou de `newCreditCard()->create()` com
+     * `requiresAction`, depois que o pagador autenticou (ver
+     * `CreditCardContract::confirmCreditCardSetup()`).
+     *
+     * @param  string  $setupId  `CreditCard::$setupId`
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return CreditCard
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     * @throws \Potelo\MultiPayment\Exceptions\CardDeclinedException
+     */
+    public function confirmCreditCardSetup(string $setupId, ?string $idempotencyKey = null): CreditCard
+    {
+        return $this->gateway->confirmCreditCardSetup($setupId, $idempotencyKey);
+    }
+
+    /**
      * Delete a credit card
      *
      * @param  string  $customerId

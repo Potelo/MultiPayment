@@ -43,6 +43,21 @@ Montadas sobre `open_requires_payment_method.json`, porque a sandbox não produz
 `needs_response.json` é o GET de `/v1/disputes?charge=` do charge disputado;
 `lost.json` é o mesmo com o status trocado.
 
+## `setup_intents/`
+
+Gravadas na sandbox em 2026-09-02, com `expand[]=payment_method` e o SetupIntent criado e
+confirmado na mesma requisição (`usage: off_session`, `payment_method_types: ['card']`), como
+o driver faz em `createCreditCard()`:
+
+| Arquivo | Como foi produzida |
+|---|---|
+| `succeeded.json` | `pm_card_visa`, com `metadata` de descrição e de padrão; o PaymentMethod expandido já vem com `customer` (a Stripe anexa ao confirmar) |
+| `requires_action.json` | `pm_card_authenticationRequired`, sem `return_url`: `next_action` do tipo `use_stripe_sdk` (o objeto interno foi reduzido a alguns campos; o certificado do servidor de diretório saiu) e PaymentMethod sem `customer` |
+| `requires_action_redirect.json` | idem, com `return_url`: `next_action` do tipo `redirect_to_url`, com a chave publicável trocada por placeholder na URL |
+| `card_declined.json` | corpo da resposta 402 de `pm_card_chargeDeclined` (`card_declined`, `generic_decline`, `advice_code` `try_again_later`), com o SetupIntent em `requires_payment_method` dentro do erro |
+
+O `client_secret` de todas foi substituído por um placeholder.
+
 ## `subscriptions/`
 
 Montadas a partir do objeto Subscription documentado para a API `2026-07-29.dahlia` (a

@@ -1,0 +1,165 @@
+{
+  "error": {
+    "advice_code": "try_again_later",
+    "code": "card_declined",
+    "decline_code": "generic_decline",
+    "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+    "message": "Your card was declined.",
+    "network_decline_code": "01",
+    "payment_method": {
+      "id": "pm_1UBMVkPjx0CusuMrbXKNAWgd",
+      "object": "payment_method",
+      "allow_redisplay": "unspecified",
+      "billing_details": {
+        "address": {
+          "city": null,
+          "country": null,
+          "line1": null,
+          "line2": null,
+          "postal_code": null,
+          "state": null
+        },
+        "email": null,
+        "name": null,
+        "phone": null,
+        "tax_id": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "US",
+        "display_brand": "visa",
+        "exp_month": 9,
+        "exp_year": 2027,
+        "fingerprint": "mO7AbKfepAraPY63",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "0002",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "regulated_status": "unregulated",
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1788387604,
+      "customer": null,
+      "customer_account": null,
+      "livemode": false,
+      "metadata": [],
+      "shared_payment_granted_token": null,
+      "type": "card"
+    },
+    "setup_intent": {
+      "id": "seti_1UBMVkPjx0CusuMrFSlrDDSN",
+      "object": "setup_intent",
+      "allowed_payment_method_types": null,
+      "application": null,
+      "automatic_payment_methods": null,
+      "cancellation_reason": null,
+      "client_secret": "seti_1UBMVkPjx0CusuMrFSlrDDSN_secret_PLACEHOLDER",
+      "created": 1788387604,
+      "customer": "cus_VBjzroZKS8d5LY",
+      "customer_account": null,
+      "description": null,
+      "excluded_payment_method_types": null,
+      "flow_directions": null,
+      "last_setup_error": {
+        "advice_code": "try_again_later",
+        "code": "card_declined",
+        "decline_code": "generic_decline",
+        "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+        "message": "Your card was declined.",
+        "network_decline_code": "01",
+        "payment_method": {
+          "id": "pm_1UBMVkPjx0CusuMrbXKNAWgd",
+          "object": "payment_method",
+          "allow_redisplay": "unspecified",
+          "billing_details": {
+            "address": {
+              "city": null,
+              "country": null,
+              "line1": null,
+              "line2": null,
+              "postal_code": null,
+              "state": null
+            },
+            "email": null,
+            "name": null,
+            "phone": null,
+            "tax_id": null
+          },
+          "card": {
+            "brand": "visa",
+            "checks": {
+              "address_line1_check": null,
+              "address_postal_code_check": null,
+              "cvc_check": "pass"
+            },
+            "country": "US",
+            "display_brand": "visa",
+            "exp_month": 9,
+            "exp_year": 2027,
+            "fingerprint": "mO7AbKfepAraPY63",
+            "funding": "credit",
+            "generated_from": null,
+            "last4": "0002",
+            "networks": {
+              "available": [
+                "visa"
+              ],
+              "preferred": null
+            },
+            "regulated_status": "unregulated",
+            "three_d_secure_usage": {
+              "supported": true
+            },
+            "wallet": null
+          },
+          "created": 1788387604,
+          "customer": null,
+          "customer_account": null,
+          "livemode": false,
+          "metadata": [],
+          "shared_payment_granted_token": null,
+          "type": "card"
+        },
+        "type": "card_error"
+      },
+      "latest_attempt": "setatt_1UBMVkPjx0CusuMrpt6Apm5Y",
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "mandate": null,
+      "metadata": [],
+      "next_action": null,
+      "on_behalf_of": null,
+      "payment_method": null,
+      "payment_method_configuration_details": null,
+      "payment_method_options": {
+        "card": {
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "single_use_mandate": null,
+      "status": "requires_payment_method",
+      "usage": "off_session"
+    },
+    "type": "card_error"
+  }
+}

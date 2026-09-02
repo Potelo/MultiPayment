@@ -1,0 +1,98 @@
+{
+  "id": "seti_1UBMVjPjx0CusuMr53vgIbuw",
+  "object": "setup_intent",
+  "allowed_payment_method_types": null,
+  "application": null,
+  "automatic_payment_methods": null,
+  "cancellation_reason": null,
+  "client_secret": "seti_1UBMVjPjx0CusuMr53vgIbuw_secret_PLACEHOLDER",
+  "created": 1788387603,
+  "customer": "cus_VBjzroZKS8d5LY",
+  "customer_account": null,
+  "description": null,
+  "excluded_payment_method_types": null,
+  "flow_directions": null,
+  "last_setup_error": null,
+  "latest_attempt": "setatt_1UBMVjPjx0CusuMrI3AVs7Hx",
+  "livemode": false,
+  "managed_payments": {
+    "enabled": false
+  },
+  "mandate": null,
+  "metadata": [],
+  "next_action": {
+    "redirect_to_url": {
+      "return_url": "https://exemplo.com/retorno",
+      "url": "https://hooks.stripe.com/3d_secure_2/hosted?merchant=acct_1TzKkTPjx0CusuMr&publishable_key=pk_test_PLACEHOLDER&setup_intent=seti_1UBMVjPjx0CusuMr53vgIbuw&setup_intent_client_secret=seti_1UBMVjPjx0CusuMr53vgIbuw_secret_PLACEHOLDER&source=setatt_1UBMVjPjx0CusuMrI3AVs7Hx"
+    },
+    "type": "redirect_to_url"
+  },
+  "on_behalf_of": null,
+  "payment_method": {
+    "id": "pm_1UBMVjPjx0CusuMr6jGTU0hn",
+    "object": "payment_method",
+    "allow_redisplay": "unspecified",
+    "billing_details": {
+      "address": {
+        "city": null,
+        "country": null,
+        "line1": null,
+        "line2": null,
+        "postal_code": null,
+        "state": null
+      },
+      "email": null,
+      "name": null,
+      "phone": null,
+      "tax_id": null
+    },
+    "card": {
+      "brand": "visa",
+      "checks": {
+        "address_line1_check": null,
+        "address_postal_code_check": null,
+        "cvc_check": "unchecked"
+      },
+      "country": "DE",
+      "display_brand": "visa",
+      "exp_month": 9,
+      "exp_year": 2027,
+      "fingerprint": "qePYzmiPHESInjMG",
+      "funding": "credit",
+      "generated_from": null,
+      "last4": "3184",
+      "networks": {
+        "available": [
+          "visa"
+        ],
+        "preferred": null
+      },
+      "regulated_status": "unregulated",
+      "three_d_secure_usage": {
+        "supported": true
+      },
+      "wallet": null
+    },
+    "created": 1788387603,
+    "customer": null,
+    "customer_account": null,
+    "livemode": false,
+    "metadata": [],
+    "shared_payment_granted_token": null,
+    "type": "card"
+  },
+  "payment_method_configuration_details": null,
+  "payment_method_options": {
+    "card": {
+      "mandate_options": null,
+      "network": null,
+      "request_three_d_secure": "automatic"
+    }
+  },
+  "payment_method_types": [
+    "card"
+  ],
+  "single_use_mandate": null,
+  "status": "requires_action",
+  "usage": "off_session"
+}

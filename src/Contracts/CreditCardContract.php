@@ -23,6 +23,24 @@ interface CreditCardContract
     public function createCreditCard(CreditCard $creditCard, ?string $idempotencyKey = null): CreditCard;
 
     /**
+     * Conclui o salvamento de um cartão que `createCreditCard()` devolveu com `requiresAction`
+     * verdadeiro, depois que o pagador autenticou com o emissor. Devolve o cartão cobrável
+     * (`id` preenchido) quando a autenticação foi concluída, o cartão ainda com `requiresAction`
+     * quando o pagador não a concluiu, e lança `CardDeclinedException` quando o gateway
+     * recusou o cartão ou o setup foi cancelado. Gateway sem `CARD_SETUP_AUTHENTICATION` lança
+     * `UnsupportedOperationException` antes de qualquer requisição.
+     *
+     * @param  string  $setupId  `CreditCard::$setupId` devolvido por `createCreditCard()`
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     *
+     * @return CreditCard
+     * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\CardDeclinedException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
+     */
+    public function confirmCreditCardSetup(string $setupId, ?string $idempotencyKey = null): CreditCard;
+
+    /**
      * Get a credit card by its ID
      *
      * @throws GatewayException|GatewayNotAvailableException

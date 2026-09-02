@@ -41,6 +41,8 @@ class DeclineCodesTest extends TestCase
             'merchant_blacklist' => ['merchant_blacklist', DeclineCode::FRAUD_SUSPECTED],
             'authentication_required' => ['authentication_required', DeclineCode::AUTHENTICATION_REQUIRED],
             'authentication_not_handled' => ['authentication_not_handled', DeclineCode::AUTHENTICATION_REQUIRED],
+            'setup_intent_authentication_failure' => ['setup_intent_authentication_failure', DeclineCode::AUTHENTICATION_REQUIRED],
+            'payment_intent_authentication_failure' => ['payment_intent_authentication_failure', DeclineCode::AUTHENTICATION_REQUIRED],
             'card_not_supported' => ['card_not_supported', DeclineCode::BRAND_NOT_SUPPORTED],
             'currency_not_supported' => ['currency_not_supported', DeclineCode::BRAND_NOT_SUPPORTED],
             'do_not_honor' => ['do_not_honor', DeclineCode::DO_NOT_HONOR],

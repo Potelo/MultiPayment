@@ -1,0 +1,95 @@
+{
+  "id": "seti_1UBMVgPjx0CusuMrtgTZPbBG",
+  "object": "setup_intent",
+  "allowed_payment_method_types": null,
+  "application": null,
+  "automatic_payment_methods": null,
+  "cancellation_reason": null,
+  "client_secret": "seti_1UBMVgPjx0CusuMrtgTZPbBG_secret_PLACEHOLDER",
+  "created": 1788387600,
+  "customer": "cus_VBjzroZKS8d5LY",
+  "customer_account": null,
+  "description": null,
+  "excluded_payment_method_types": null,
+  "flow_directions": null,
+  "last_setup_error": null,
+  "latest_attempt": "setatt_1UBMVgPjx0CusuMry4kdz5w8",
+  "livemode": false,
+  "managed_payments": {
+    "enabled": false
+  },
+  "mandate": null,
+  "metadata": {
+    "description": "cartão de teste",
+    "set_as_default": "1"
+  },
+  "next_action": null,
+  "on_behalf_of": null,
+  "payment_method": {
+    "id": "pm_1UBMVgPjx0CusuMrtGi8Aruq",
+    "object": "payment_method",
+    "allow_redisplay": "unspecified",
+    "billing_details": {
+      "address": {
+        "city": null,
+        "country": null,
+        "line1": null,
+        "line2": null,
+        "postal_code": null,
+        "state": null
+      },
+      "email": null,
+      "name": null,
+      "phone": null,
+      "tax_id": null
+    },
+    "card": {
+      "brand": "visa",
+      "checks": {
+        "address_line1_check": null,
+        "address_postal_code_check": null,
+        "cvc_check": "pass"
+      },
+      "country": "US",
+      "display_brand": "visa",
+      "exp_month": 9,
+      "exp_year": 2027,
+      "fingerprint": "BBrG8ENEZUZi7U6k",
+      "funding": "credit",
+      "generated_from": null,
+      "last4": "4242",
+      "networks": {
+        "available": [
+          "visa"
+        ],
+        "preferred": null
+      },
+      "regulated_status": "unregulated",
+      "three_d_secure_usage": {
+        "supported": true
+      },
+      "wallet": null
+    },
+    "created": 1788387600,
+    "customer": "cus_VBjzroZKS8d5LY",
+    "customer_account": null,
+    "livemode": false,
+    "metadata": [],
+    "shared_payment_granted_token": null,
+    "type": "card"
+  },
+  "payment_method_configuration_details": null,
+  "payment_method_options": {
+    "card": {
+      "mandate_options": null,
+      "network": null,
+      "request_three_d_secure": "automatic"
+    }
+  },
+  "payment_method_types": [
+    "card"
+  ],
+  "single_use_mandate": null,
+  "status": "succeeded",
+  "usage": "off_session"
+}
