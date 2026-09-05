@@ -60,8 +60,9 @@ class Subscription extends Model
     /**
      * Além de `SUBSCRIPTIONS`, a assinatura precisa da capability de cada método de
      * `resolvedPaymentMethods()` (e de `MULTIPLE_PAYMENT_METHODS` quando há mais de um), de
-     * `RAW_CARD_DATA` quando o cartão vem com os dados crus (sem `id` nem `token`) e de
-     * `NATIVE_COUPONS` quando algum desconto é percentual ou limitado a mais de um ciclo.
+     * `RAW_CARD_DATA` quando o cartão vem com os dados crus (sem `id` nem `token`), de
+     * `PERCENT_DISCOUNT` quando algum desconto é percentual e de `COUPONS` quando algum
+     * desconto é limitado a mais de um ciclo ou tem data de validade.
      *
      * @return Capability[]
      * @throws ModelAttributeValidationException  método de pagamento fora de `PaymentMethod::selectable()`
@@ -82,12 +83,15 @@ class Subscription extends Model
         }
 
         foreach ($this->discounts ?? [] as $discount) {
-            if (
-                $discount instanceof SubscriptionDiscount
-                && (!is_null($discount->percentOff) || (!is_null($discount->cycles) && $discount->cycles > 1))
-            ) {
-                $capabilities[] = Capability::NATIVE_COUPONS;
-                break;
+            if (!$discount instanceof SubscriptionDiscount) {
+                continue;
+            }
+            if (!is_null($discount->percentOff) && !in_array(Capability::PERCENT_DISCOUNT, $capabilities, true)) {
+                $capabilities[] = Capability::PERCENT_DISCOUNT;
+            }
+            $hasTerm = !empty($discount->validUntil) || (!is_null($discount->cycles) && $discount->cycles > 1);
+            if ($hasTerm && !in_array(Capability::COUPONS, $capabilities, true)) {
+                $capabilities[] = Capability::COUPONS;
             }
         }
 
@@ -179,8 +183,10 @@ class Subscription extends Model
     public ?Carbon $nextBillingAt = null;
 
     /**
-     * Diz se há cancelamento agendado para o fim do período corrente. Preenchido na leitura
-     * por gateway que oferece o recurso; na Iugu fica nulo.
+     * Diz se há cancelamento agendado para o fim do período corrente. No Stripe vem do
+     * gateway; na Iugu vem da marca `mp_cancel_at_period_end` que `cancel(atPeriodEnd: true)`
+     * grava em `custom_variables`, aplicada na data pelo comando
+     * `multipayment:sync-subscriptions`.
      *
      * @var bool|null
      */
@@ -586,8 +592,9 @@ class Subscription extends Model
     }
 
     /**
-     * Volta a cobrar uma assinatura suspensa; na Iugu, também uma cancelada por `cancel()` (a
-     * marca de cancelamento é removida).
+     * Volta a cobrar uma assinatura suspensa e desfaz um cancelamento agendado
+     * (`cancel(atPeriodEnd: true)`); na Iugu, também reativa uma cancelada por `cancel()` (as
+     * marcas de cancelamento são removidas de `custom_variables`).
      *
      * @param  GatewayContract|string|null  $gateway
      * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica

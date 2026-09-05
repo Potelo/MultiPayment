@@ -284,6 +284,19 @@ class IuguGatewayIdempotencyTest extends TestCase
                 ],
                 'PUT', '/subscriptions/sub_1',
             ],
+            'cancelSubscription agendado (PUT das variáveis de agendamento)' => [
+                function (IuguGateway $g, string $key) {
+                    $subscription = self::subscriptionWithId();
+                    $subscription->nextBillingAt = Carbon::parse('2026-12-01');
+
+                    return $g->cancelSubscription($subscription, true, $key);
+                },
+                [self::subscriptionResponse(['custom_variables' => [
+                    (object) ['name' => 'mp_cancel_at_period_end', 'value' => '1'],
+                    (object) ['name' => 'mp_cancel_scheduled_for', 'value' => '2026-12-01'],
+                ]])],
+                'PUT', '/subscriptions/sub_1',
+            ],
             'changeSubscriptionPlan com cobrança (POST /change_plan, com a releitura repetida)' => [
                 fn (IuguGateway $g, string $key) => $g->changeSubscriptionPlan(self::subscriptionWithId(), 'plano_anual', ProrationBehavior::CHARGE_DIFFERENCE, $key),
                 [(object) ['success' => true], self::subscriptionResponse(['plan_identifier' => 'plano_anual'])],

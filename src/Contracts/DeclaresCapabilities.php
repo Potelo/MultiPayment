@@ -6,10 +6,11 @@ use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 
 /**
- * Declaração do que um gateway suporta, em dois níveis: o que o gateway oferece e a lib
- * implementa, e o que o gateway oferece mas a lib ainda não construiu. Uma capability fora
- * das duas listas é limitação do gateway. Uma capability suportada pode ainda ter uma
- * restrição (`restriction()`), que descreve em que parte dos casos ela vale.
+ * Declaração do que um gateway suporta, em três níveis: o que o gateway oferece e a lib
+ * implementa, o que o gateway oferece mas a lib ainda não construiu, e o que o gateway não
+ * oferece mas a lib entrega por emulação. Uma capability fora das três listas é limitação do
+ * gateway. Uma capability suportada pode ainda ter uma restrição (`restriction()`), que
+ * descreve em que parte dos casos ela vale.
  */
 interface DeclaresCapabilities
 {
@@ -28,7 +29,24 @@ interface DeclaresCapabilities
     public function notYetImplemented(): array;
 
     /**
-     * Diz se a capability está em `capabilities()`.
+     * Capabilities que o gateway não oferece e este driver entrega por conta própria. A
+     * emulação de assinatura depende do comando `multipayment:sync-subscriptions` agendado
+     * pela aplicação.
+     *
+     * @return Capability[]
+     */
+    public function emulated(): array;
+
+    /**
+     * Diz se a capability está em `emulated()`: a lib a entrega por conta própria.
+     *
+     * @param  Capability  $capability
+     * @return bool
+     */
+    public function isEmulated(Capability $capability): bool;
+
+    /**
+     * Diz se a capability está em `capabilities()` ou em `emulated()`.
      *
      * @param  Capability  $capability
      * @return bool

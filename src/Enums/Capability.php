@@ -4,11 +4,15 @@ namespace Potelo\MultiPayment\Enums;
 
 /**
  * Recurso que um gateway pode oferecer e a lib pode ter implementado. Cada driver declara, por
- * `DeclaresCapabilities`, o que suporta e o que o gateway oferece mas a lib ainda não construiu;
- * o que não aparece em nenhuma das duas listas é limitação do gateway.
+ * `DeclaresCapabilities`, o que suporta, o que o gateway oferece mas a lib ainda não construiu
+ * e o que o gateway não oferece mas a lib entrega por emulação (`emulated()`); o que não
+ * aparece em nenhuma das três listas é limitação do gateway.
  */
 enum Capability: string
 {
+    /** @deprecated desde 2026-09-04, use `Capability::COUPONS`. */
+    public const NATIVE_COUPONS = self::COUPONS;
+
     /** Fatura paga com cartão de crédito. */
     case CREDIT_CARD = 'credit_card';
 
@@ -85,8 +89,11 @@ enum Capability: string
     /** Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). */
     case CANCEL_AT_PERIOD_END = 'cancel_at_period_end';
 
-    /** Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. */
-    case NATIVE_COUPONS = 'native_coupons';
+    /** Cupom de assinatura com prazo: desconto limitado a um número de ciclos ou válido até uma data (`validUntil`). */
+    case COUPONS = 'coupons';
+
+    /** Desconto percentual (`percentOff`) sobre o valor da assinatura. */
+    case PERCENT_DISCOUNT = 'percent_discount';
 
     /** Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). */
     case PLAN_CHANGE_PRORATION = 'plan_change_proration';

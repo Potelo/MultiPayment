@@ -40,6 +40,7 @@ use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\IdempotencyStore;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
+use Potelo\MultiPayment\Contracts\SubscriptionSyncContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
 use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
 use Potelo\MultiPayment\Gateways\Iugu\DeclineCodes as IuguDeclineCodes;
@@ -56,7 +57,7 @@ use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
+class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract, SubscriptionSyncContract
 {
     use ChecksCapabilities;
     use ResolvesIdempotencyKey;
@@ -74,6 +75,24 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private const STATUS_IN_PROTEST = 'in_protest';
     private const STATUS_CHARGEBACK = 'chargeback';
     private const STATUS_AUTHORIZED = 'authorized';
+
+    /**
+     * Prefixo reservado em `custom_variables` da assinatura para o estado que a lib grava
+     * (cancelamento e validade de desconto); `metadata` com uma chave assim é recusado.
+     */
+    private const RESERVED_VARIABLE_PREFIX = 'mp_';
+
+    /** Variável que marca o cancelamento agendado para o fim do período (`1` quando há). */
+    private const CANCEL_AT_PERIOD_END_VARIABLE = 'mp_cancel_at_period_end';
+
+    /** Variável com a data (`Y-m-d`) em que a assinatura agendada deve ser suspensa. */
+    private const CANCEL_SCHEDULED_FOR_VARIABLE = 'mp_cancel_scheduled_for';
+
+    /** Prefixo da variável de validade de um desconto: `mp_discount_<subitem_id>_until`. */
+    private const DISCOUNT_UNTIL_PREFIX = 'mp_discount_';
+
+    /** Sufixo da variável de validade de um desconto: `mp_discount_<subitem_id>_until`. */
+    private const DISCOUNT_UNTIL_SUFFIX = '_until';
 
     /**
      * Variável de `custom_variables` da assinatura em que a lib grava a data do cancelamento.
@@ -147,6 +166,21 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         return [
             Capability::DELAYED_CAPTURE,
             Capability::SUBSCRIPTION_CREDITS,
+        ];
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * A Iugu não tem cupom com prazo nem cancelamento ao fim do ciclo; a lib emula os dois com
+     * estado em `custom_variables` da assinatura, aplicado pelo comando
+     * `multipayment:sync-subscriptions` agendado pela aplicação.
+     */
+    public function emulated(): array
+    {
+        return [
+            Capability::COUPONS,
+            Capability::CANCEL_AT_PERIOD_END,
         ];
     }
 
@@ -1885,7 +1919,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * cliente antes da criação, porque a assinatura da Iugu cobra o cartão padrão. `trialDays`
      * vira `trialEndsAt` contado de hoje, e um trial (`trialEndsAt`) vai como `expires_at` com
      * `only_charge_on_due_date`, para o primeiro ciclo só ser cobrado no fim do teste;
-     * `nextBillingAt` sozinho vai só como `expires_at`. A chave de idempotência vai no cabeçalho
+     * `nextBillingAt` sozinho vai só como `expires_at`. Desconto com validade (`validUntil`,
+     * ou `cycles` acima de 1, convertido pela duração do plano) grava
+     * `mp_discount_<subitem_id>_until` em `custom_variables` numa segunda requisição (`PUT`,
+     * chave derivada `{chave}:discounts`); o comando `multipayment:sync-subscriptions` remove
+     * o subitem quando a data passa. A chave de idempotência vai no cabeçalho
      * `Idempotency-Key` de `POST /subscriptions`. Na reutilização da chave a Iugu responde 409
      * sem o id da assinatura original (`resource_id: processing`), que chega como
      * `IdempotencyConflictException`.
@@ -1894,6 +1932,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     {
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
+        $requestedDiscounts = $subscription->discounts ?? [];
         $data = array_merge(
             $this->subscriptionToIuguData($subscription),
             self::withoutIdempotencyKey($subscription->gatewayOptions)
@@ -1910,7 +1949,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             true
         );
 
-        return $this->parseIuguSubscription($response, $subscription);
+        $parsed = $this->parseIuguSubscription($response, $subscription);
+
+        return empty($requestedDiscounts)
+            ? $parsed
+            : $this->applyIuguDiscountValidities($requestedDiscounts, $parsed, true, $idempotencyKey);
     }
 
     /**
@@ -1980,8 +2023,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @inheritDoc
      *
      * A chave de idempotência passa pela `IdempotencyStore`: a informada no `PUT` da
-     * atualização, `{chave}:remove` na remoção de subitens que a antecede e `{chave}:card` ou
-     * `{chave}:default` no cartão que passa a ser o padrão do cliente.
+     * atualização, `{chave}:remove` na remoção de subitens que a antecede, `{chave}:card` ou
+     * `{chave}:default` no cartão que passa a ser o padrão do cliente e `{chave}:discounts`
+     * na escrita da validade dos descontos (`mp_discount_<subitem_id>_until`), que também
+     * remove a variável de desconto que saiu da lista.
      */
     public function updateSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
@@ -1990,6 +2035,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
+        $requestedDiscounts = $subscription->discounts;
         $data = array_merge(
             $this->subscriptionToIuguData($subscription, false),
             self::withoutIdempotencyKey($subscription->gatewayOptions)
@@ -2032,7 +2078,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $idempotencyKey
         );
 
-        return $this->parseIuguSubscription($response, $subscription);
+        $parsed = $this->parseIuguSubscription($response, $subscription);
+
+        return is_null($requestedDiscounts)
+            ? $parsed
+            : $this->applyIuguDiscountValidities($requestedDiscounts, $parsed, false, $idempotencyKey);
     }
 
     /**
@@ -2055,11 +2105,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
-     * Reativa também uma assinatura cancelada por `cancelSubscription()`, que na Iugu é uma
-     * assinatura suspensa com a marca `mp_canceled_at`: a marca é removida de
+     * Reativa também uma assinatura cancelada por `cancelSubscription()`, imediato ou
+     * agendado: a marca de cancelamento (`mp_canceled_at`) e o agendamento
+     * (`mp_cancel_at_period_end`, `mp_cancel_scheduled_for`) são removidos de
      * `custom_variables` numa segunda requisição (`PUT` com `_destroy`, chave derivada
-     * `{chave}:uncancel`), para a assinatura voltar a ler como `ACTIVE`. A chave de
-     * idempotência passa pela `IdempotencyStore`.
+     * `{chave}:uncancel`), para a assinatura voltar a ler como `ACTIVE` sem cancelamento
+     * pendente. A chave de idempotência passa pela `IdempotencyStore`.
      */
     public function resumeSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
     {
@@ -2068,14 +2119,18 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $response = $this->iuguSubscriptionAction($subscription, 'activate', 'resuming subscription', $idempotencyKey);
         $resumed = $this->parseIuguSubscription($response, $subscription);
 
-        if (is_null($resumed->canceledAt)) {
+        if (is_null($resumed->canceledAt) && !$resumed->cancelAtPeriodEnd) {
             return $resumed;
         }
 
         $response = $this->iuguIdempotentRequest(
             'PUT',
             $this->subscriptionUrl($subscription->id),
-            ['custom_variables' => [['name' => self::CANCELED_AT_VARIABLE, '_destroy' => true]]],
+            ['custom_variables' => [
+                ['name' => self::CANCELED_AT_VARIABLE, '_destroy' => true],
+                ['name' => self::CANCEL_AT_PERIOD_END_VARIABLE, '_destroy' => true],
+                ['name' => self::CANCEL_SCHEDULED_FOR_VARIABLE, '_destroy' => true],
+            ]],
             'clearing the subscription cancellation',
             self::derivedIdempotencyKey($idempotencyKey, 'uncancel')
         );
@@ -2090,18 +2145,23 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * data do cancelamento em `custom_variables` (`mp_canceled_at`), numa segunda requisição
      * (`PUT`, chave derivada `{chave}:cancel`); é essa marca que faz a leitura devolver
      * `CANCELED`. Assinatura que já tem a marca é só suspensa de novo, e a data original fica.
-     * `resumeSubscription()` desfaz as duas coisas. A chave de idempotência passa pela
-     * `IdempotencyStore`.
+     * Com `$atPeriodEnd`, a assinatura não é suspensa: um único `PUT` grava
+     * `mp_cancel_at_period_end` e `mp_cancel_scheduled_for` (a data da próxima cobrança), ela
+     * segue ativa com `cancelAtPeriodEnd` verdadeiro, e o comando
+     * `multipayment:sync-subscriptions` a suspende quando a data chega, gravando
+     * `mp_canceled_at`. `resumeSubscription()` desfaz as duas formas. A chave de idempotência
+     * passa pela `IdempotencyStore`.
      */
     public function cancelSubscription(
         Subscription $subscription,
         bool $atPeriodEnd = false,
         ?string $idempotencyKey = null
     ): Subscription {
-        if ($atPeriodEnd) {
-            $this->assertSupports(Capability::CANCEL_AT_PERIOD_END, 'Suspenda a assinatura na data desejada.');
-        }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        if ($atPeriodEnd) {
+            return $this->scheduleIuguCancellation($subscription, $idempotencyKey);
+        }
 
         $response = $this->iuguSubscriptionAction($subscription, 'suspend', 'suspending subscription', $idempotencyKey);
         $suspended = $this->parseIuguSubscription($response, $subscription);
@@ -2122,6 +2182,248 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         );
 
         return $this->parseIuguSubscription($response, $suspended);
+    }
+
+    /**
+     * Agenda o cancelamento para o fim do período corrente: grava em `custom_variables` a
+     * intenção (`mp_cancel_at_period_end`) e a data programada (`mp_cancel_scheduled_for`, a
+     * data da próxima cobrança), sem suspender. A data vem de `nextBillingAt` do model ou de
+     * uma leitura da assinatura; sem data de cobrança não há fim de período e a operação é
+     * recusada. Chamada repetida atualiza a data programada para a próxima cobrança atual.
+     *
+     * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey  chave já resolvida; passa pela `IdempotencyStore`
+     *
+     * @return Subscription
+     * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     */
+    private function scheduleIuguCancellation(Subscription $subscription, ?string $idempotencyKey): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $scheduledFor = $subscription->nextBillingAt;
+        if (empty($scheduledFor)) {
+            $current = $this->iuguRequest(
+                'GET',
+                $this->subscriptionUrl($subscription->id),
+                [],
+                'getting subscription'
+            );
+            $expiresAt = ((object) $current)->expires_at ?? null;
+            $scheduledFor = empty($expiresAt) ? null : new Carbon($expiresAt);
+        }
+
+        if (empty($scheduledFor)) {
+            throw ModelAttributeValidationException::invalid(
+                'Subscription',
+                'nextBillingAt',
+                'the subscription has no billing date, so there is no period end to schedule'
+                . ' the cancellation at; cancel it immediately instead.'
+            );
+        }
+
+        $response = $this->iuguIdempotentRequest(
+            'PUT',
+            $this->subscriptionUrl($subscription->id),
+            ['custom_variables' => [
+                ['name' => self::CANCEL_AT_PERIOD_END_VARIABLE, 'value' => '1'],
+                ['name' => self::CANCEL_SCHEDULED_FOR_VARIABLE, 'value' => $scheduledFor->format('Y-m-d')],
+            ]],
+            'scheduling the subscription cancellation',
+            $idempotencyKey
+        );
+
+        return $this->parseIuguSubscription($response, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Percorre todas as assinaturas da conta em páginas de 100. Assinatura suspensa é pulada:
+     * ela não gera fatura, e a que o comando suspendeu na rodada anterior já está aplicada. O
+     * desconto vencido e a variável dele saem num único `PUT`; a variável de desconto sem
+     * subitem correspondente (sobra de uma escrita interrompida) também é removida. O
+     * cancelamento agendado que chegou à data grava a marca `mp_canceled_at` e suspende
+     * (`POST /suspend`), nessa ordem, e o agendamento fica gravado.
+     */
+    public function syncSubscriptions(bool $dryRun = false): array
+    {
+        $actions = [];
+        $limit = 100;
+        $start = 0;
+
+        do {
+            $query = http_build_query(['limit' => $limit, 'start' => $start], '', '&', PHP_QUERY_RFC3986);
+            $response = $this->iuguRequest(
+                'GET',
+                Iugu::getBaseURI() . '/subscriptions?' . $query,
+                [],
+                'listing subscriptions'
+            );
+            $items = (array) (is_array($response) ? $response : ($response->items ?? []));
+
+            foreach ($items as $item) {
+                $item = (object) $item;
+                // uma assinatura com problema não derruba a varredura das demais; a rodada
+                // seguinte tenta de novo
+                try {
+                    array_push($actions, ...$this->syncIuguSubscription($item, $dryRun));
+                } catch (MultiPaymentException $e) {
+                    LogHelper::warning(
+                        'Sincronização da assinatura [' . ($item->id ?? '?') . '] da Iugu falhou: '
+                        . $e->getMessage(),
+                        ['subscription' => $item->id ?? null, 'gateway' => 'iugu']
+                    );
+                }
+            }
+
+            $start += $limit;
+        } while (count($items) === $limit);
+
+        return $actions;
+    }
+
+    /**
+     * Aplica numa assinatura o que a emulação deixou agendado e devolve as ações, no formato
+     * de `SubscriptionSyncContract::syncSubscriptions()`. Com `$dryRun`, só as devolve.
+     *
+     * @param  object  $iuguSubscription
+     * @param  bool  $dryRun
+     *
+     * @return array<int, array{subscription: string, action: string, detail: string}>
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function syncIuguSubscription(object $iuguSubscription, bool $dryRun): array
+    {
+        if (!empty($iuguSubscription->suspended) || empty($iuguSubscription->id)) {
+            return [];
+        }
+        $id = (string) $iuguSubscription->id;
+
+        $discountSubitemIds = [];
+        foreach ((array) ($iuguSubscription->subitems ?? []) as $subitem) {
+            $subitem = (object) $subitem;
+            if (($subitem->price_cents ?? 0) < 0 && !empty($subitem->id)) {
+                $discountSubitemIds[] = (string) $subitem->id;
+            }
+        }
+
+        $actions = [];
+        $subitemDestroys = [];
+        $variableDestroys = [];
+        foreach (array_keys($this->iuguCustomVariables($iuguSubscription)) as $name) {
+            $subitemId = self::discountSubitemIdFromVariable((string) $name);
+            if (is_null($subitemId)) {
+                continue;
+            }
+
+            if (!in_array($subitemId, $discountSubitemIds, true)) {
+                $variableDestroys[] = ['name' => (string) $name, '_destroy' => true];
+                $actions[] = [
+                    'subscription' => $id,
+                    'action' => 'remove_orphan_discount_variable',
+                    'detail' => "variável {$name} sem subitem de desconto correspondente removida",
+                ];
+                continue;
+            }
+
+            $until = $this->iuguDiscountUntil($iuguSubscription, $subitemId);
+            if (is_null($until) || !$until->copy()->endOfDay()->isPast()) {
+                continue;
+            }
+
+            $subitemDestroys[] = ['id' => $subitemId, '_destroy' => true];
+            $variableDestroys[] = ['name' => (string) $name, '_destroy' => true];
+            $actions[] = [
+                'subscription' => $id,
+                'action' => 'remove_discount',
+                'detail' => "desconto {$subitemId} vencido em {$until->format('Y-m-d')} removido",
+            ];
+        }
+
+        $cancelDue = $this->iuguScheduledCancellationDue($iuguSubscription);
+        if (!is_null($cancelDue)) {
+            $actions[] = [
+                'subscription' => $id,
+                'action' => 'cancel',
+                'detail' => "cancelamento agendado para {$cancelDue->format('Y-m-d')} aplicado:"
+                    . ' assinatura suspensa e marcada como cancelada',
+            ];
+        }
+
+        if ($dryRun || $actions === []) {
+            return $actions;
+        }
+
+        if ($variableDestroys !== []) {
+            $data = ['custom_variables' => $variableDestroys];
+            if ($subitemDestroys !== []) {
+                $data['subitems'] = $subitemDestroys;
+            }
+            $this->iuguRequest(
+                'PUT',
+                $this->subscriptionUrl($id),
+                $data,
+                'removing expired subscription discounts'
+            );
+        }
+
+        if (!is_null($cancelDue)) {
+            // a marca vai antes da suspensão: uma falha entre as duas deixa a assinatura
+            // ativa com a marca, que a rodada seguinte reprocessa (suspensa sem a marca
+            // seria pulada e leria SUSPENDED em vez de CANCELED para sempre)
+            $this->iuguRequest(
+                'PUT',
+                $this->subscriptionUrl($id),
+                ['custom_variables' => [[
+                    'name' => self::CANCELED_AT_VARIABLE,
+                    'value' => Carbon::now()->toIso8601String(),
+                ]]],
+                'marking the subscription as canceled'
+            );
+            $this->iuguRequest('POST', $this->subscriptionUrl($id) . '/suspend', [], 'suspending subscription');
+        }
+
+        return $actions;
+    }
+
+    /**
+     * Data do cancelamento agendado que já chegou (`mp_cancel_at_period_end` com
+     * `mp_cancel_scheduled_for` de hoje ou anterior); nulo quando não há agendamento, a data
+     * ainda não chegou ou a data gravada não é legível (com aviso no log).
+     *
+     * @param  object  $iuguSubscription
+     *
+     * @return Carbon|null
+     */
+    private function iuguScheduledCancellationDue(object $iuguSubscription): ?Carbon
+    {
+        $flag = $this->iuguCustomVariable($iuguSubscription, self::CANCEL_AT_PERIOD_END_VARIABLE);
+        if (is_null($flag) || $flag === '0') {
+            return null;
+        }
+
+        $scheduled = $this->iuguCustomVariable($iuguSubscription, self::CANCEL_SCHEDULED_FOR_VARIABLE);
+        if (is_null($scheduled)) {
+            return null;
+        }
+
+        try {
+            $date = new Carbon($scheduled);
+        } catch (\Throwable) {
+            LogHelper::warning(
+                'Data de cancelamento agendado [' . self::CANCEL_SCHEDULED_FOR_VARIABLE
+                . "] ilegível [{$scheduled}] na assinatura [" . ($iuguSubscription->id ?? '?')
+                . '] da Iugu, tratada como ausente',
+                ['subscription' => $iuguSubscription->id ?? null, 'value' => $scheduled, 'gateway' => 'iugu']
+            );
+
+            return null;
+        }
+
+        return $date->copy()->startOfDay()->lte(Carbon::now()) ? $date : null;
     }
 
     /**
@@ -2443,6 +2745,17 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
 
         if (!empty($subscription->metadata)) {
+            foreach (array_keys($subscription->metadata) as $name) {
+                if (str_starts_with((string) $name, self::RESERVED_VARIABLE_PREFIX)) {
+                    throw ModelAttributeValidationException::invalid(
+                        'Subscription',
+                        'metadata',
+                        'metadata keys with the mp_ prefix are reserved for the library state'
+                        . ' in the Iugu custom_variables.'
+                    );
+                }
+            }
+
             $data['custom_variables'] = array_map(
                 fn($name, $value) => ['name' => $name, 'value' => $value],
                 array_keys($subscription->metadata),
@@ -2535,7 +2848,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * Monta um subitem da Iugu a partir de um desconto de assinatura.
      *
-     * Desconto percentual e desconto limitado a mais de um ciclo não têm equivalente na Iugu.
+     * Desconto percentual não tem equivalente na Iugu. `cycles` 1 vira um subitem sem
+     * recorrência (vale só para a próxima fatura); os demais casos vão como subitem
+     * recorrente, e a validade (`validUntil`, ou a calculada de `cycles`) é gravada em
+     * `custom_variables` depois da criação, para o comando de sincronização remover o subitem
+     * vencido.
      *
      * @param  SubscriptionDiscount  $discount
      *
@@ -2547,7 +2864,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         if (!is_null($discount->percentOff)) {
             throw UnsupportedOperationException::forGateway(
                 $this,
-                Capability::NATIVE_COUPONS,
+                Capability::PERCENT_DISCOUNT,
                 'A Iugu não tem desconto percentual em assinatura; use amountOff.'
             );
         }
@@ -2556,19 +2873,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('SubscriptionDiscount', 'amountOff');
         }
 
-        if (!is_null($discount->cycles) && $discount->cycles > 1) {
-            throw UnsupportedOperationException::forGateway(
-                $this,
-                Capability::NATIVE_COUPONS,
-                'Na Iugu o desconto vale para uma fatura ou até ser removido; use cycles 1 ou nulo.'
-            );
-        }
-
         $data = [
             'description' => $discount->description,
             'price_cents' => -abs($discount->amountOff),
             'quantity' => 1,
-            'recurrent' => (int) is_null($discount->cycles),
+            'recurrent' => (int) ($discount->cycles !== 1),
         ];
 
         if (!empty($discount->id)) {
@@ -2689,7 +2998,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 $iuguSubitem = (object) $iuguSubitem;
 
                 if (($iuguSubitem->price_cents ?? 0) < 0) {
-                    $subscription->discounts[] = $this->parseIuguSubscriptionDiscount($iuguSubitem);
+                    $discount = $this->parseIuguSubscriptionDiscount($iuguSubitem);
+                    $discount->validUntil = $this->iuguDiscountUntil($iuguSubscription, $discount->id);
+                    $subscription->discounts[] = $discount;
                 } else {
                     $subscription->items[] = $this->parseIuguSubscriptionItem($iuguSubitem);
                 }
@@ -2707,10 +3018,18 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 : null;
         }
 
-        // lista vazia também conta: é o que a Iugu devolve depois de remover a última variável
+        // lista vazia também conta: é o que a Iugu devolve depois de remover a última variável;
+        // as variáveis mp_ são estado da lib e viram os campos tipados, fora de metadata
         if (isset($iuguSubscription->custom_variables)) {
-            $subscription->metadata = $this->iuguCustomVariables($iuguSubscription);
+            $subscription->metadata = array_filter(
+                $this->iuguCustomVariables($iuguSubscription),
+                static fn ($name) => !str_starts_with((string) $name, self::RESERVED_VARIABLE_PREFIX),
+                ARRAY_FILTER_USE_KEY
+            );
             $subscription->canceledAt = $this->iuguCanceledAt($iuguSubscription);
+            // `0` conta como sem agendamento, a mesma leitura do comando de sincronização
+            $flag = $this->iuguCustomVariable($iuguSubscription, self::CANCEL_AT_PERIOD_END_VARIABLE);
+            $subscription->cancelAtPeriodEnd = !is_null($flag) && $flag !== '0';
         }
 
         $subscription->gateway = 'iugu';
@@ -2783,6 +3102,314 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $value = $this->iuguCustomVariables($iuguSubscription)[$name] ?? null;
 
         return is_scalar($value) && (string) $value !== '' ? (string) $value : null;
+    }
+
+    /**
+     * Nome da variável de validade de um subitem de desconto (`mp_discount_<subitem_id>_until`).
+     *
+     * @param  string  $subitemId
+     *
+     * @return string
+     */
+    private static function discountUntilVariable(string $subitemId): string
+    {
+        return self::DISCOUNT_UNTIL_PREFIX . $subitemId . self::DISCOUNT_UNTIL_SUFFIX;
+    }
+
+    /**
+     * Id do subitem de desconto de uma variável `mp_discount_<subitem_id>_until`; nulo quando
+     * o nome não segue o padrão.
+     *
+     * @param  string  $name
+     *
+     * @return string|null
+     */
+    private static function discountSubitemIdFromVariable(string $name): ?string
+    {
+        if (
+            !str_starts_with($name, self::DISCOUNT_UNTIL_PREFIX)
+            || !str_ends_with($name, self::DISCOUNT_UNTIL_SUFFIX)
+        ) {
+            return null;
+        }
+
+        $id = substr(
+            $name,
+            strlen(self::DISCOUNT_UNTIL_PREFIX),
+            -strlen(self::DISCOUNT_UNTIL_SUFFIX)
+        );
+
+        return $id === '' ? null : $id;
+    }
+
+    /**
+     * Validade gravada pela lib para um subitem de desconto
+     * (`mp_discount_<subitem_id>_until`). Nulo quando a variável não existe ou não é uma data
+     * legível; neste último caso registra um aviso no log e a variável é tratada como ausente.
+     *
+     * @param  object  $iuguSubscription
+     * @param  string|null  $subitemId
+     *
+     * @return Carbon|null
+     */
+    private function iuguDiscountUntil(object $iuguSubscription, ?string $subitemId): ?Carbon
+    {
+        if (empty($subitemId)) {
+            return null;
+        }
+
+        $name = self::discountUntilVariable($subitemId);
+        $value = $this->iuguCustomVariable($iuguSubscription, $name);
+        if (is_null($value)) {
+            return null;
+        }
+
+        try {
+            return new Carbon($value);
+        } catch (\Throwable) {
+            LogHelper::warning(
+                "Validade de desconto [{$name}] ilegível [{$value}] na assinatura ["
+                . ($iuguSubscription->id ?? '?') . '] da Iugu, tratada como ausente',
+                ['subscription' => $iuguSubscription->id ?? null, 'value' => $value, 'gateway' => 'iugu']
+            );
+
+            return null;
+        }
+    }
+
+    /**
+     * Grava em `custom_variables` a validade dos descontos que acabaram de ser escritos
+     * (`mp_discount_<subitem_id>_until`) e remove a variável de desconto que saiu da lista,
+     * num único `PUT` (chave derivada `{chave}:discounts`). Sem mudança a fazer, nenhuma
+     * requisição sai. O model devolvido traz `validUntil` aplicado em cada desconto.
+     *
+     * @param  SubscriptionDiscount[]  $requestedDiscounts  descontos como o chamador os informou
+     * @param  Subscription  $parsed  model já preenchido com a resposta da escrita
+     * @param  bool  $creating
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     *
+     * @return Subscription
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function applyIuguDiscountValidities(
+        array $requestedDiscounts,
+        Subscription $parsed,
+        bool $creating,
+        ?string $idempotencyKey
+    ): Subscription {
+        $changes = $this->iuguDiscountVariableChanges($requestedDiscounts, $parsed, $creating);
+        if ($changes === []) {
+            return $parsed;
+        }
+
+        $response = $this->iuguIdempotentRequest(
+            'PUT',
+            $this->subscriptionUrl($parsed->id),
+            ['custom_variables' => $changes],
+            'writing the subscription discount validity',
+            self::derivedIdempotencyKey($idempotencyKey, 'discounts')
+        );
+
+        return $this->parseIuguSubscription($response, $parsed);
+    }
+
+    /**
+     * Mudanças de `custom_variables` que deixam as validades de desconto iguais às pedidas:
+     * uma escrita por desconto com validade nova ou diferente da gravada, e um `_destroy` por
+     * variável de desconto que não corresponde mais a um desconto com validade. O desconto
+     * pedido é casado com o subitem da resposta pelo `id`; os sem `id` casam pela descrição e
+     * pelo valor e, sem par assim, na ordem em que foram enviados.
+     *
+     * @param  SubscriptionDiscount[]  $requestedDiscounts
+     * @param  Subscription  $parsed
+     * @param  bool  $creating
+     *
+     * @return array
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function iuguDiscountVariableChanges(array $requestedDiscounts, Subscription $parsed, bool $creating): array
+    {
+        $existing = $this->iuguCustomVariables((object) ($parsed->original ?? new \stdClass()));
+
+        $requestedIds = array_map('strval', array_filter(array_column($requestedDiscounts, 'id')));
+        $byId = [];
+        $unmatched = [];
+        foreach ($parsed->discounts ?? [] as $parsedDiscount) {
+            if (!empty($parsedDiscount->id) && in_array((string) $parsedDiscount->id, $requestedIds, true)) {
+                $byId[(string) $parsedDiscount->id] = $parsedDiscount;
+            } else {
+                $unmatched[] = $parsedDiscount;
+            }
+        }
+
+        $planCycle = null;
+        $planCycleResolver = function () use (&$planCycle, $parsed): array {
+            return $planCycle ??= $this->iuguPlanCycle($parsed->planId);
+        };
+
+        $desired = [];
+        foreach ($requestedDiscounts as $requested) {
+            if (!$requested instanceof SubscriptionDiscount) {
+                continue;
+            }
+
+            $target = !empty($requested->id)
+                ? ($byId[(string) $requested->id] ?? null)
+                : $this->shiftMatchingDiscount($unmatched, $requested);
+            if (is_null($target) || empty($target->id)) {
+                continue;
+            }
+
+            $until = $this->iuguDiscountValidUntil($requested, $parsed, $creating, $planCycleResolver);
+            if (is_null($until)) {
+                continue;
+            }
+
+            $desired[self::discountUntilVariable((string) $target->id)] = $until->format('Y-m-d');
+            $target->validUntil = $until;
+        }
+
+        $changes = [];
+        foreach ($desired as $name => $value) {
+            if (($existing[$name] ?? null) !== $value) {
+                $changes[] = ['name' => $name, 'value' => $value];
+            }
+        }
+        foreach (array_keys($existing) as $name) {
+            if (
+                !is_null(self::discountSubitemIdFromVariable((string) $name))
+                && !array_key_exists($name, $desired)
+            ) {
+                $changes[] = ['name' => (string) $name, '_destroy' => true];
+            }
+        }
+
+        return $changes;
+    }
+
+    /**
+     * Tira da lista o primeiro desconto da resposta com a mesma descrição e o mesmo valor do
+     * pedido; sem um par assim, o primeiro da lista. A ordem dos subitens na resposta da Iugu
+     * não é garantida, então a igualdade de conteúdo vem antes da posição.
+     *
+     * @param  SubscriptionDiscount[]  $unmatched  descontos da resposta ainda sem par; o escolhido sai da lista
+     * @param  SubscriptionDiscount  $requested
+     *
+     * @return SubscriptionDiscount|null
+     */
+    private function shiftMatchingDiscount(array &$unmatched, SubscriptionDiscount $requested): ?SubscriptionDiscount
+    {
+        foreach ($unmatched as $index => $candidate) {
+            if (
+                $candidate->description === $requested->description
+                && $candidate->amountOff === abs((int) $requested->amountOff)
+            ) {
+                unset($unmatched[$index]);
+                $unmatched = array_values($unmatched);
+
+                return $candidate;
+            }
+        }
+
+        return array_shift($unmatched);
+    }
+
+    /**
+     * Data até a qual um desconto pedido vale: `validUntil` quando informado; com `cycles`
+     * acima de 1, a data da fatura de número `cycles`, com um intervalo do plano entre
+     * faturas. A contagem parte da próxima cobrança lida da resposta: numa criação sem trial
+     * a primeira fatura já foi cobrada e a segunda sai na próxima cobrança, então faltam
+     * `cycles - 2` intervalos; com trial, e no update, a próxima cobrança é a primeira fatura
+     * coberta e faltam `cycles - 1`. Nulo quando o desconto não tem prazo (`cycles` 1 vale só
+     * para a próxima fatura e é o próprio subitem sem recorrência).
+     *
+     * @param  SubscriptionDiscount  $discount
+     * @param  Subscription  $parsed
+     * @param  bool  $creating
+     * @param  callable  $planCycle  devolve `[PlanInterval, int]` do plano, lido sob demanda
+     *
+     * @return Carbon|null
+     */
+    private function iuguDiscountValidUntil(
+        SubscriptionDiscount $discount,
+        Subscription $parsed,
+        bool $creating,
+        callable $planCycle
+    ): ?Carbon {
+        if (!empty($discount->validUntil)) {
+            return $discount->validUntil->copy();
+        }
+
+        if (is_null($discount->cycles) || $discount->cycles <= 1) {
+            return null;
+        }
+
+        [$interval, $intervalCount] = $planCycle();
+
+        if ($creating && !empty($parsed->trialEndsAt)) {
+            $base = $parsed->trialEndsAt;
+            $remaining = $discount->cycles - 1;
+        } elseif ($creating && !empty($parsed->nextBillingAt)) {
+            $base = $parsed->nextBillingAt;
+            $remaining = $discount->cycles - 2;
+        } elseif (!$creating && !empty($parsed->nextBillingAt)) {
+            $base = $parsed->nextBillingAt;
+            $remaining = $discount->cycles - 1;
+        } else {
+            $base = Carbon::now();
+            $remaining = $discount->cycles - 1;
+        }
+
+        return self::addPlanCycles($base, $interval, $intervalCount, max(0, $remaining));
+    }
+
+    /**
+     * Intervalo de cobrança do plano, para converter `cycles` em data. Sem plano legível
+     * (identificador vazio, plano removido ou sem intervalo), assume mensal.
+     *
+     * @param  string|null  $planId
+     *
+     * @return array{0: PlanInterval, 1: int}
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function iuguPlanCycle(?string $planId): array
+    {
+        if (empty($planId)) {
+            return [PlanInterval::MONTH, 1];
+        }
+
+        $plan = new Plan();
+        $plan->identifier = $planId;
+
+        try {
+            $plan = $this->getPlan($plan);
+        } catch (NotFoundException) {
+            return [PlanInterval::MONTH, 1];
+        }
+
+        return [$plan->interval ?? PlanInterval::MONTH, $plan->intervalCount ?? 1];
+    }
+
+    /**
+     * Soma ciclos do plano a uma data.
+     *
+     * @param  Carbon  $date
+     * @param  PlanInterval  $interval
+     * @param  int  $intervalCount
+     * @param  int  $cycles
+     *
+     * @return Carbon
+     */
+    private static function addPlanCycles(Carbon $date, PlanInterval $interval, int $intervalCount, int $cycles): Carbon
+    {
+        $units = $intervalCount * $cycles;
+
+        return match ($interval) {
+            PlanInterval::DAY => $date->copy()->addDays($units),
+            PlanInterval::WEEK => $date->copy()->addWeeks($units),
+            PlanInterval::MONTH => $date->copy()->addMonths($units),
+            PlanInterval::YEAR => $date->copy()->addYears($units),
+        };
     }
 
     /**

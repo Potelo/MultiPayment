@@ -259,7 +259,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         ];
     }
 
-    public function testParseReadsTheCancellationMarkIntoCanceledAtAndKeepsItInMetadata(): void
+    public function testParseReadsTheCancellationMarkIntoCanceledAtAndKeepsItOutOfMetadata(): void
     {
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse([
             'suspended' => true,
@@ -275,8 +275,8 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $this->assertSame(SubscriptionStatus::CANCELED, $subscription->status);
         $this->assertSame('2026-09-10T10:00:00-03:00', $subscription->canceledAt->toIso8601String());
-        $this->assertSame(['origem' => 'teste', 'mp_canceled_at' => '2026-09-10T10:00:00-03:00'], $subscription->metadata);
-        $this->assertNull($subscription->cancelAtPeriodEnd);
+        $this->assertSame(['origem' => 'teste'], $subscription->metadata);
+        $this->assertFalse($subscription->cancelAtPeriodEnd);
     }
 
     /**
@@ -528,7 +528,7 @@ class IuguGatewaySubscriptionTest extends TestCase
 
         $this->assertSame(SubscriptionStatus::SUSPENDED, $subscription->status);
         $this->assertNull($subscription->canceledAt);
-        $this->assertSame(['mp_canceled_at' => 'sim'], $subscription->metadata);
+        $this->assertSame([], $subscription->metadata);
         $this->assertCount(2, $logger->records, 'um aviso por leitura da marca (status e canceledAt)');
         $this->assertSame('warning', $logger->records[0]['level']);
         $this->assertStringContainsString('mp_canceled_at', $logger->records[0]['message']);
@@ -575,7 +575,11 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame('PUT', $api->calls[1]['method']);
         $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[1]['url']);
         $this->assertSame(
-            ['custom_variables' => [['name' => 'mp_canceled_at', '_destroy' => true]]],
+            ['custom_variables' => [
+                ['name' => 'mp_canceled_at', '_destroy' => true],
+                ['name' => 'mp_cancel_at_period_end', '_destroy' => true],
+                ['name' => 'mp_cancel_scheduled_for', '_destroy' => true],
+            ]],
             $api->calls[1]['data']
         );
         $this->assertSame(SubscriptionStatus::ACTIVE, $resumed->status);
@@ -651,24 +655,77 @@ class IuguGatewaySubscriptionTest extends TestCase
         $this->assertSame(['origem' => 'teste'], $resumed->metadata);
     }
 
-    public function testCancelAtPeriodEndIsRejected(): void
+    public function testCancelAtPeriodEndSchedulesTheCancellationWithoutSuspending(): void
     {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse([
+            'custom_variables' => [
+                (object) ['name' => 'mp_cancel_at_period_end', 'value' => '1'],
+                (object) ['name' => 'mp_cancel_scheduled_for', 'value' => '2026-12-01'],
+            ],
+        ])]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['id' => 'sub_1', 'next_billing_at' => '2026-12-01']);
+
+        $canceled = (new IuguGateway($api))->cancelSubscription($subscription, true);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertSame('PUT', $api->calls[0]['method']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[0]['url']);
+        $this->assertSame(
+            ['custom_variables' => [
+                ['name' => 'mp_cancel_at_period_end', 'value' => '1'],
+                ['name' => 'mp_cancel_scheduled_for', 'value' => '2026-12-01'],
+            ]],
+            $api->calls[0]['data']
+        );
+        $this->assertSame(SubscriptionStatus::ACTIVE, $canceled->status);
+        $this->assertTrue($canceled->cancelAtPeriodEnd);
+        $this->assertNull($canceled->canceledAt);
+    }
+
+    /**
+     * Sem `nextBillingAt` no model, a data programada vem de uma leitura da assinatura; sem
+     * data de cobrança na resposta, não há fim de período e a operação é recusada antes de
+     * qualquer escrita.
+     */
+    public function testCancelAtPeriodEndReadsTheBillingDateWhenTheModelDoesNotHaveIt(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['expires_at' => '2026-11-15']),
+            $this->subscriptionResponse(),
+        ]);
+
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
 
-        $api = new QueuedIuguApiRequest([]);
+        (new IuguGateway($api))->cancelSubscription($subscription, true);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('GET', $api->calls[0]['method']);
+        $this->assertSame(
+            ['name' => 'mp_cancel_scheduled_for', 'value' => '2026-11-15'],
+            $api->calls[1]['data']['custom_variables'][1]
+        );
+    }
+
+    public function testCancelAtPeriodEndWithoutABillingDateIsRejected(): void
+    {
+        $response = $this->subscriptionResponse();
+        unset($response->expires_at);
+        $api = new QueuedIuguApiRequest([$response]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
 
         try {
             (new IuguGateway($api))->cancelSubscription($subscription, true);
-            $this->fail('Esperava UnsupportedOperationException');
-        } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::CANCEL_AT_PERIOD_END, $e->capability);
-            $this->assertSame('iugu', $e->gateway);
-            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
-            $this->assertFalse($e->isNotImplemented());
-            $this->assertStringContainsString('Suspenda a assinatura', $e->getMessage());
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('no billing date', $e->getMessage());
         }
-        $this->assertCount(0, $api->calls);
+        $this->assertCount(1, $api->calls);
+        $this->assertSame('GET', $api->calls[0]['method']);
     }
 
     public function testChangePlanWithoutChargeSendsSkipChargeAndTheNewBillingDate(): void
@@ -1143,37 +1200,9 @@ class IuguGatewaySubscriptionTest extends TestCase
             (new IuguGateway($api))->createSubscription($subscription);
             $this->fail('Esperava UnsupportedOperationException');
         } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::NATIVE_COUPONS, $e->capability);
+            $this->assertSame(Capability::PERCENT_DISCOUNT, $e->capability);
             $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
             $this->assertStringContainsString('use amountOff', $e->getMessage());
-        }
-        $this->assertCount(0, $api->calls);
-    }
-
-    /**
-     * A Iugu só expressa desconto de uma fatura ou até ser removido, então guardar cycles maior
-     * que 1 devolveria um limite que o gateway não mantém.
-     */
-    public function testDiscountLimitedToMoreThanOneCycleIsRejected(): void
-    {
-        $discount = new SubscriptionDiscount();
-        $discount->description = 'Promo';
-        $discount->amountOff = 500;
-        $discount->cycles = 3;
-
-        $subscription = new Subscription();
-        $subscription->fill(['plan_id' => 'plano', 'customer' => ['id' => 'cus_1']]);
-        $subscription->discounts = [$discount];
-
-        $api = new QueuedIuguApiRequest([]);
-
-        try {
-            (new IuguGateway($api))->createSubscription($subscription);
-            $this->fail('Esperava UnsupportedOperationException');
-        } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::NATIVE_COUPONS, $e->capability);
-            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
-            $this->assertStringContainsString('use cycles 1 ou nulo', $e->getMessage());
         }
         $this->assertCount(0, $api->calls);
     }
@@ -2974,5 +3003,368 @@ class IuguGatewaySubscriptionTest extends TestCase
             'lista de dois' => [['pix', 'bank_slip'], null],
             'all' => ['all', null],
         ];
+    }
+
+    private function discountSubitem(string $id = 'si_d1', int $priceCents = -500, bool $recurrent = true): object
+    {
+        return (object) [
+            'id' => $id,
+            'description' => 'Promo',
+            'price_cents' => $priceCents,
+            'quantity' => 1,
+            'recurrent' => $recurrent,
+        ];
+    }
+
+    public function testDiscountWithValidUntilWritesTheVariableAfterTheCreation(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['subitems' => [$this->discountSubitem()]]),
+            $this->subscriptionResponse([
+                'subitems' => [$this->discountSubitem()],
+                'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31']],
+            ]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->fill([
+            'plan_id' => 'plano_mensal',
+            'customer' => ['id' => 'cus_1'],
+            'discounts' => [['description' => 'Promo', 'amount_off' => 500, 'valid_until' => '2026-12-31']],
+        ]);
+
+        $created = (new IuguGateway($api))->createSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame(
+            [['description' => 'Promo', 'price_cents' => -500, 'quantity' => 1, 'recurrent' => 1]],
+            $api->calls[0]['data']['subitems']
+        );
+        $this->assertSame('PUT', $api->calls[1]['method']);
+        $this->assertStringEndsWith('/subscriptions/sub_1', $api->calls[1]['url']);
+        $this->assertSame(
+            ['custom_variables' => [['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31']]],
+            $api->calls[1]['data']
+        );
+        $this->assertSame('2026-12-31', $created->discounts[0]->validUntil->format('Y-m-d'));
+    }
+
+    /**
+     * `cycles` acima de 1 vira a data da fatura de número `cycles`. Na criação sem trial a
+     * primeira fatura é cobrada na hora e a segunda sai na próxima cobrança da resposta, então
+     * três ciclos terminam um intervalo do plano (lido por `getPlan()`) depois dela.
+     */
+    public function testDiscountCyclesBecomeAValidUntilComputedFromThePlanInterval(): void
+    {
+        Carbon::setTestNow('2026-09-04 12:00:00');
+
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['subitems' => [$this->discountSubitem()]]),
+            (object) ['identifier' => 'plano_mensal', 'interval_type' => 'months', 'interval' => 1, 'value_cents' => 10000],
+            $this->subscriptionResponse([
+                'subitems' => [$this->discountSubitem()],
+                'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-11-01']],
+            ]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->fill([
+            'plan_id' => 'plano_mensal',
+            'customer' => ['id' => 'cus_1'],
+            'discounts' => [['description' => 'Promo', 'amount_off' => 500, 'cycles' => 3]],
+        ]);
+
+        $created = (new IuguGateway($api))->createSubscription($subscription);
+
+        $this->assertCount(3, $api->calls);
+        $this->assertStringEndsWith('/plans/identifier/plano_mensal', $api->calls[1]['url']);
+        $this->assertSame(
+            ['custom_variables' => [['name' => 'mp_discount_si_d1_until', 'value' => '2026-11-01']]],
+            $api->calls[2]['data']
+        );
+        $this->assertSame('2026-11-01', $created->discounts[0]->validUntil->format('Y-m-d'));
+    }
+
+    /**
+     * Substituir a lista de descontos por uma vazia remove o subitem e a variável de validade
+     * que ficou sem desconto correspondente.
+     */
+    public function testUpdateWithAnEmptyDiscountListRemovesTheStaleValidityVariable(): void
+    {
+        $current = $this->subscriptionResponse([
+            'subitems' => [$this->discountSubitem()],
+            'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31']],
+        ]);
+        $api = new QueuedIuguApiRequest([
+            $current,
+            $this->subscriptionResponse(['custom_variables' => [
+                (object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31'],
+            ]]),
+            $this->subscriptionResponse(['custom_variables' => [
+                (object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31'],
+            ]]),
+            $this->subscriptionResponse(['custom_variables' => []]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->discounts = [];
+
+        $updated = (new IuguGateway($api))->updateSubscription($subscription);
+
+        $this->assertCount(4, $api->calls);
+        $this->assertSame('GET', $api->calls[0]['method']);
+        $this->assertSame(
+            ['subitems' => [['id' => 'si_d1', '_destroy' => true]]],
+            $api->calls[1]['data']
+        );
+        $this->assertSame(
+            ['custom_variables' => [['name' => 'mp_discount_si_d1_until', '_destroy' => true]]],
+            $api->calls[3]['data']
+        );
+        $this->assertNull($updated->canceledAt);
+        $this->assertSame([], $updated->metadata);
+    }
+
+    public function testParseReadsTheDiscountValidityAndTheScheduledCancellation(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse([
+            'subitems' => [$this->discountSubitem()],
+            'custom_variables' => [
+                (object) ['name' => 'origem', 'value' => 'teste'],
+                (object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31'],
+                (object) ['name' => 'mp_cancel_at_period_end', 'value' => '1'],
+                (object) ['name' => 'mp_cancel_scheduled_for', 'value' => '2026-10-01'],
+            ],
+        ])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
+        $this->assertTrue($subscription->cancelAtPeriodEnd);
+        $this->assertNull($subscription->canceledAt);
+        $this->assertSame('2026-12-31', $subscription->discounts[0]->validUntil->format('Y-m-d'));
+        $this->assertNull($subscription->discounts[0]->cycles);
+        $this->assertSame(['origem' => 'teste'], $subscription->metadata);
+    }
+
+    /**
+     * Com chave, o `PUT` da validade recebe `{chave}:discounts` pela store, e o retry só
+     * repete o `POST` (endpoint nativo, deduplicado pela própria Iugu).
+     */
+    public function testCreateWithDiscountStoresTheValidityWriteUnderItsOwnKey(): void
+    {
+        $created = $this->subscriptionResponse(['subitems' => [$this->discountSubitem()]]);
+        $withVariable = $this->subscriptionResponse([
+            'subitems' => [$this->discountSubitem()],
+            'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31']],
+        ]);
+        $api = new QueuedIuguApiRequest([$created, $withVariable, $created]);
+        $store = new \Potelo\MultiPayment\Idempotency\InMemoryIdempotencyStore();
+        $gateway = new IuguGateway($api, $store);
+
+        $subscription = new Subscription();
+        $subscription->fill([
+            'plan_id' => 'plano_mensal',
+            'customer' => ['id' => 'cus_1'],
+            'discounts' => [['description' => 'Promo', 'amount_off' => 500, 'valid_until' => '2026-12-31']],
+        ]);
+
+        $gateway->createSubscription($subscription, 'chave-1');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame(['Idempotency-Key: chave-1'], $api->calls[0]['headers']);
+        $this->assertSame([], $api->calls[1]['headers']);
+        $this->assertTrue($store->has('iugu:chave-1:discounts'));
+
+        $again = new Subscription();
+        $again->fill([
+            'plan_id' => 'plano_mensal',
+            'customer' => ['id' => 'cus_1'],
+            'discounts' => [['description' => 'Promo', 'amount_off' => 500, 'valid_until' => '2026-12-31']],
+        ]);
+        $gateway->createSubscription($again, 'chave-1');
+
+        $this->assertCount(3, $api->calls, 'o retry repete só o POST; o PUT da validade sai da store');
+        $this->assertSame('POST', $api->calls[2]['method']);
+    }
+
+    /**
+     * No update, o desconto novo casa com o subitem da resposta e ganha a variável de
+     * validade; a variável do desconto que saiu da lista é removida no mesmo `PUT`.
+     */
+    public function testUpdateReplacesTheDiscountAndRewritesItsValidityVariable(): void
+    {
+        $old = $this->discountSubitem('si_old');
+        $oldVariable = (object) ['name' => 'mp_discount_si_old_until', 'value' => '2026-10-01'];
+        $new = $this->discountSubitem('si_new');
+
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['subitems' => [$old], 'custom_variables' => [$oldVariable]]),
+            $this->subscriptionResponse(['subitems' => [], 'custom_variables' => [$oldVariable]]),
+            $this->subscriptionResponse(['subitems' => [$new], 'custom_variables' => [$oldVariable]]),
+            $this->subscriptionResponse([
+                'subitems' => [$new],
+                'custom_variables' => [(object) ['name' => 'mp_discount_si_new_until', 'value' => '2026-12-31']],
+            ]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->fill([
+            'id' => 'sub_1',
+            'discounts' => [['description' => 'Promo', 'amount_off' => 500, 'valid_until' => '2026-12-31']],
+        ]);
+
+        $updated = (new IuguGateway($api))->updateSubscription($subscription);
+
+        $this->assertCount(4, $api->calls);
+        $this->assertSame(
+            ['subitems' => [['id' => 'si_old', '_destroy' => true]]],
+            $api->calls[1]['data']
+        );
+        $this->assertSame(
+            ['custom_variables' => [
+                ['name' => 'mp_discount_si_new_until', 'value' => '2026-12-31'],
+                ['name' => 'mp_discount_si_old_until', '_destroy' => true],
+            ]],
+            $api->calls[3]['data']
+        );
+        $this->assertSame('2026-12-31', $updated->discounts[0]->validUntil->format('Y-m-d'));
+    }
+
+    /**
+     * Update com o mesmo desconto e a mesma validade não escreve a variável de novo: a
+     * operação termina no `PUT` da atualização.
+     */
+    public function testUpdateWithTheSameDiscountValidityDoesNotWriteTheVariableAgain(): void
+    {
+        $withVariable = $this->subscriptionResponse([
+            'subitems' => [$this->discountSubitem()],
+            'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-12-31']],
+        ]);
+        $api = new QueuedIuguApiRequest([$withVariable, $withVariable]);
+
+        $subscription = new Subscription();
+        $subscription->fill([
+            'id' => 'sub_1',
+            'discounts' => [[
+                'id' => 'si_d1',
+                'description' => 'Promo',
+                'amount_off' => 500,
+                'valid_until' => '2026-12-31',
+            ]],
+        ]);
+
+        (new IuguGateway($api))->updateSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('GET', $api->calls[0]['method']);
+        $this->assertSame('PUT', $api->calls[1]['method']);
+    }
+
+    /**
+     * Na criação com trial, a contagem de `cycles` parte do fim do teste, que é quando a
+     * primeira fatura é cobrada.
+     */
+    public function testDiscountCyclesCountFromTheTrialEndWhenCreatingWithATrial(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['subitems' => [$this->discountSubitem()], 'expires_at' => '2026-09-11']),
+            (object) ['identifier' => 'plano_mensal', 'interval_type' => 'months', 'interval' => 1, 'value_cents' => 10000],
+            $this->subscriptionResponse([
+                'subitems' => [$this->discountSubitem()],
+                'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => '2026-10-11']],
+            ]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->fill([
+            'plan_id' => 'plano_mensal',
+            'customer' => ['id' => 'cus_1'],
+            'trial_ends_at' => '2026-09-11',
+            'discounts' => [['description' => 'Promo', 'amount_off' => 500, 'cycles' => 2]],
+        ]);
+
+        (new IuguGateway($api))->createSubscription($subscription);
+
+        $this->assertSame(
+            ['name' => 'mp_discount_si_d1_until', 'value' => '2026-10-11'],
+            $api->calls[2]['data']['custom_variables'][0]
+        );
+    }
+
+    public function testAnUnreadableDiscountValidityIsIgnoredWithAWarning(): void
+    {
+        $app = \Illuminate\Support\Facades\Facade::getFacadeApplication();
+        $app->instance('log', $logger = new RecordingLogger());
+
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse([
+            'subitems' => [$this->discountSubitem()],
+            'custom_variables' => [(object) ['name' => 'mp_discount_si_d1_until', 'value' => 'sim']],
+        ])]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription = (new IuguGateway($api))->getSubscription($subscription);
+
+        $this->assertNull($subscription->discounts[0]->validUntil);
+        $this->assertCount(1, $logger->records);
+        $this->assertSame('warning', $logger->records[0]['level']);
+        $this->assertStringContainsString('mp_discount_si_d1_until', $logger->records[0]['message']);
+    }
+
+    /**
+     * `resume()` de uma assinatura ativa com cancelamento agendado remove as variáveis do
+     * agendamento, mesmo sem a marca `mp_canceled_at`.
+     */
+    public function testResumeClearsAScheduledCancellation(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            $this->subscriptionResponse(['custom_variables' => [
+                (object) ['name' => 'mp_cancel_at_period_end', 'value' => '1'],
+                (object) ['name' => 'mp_cancel_scheduled_for', 'value' => '2026-10-01'],
+            ]]),
+            $this->subscriptionResponse(['custom_variables' => []]),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $resumed = (new IuguGateway($api))->resumeSubscription($subscription);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertSame('PUT', $api->calls[1]['method']);
+        $this->assertSame(
+            [
+                ['name' => 'mp_canceled_at', '_destroy' => true],
+                ['name' => 'mp_cancel_at_period_end', '_destroy' => true],
+                ['name' => 'mp_cancel_scheduled_for', '_destroy' => true],
+            ],
+            $api->calls[1]['data']['custom_variables']
+        );
+        $this->assertFalse($resumed->cancelAtPeriodEnd);
+    }
+
+    /**
+     * O prefixo `mp_` de `custom_variables` guarda o estado da emulação, então `metadata` com
+     * uma chave assim é recusado antes de qualquer requisição.
+     */
+    public function testMetadataWithTheReservedPrefixIsRejected(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+
+        $subscription = new Subscription();
+        $subscription->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1']]);
+        $subscription->metadata = ['mp_canceled_at' => '2026-09-04'];
+
+        try {
+            (new IuguGateway($api))->createSubscription($subscription);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('mp_ prefix', $e->getMessage());
+        }
+        $this->assertCount(0, $api->calls);
     }
 }

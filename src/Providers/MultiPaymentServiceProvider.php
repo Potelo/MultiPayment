@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Providers;
 use Potelo\MultiPayment\MultiPayment;
 use Illuminate\Support\ServiceProvider;
 use Potelo\MultiPayment\Contracts\IdempotencyStore;
+use Potelo\MultiPayment\Console\SyncSubscriptionsCommand;
 use Potelo\MultiPayment\Idempotency\CacheIdempotencyStore;
 
 class MultiPaymentServiceProvider extends ServiceProvider
@@ -28,6 +29,10 @@ class MultiPaymentServiceProvider extends ServiceProvider
         $this->publishes([
             $configFile => config_path('multi-payment.php'),
         ], 'config');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([SyncSubscriptionsCommand::class]);
+        }
     }
 
     /**

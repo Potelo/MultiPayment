@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Tests\Unit;
 
+use Carbon\Carbon;
 use Stripe\ApiRequestor;
 use PHPUnit\Framework\TestCase;
 use Illuminate\Config\Repository;
@@ -59,20 +60,6 @@ class CapabilityGuardsTest extends TestCase
         parent::tearDown();
     }
 
-    public function testPercentDiscountSubscriptionOnStripeFailsBeforeCreatingTheCustomer(): void
-    {
-        $customer = new Customer();
-        $customer->name = 'Fulano';
-        $customer->email = 'fulano@exemplo.com';
-
-        $builder = (new MultiPayment('stripe'))->newSubscription()
-            ->setPlanId('plano_mensal')
-            ->setCustomer($customer)
-            ->addPercentDiscount('Promo', 10.0);
-
-        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $builder->create());
-    }
-
     public function testBankSlipSubscriptionOnStripeFailsBeforeCreatingTheCustomer(): void
     {
         $customer = new Customer();
@@ -88,31 +75,6 @@ class CapabilityGuardsTest extends TestCase
     }
 
     /**
-     * Desconto simples (`amountOff`) passa pela capability do model (a Iugu o entrega sem
-     * cupom), então o driver Stripe o recusa por conta própria, antes de qualquer requisição.
-     */
-    public function testSubscriptionDiscountsOnStripeAreRefusedBeforeTheNetwork(): void
-    {
-        $discount = new SubscriptionDiscount();
-        $discount->description = 'Promo';
-        $discount->amountOff = 500;
-
-        $gateway = new StripeGateway();
-
-        $creating = new Subscription();
-        $creating->customer = new Customer();
-        $creating->customer->id = 'cus_1';
-        $creating->planId = 'plano_mensal';
-        $creating->discounts = [$discount];
-        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $gateway->createSubscription($creating));
-
-        $updating = new Subscription();
-        $updating->id = 'sub_1';
-        $updating->discounts = [$discount];
-        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $gateway->updateSubscription($updating));
-    }
-
-    /**
      * No update, o gateway gravado no model prevalece sobre o informado, como em `Model::save()`:
      * a recusa vem do stripe gravado no model, com o motivo dele, e a instância da Iugu não é
      * tocada.
@@ -120,16 +82,13 @@ class CapabilityGuardsTest extends TestCase
     public function testUpdateUsesTheGatewayStoredInTheModel(): void
     {
         $api = new QueuedIuguApiRequest([]);
-        $discount = new SubscriptionDiscount();
-        $discount->description = 'Promo';
-        $discount->percentOff = 10.0;
 
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
         $subscription->gateway = 'stripe';
-        $subscription->discounts = [$discount];
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
 
-        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $subscription->save(new IuguGateway($api)));
+        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $subscription->save(new IuguGateway($api)));
         $this->assertCount(0, $api->calls);
     }
 
@@ -140,15 +99,11 @@ class CapabilityGuardsTest extends TestCase
      */
     public function testDeleteChecksTheCapabilityBeforeTheDispatchMethod(): void
     {
-        $discount = new SubscriptionDiscount();
-        $discount->description = 'Promo';
-        $discount->percentOff = 10.0;
-
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
-        $subscription->discounts = [$discount];
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
 
-        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $subscription->delete('stripe'));
+        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $subscription->delete('stripe'));
     }
 
     public function testBankSlipChargeOnStripeFailsBeforeCreatingTheCustomer(): void
@@ -206,7 +161,7 @@ class CapabilityGuardsTest extends TestCase
             ->addPercentDiscount('Anual', 10.0);
 
         $this->assertUnsupported(
-            Capability::NATIVE_COUPONS,
+            Capability::PERCENT_DISCOUNT,
             UnsupportedOperationException::REASON_GATEWAY_LIMITATION,
             'iugu',
             fn () => $builder->create()
@@ -322,7 +277,17 @@ class CapabilityGuardsTest extends TestCase
         $discount = new \Potelo\MultiPayment\Models\SubscriptionDiscount();
         $discount->percentOff = 10.0;
         $subscription->discounts = [$discount];
-        $this->assertSame([Capability::SUBSCRIPTIONS, Capability::NATIVE_COUPONS], $subscription->requiredCapabilities());
+        $this->assertSame([Capability::SUBSCRIPTIONS, Capability::PERCENT_DISCOUNT], $subscription->requiredCapabilities());
+
+        $withTerm = new Subscription();
+        $limited = new \Potelo\MultiPayment\Models\SubscriptionDiscount();
+        $limited->amountOff = 500;
+        $limited->cycles = 3;
+        $dated = new \Potelo\MultiPayment\Models\SubscriptionDiscount();
+        $dated->amountOff = 500;
+        $dated->validUntil = Carbon::parse('2027-01-01');
+        $withTerm->discounts = [$limited, $dated];
+        $this->assertSame([Capability::SUBSCRIPTIONS, Capability::COUPONS], $withTerm->requiredCapabilities());
 
         $existing = new Invoice();
         $existing->id = 'inv_1';

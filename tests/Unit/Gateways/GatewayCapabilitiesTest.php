@@ -25,6 +25,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 class GatewayCapabilitiesTest extends TestCase
 {
     private const SUPPORTED = CapabilitiesTable::SUPPORTED;
+    private const EMULATED = CapabilitiesTable::EMULATED;
     private const NOT_IMPLEMENTED = CapabilitiesTable::NOT_IMPLEMENTED;
     private const LIMITATION = CapabilitiesTable::GATEWAY_LIMITATION;
 
@@ -54,7 +55,11 @@ class GatewayCapabilitiesTest extends TestCase
         $driver = self::driver($gateway);
 
         $this->assertSame($expected, CapabilitiesTable::cell($driver, $capability));
-        $this->assertSame($expected === self::SUPPORTED, $driver->supports($capability));
+        $this->assertSame(
+            in_array($expected, [self::SUPPORTED, self::EMULATED], true),
+            $driver->supports($capability)
+        );
+        $this->assertSame($expected === self::EMULATED, $driver->isEmulated($capability));
     }
 
     /**
@@ -84,8 +89,9 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::SUBSCRIPTIONS->name =>            [self::SUPPORTED,      self::SUPPORTED],
             Capability::PLANS->name =>                    [self::SUPPORTED,      self::SUPPORTED],
             Capability::PLAN_DEACTIVATION->name =>        [self::LIMITATION,     self::SUPPORTED],
-            Capability::CANCEL_AT_PERIOD_END->name =>     [self::LIMITATION,     self::SUPPORTED],
-            Capability::NATIVE_COUPONS->name =>           [self::LIMITATION,     self::NOT_IMPLEMENTED],
+            Capability::CANCEL_AT_PERIOD_END->name =>     [self::EMULATED,       self::SUPPORTED],
+            Capability::COUPONS->name =>                  [self::EMULATED,       self::SUPPORTED],
+            Capability::PERCENT_DISCOUNT->name =>         [self::LIMITATION,     self::SUPPORTED],
             Capability::PLAN_CHANGE_PRORATION->name =>    [self::LIMITATION,     self::SUPPORTED],
             Capability::SUBSCRIPTION_CREDITS->name =>     [self::NOT_IMPLEMENTED, self::LIMITATION],
             Capability::MANAGES_RECURRENCE->name =>       [self::LIMITATION,     self::SUPPORTED],
@@ -107,16 +113,22 @@ class GatewayCapabilitiesTest extends TestCase
     }
 
     #[DataProvider('driverProvider')]
-    public function testCapabilitiesAndNotYetImplementedDoNotOverlap(string $gateway): void
+    public function testCapabilitiesNotYetImplementedAndEmulatedDoNotOverlap(string $gateway): void
     {
         $driver = self::driver($gateway);
 
         $overlap = array_filter(
             $driver->capabilities(),
             static fn (Capability $capability) => in_array($capability, $driver->notYetImplemented(), true)
+                || in_array($capability, $driver->emulated(), true)
+        );
+        $emulatedOverlap = array_filter(
+            $driver->emulated(),
+            static fn (Capability $capability) => in_array($capability, $driver->notYetImplemented(), true)
         );
 
         $this->assertSame([], $overlap);
+        $this->assertSame([], $emulatedOverlap);
         $this->assertSame($driver->capabilities(), array_values(array_unique($driver->capabilities(), SORT_REGULAR)));
     }
 
@@ -203,6 +215,8 @@ class GatewayCapabilitiesTest extends TestCase
             'stripe duplicação só pix' => ['stripe', Capability::INVOICE_DUPLICATION, ['payment_methods' => [PaymentMethod::PIX]]],
             'stripe cancelamento de rascunho' => ['stripe', Capability::INVOICE_CANCELLATION, []],
             'stripe nextBillingAt só na criação' => ['stripe', Capability::SUBSCRIPTIONS, []],
+            'stripe cupom dura meses inteiros' => ['stripe', Capability::COUPONS, []],
+            'iugu cupom sem restrição' => ['iugu', Capability::COUPONS, null],
             'stripe pix sem restrição' => ['stripe', Capability::PIX, null],
         ];
     }
@@ -263,6 +277,28 @@ class GatewayCapabilitiesTest extends TestCase
         $this->assertSame(12, $payment->restriction(Capability::INSTALLMENTS, 'iugu')->maxInstallments);
         $this->assertArrayHasKey(Capability::INVOICE_DUPLICATION->value, $payment->restrictions());
         $this->assertArrayHasKey(Capability::INSTALLMENTS->value, $payment->restrictions('iugu'));
+    }
+
+    /**
+     * A fachada expõe `emulated()` e `isEmulated()` do gateway, e o nome antigo
+     * `Capability::NATIVE_COUPONS` resolve para o mesmo caso `COUPONS`.
+     */
+    public function testTheFacadeExposesTheEmulatedListAndTheLegacyCouponsName(): void
+    {
+        Facade::getFacadeApplication()['config']->set('multi-payment.gateways.iugu.class', IuguGateway::class);
+        Facade::getFacadeApplication()['config']->set('multi-payment.gateways.stripe.class', StripeGateway::class);
+
+        $payment = new MultiPayment('stripe');
+
+        $this->assertSame([], $payment->emulated());
+        $this->assertFalse($payment->isEmulated(Capability::COUPONS));
+        $this->assertSame(
+            [Capability::COUPONS, Capability::CANCEL_AT_PERIOD_END],
+            $payment->emulated('iugu')
+        );
+        $this->assertTrue($payment->isEmulated(Capability::CANCEL_AT_PERIOD_END, 'iugu'));
+        $this->assertTrue($payment->supports(Capability::COUPONS, 'iugu'));
+        $this->assertSame(Capability::COUPONS, Capability::NATIVE_COUPONS);
     }
 
     private static function driver(string $gateway): GatewayContract&DeclaresCapabilities

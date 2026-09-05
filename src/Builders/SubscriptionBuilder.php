@@ -240,19 +240,22 @@ class SubscriptionBuilder extends Builder
      *
      * @param  string  $description
      * @param  int  $amountOff  Valor abatido, em centavos e positivo
-     * @param  int|null  $cycles  null enquanto não for removido, 1 só na próxima fatura
+     * @param  int|null  $cycles  null enquanto não for removido, 1 só na próxima fatura; exclusivo com $validUntil
+     * @param  Carbon|null  $validUntil  data até a qual o desconto vale, inclusive
      *
      * @return $this
      */
     public function addAmountDiscount(
         string $description,
         int $amountOff,
-        ?int $cycles = null
+        ?int $cycles = null,
+        ?Carbon $validUntil = null
     ): SubscriptionBuilder {
         $discount = new SubscriptionDiscount();
         $discount->description = $description;
         $discount->amountOff = $amountOff;
         $discount->cycles = $cycles;
+        $discount->validUntil = $validUntil;
         $this->model->discounts[] = $discount;
 
         return $this;
@@ -263,19 +266,22 @@ class SubscriptionBuilder extends Builder
      *
      * @param  string  $description
      * @param  float  $percentOff  Percentual abatido, entre 0 e 100
-     * @param  int|null  $cycles  null enquanto não for removido, 1 só na próxima fatura
+     * @param  int|null  $cycles  null enquanto não for removido, 1 só na próxima fatura; exclusivo com $validUntil
+     * @param  Carbon|null  $validUntil  data até a qual o desconto vale, inclusive
      *
      * @return $this
      */
     public function addPercentDiscount(
         string $description,
         float $percentOff,
-        ?int $cycles = null
+        ?int $cycles = null,
+        ?Carbon $validUntil = null
     ): SubscriptionBuilder {
         $discount = new SubscriptionDiscount();
         $discount->description = $description;
         $discount->percentOff = $percentOff;
         $discount->cycles = $cycles;
+        $discount->validUntil = $validUntil;
         $this->model->discounts[] = $discount;
 
         return $this;

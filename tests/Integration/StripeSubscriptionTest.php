@@ -29,6 +29,9 @@ class StripeSubscriptionTest extends TestCase
     /** @var string[] ids de assinatura criados, cancelados no tearDown */
     private array $subscriptionsCriadas = [];
 
+    /** @var string[] ids de Coupon criados, apagados no tearDown */
+    private array $couponsCriados = [];
+
     /**
      * Data provider de gateway: mantém o padrão por gateway da suíte e dispensa o sleep da Iugu.
      *
@@ -64,6 +67,14 @@ class StripeSubscriptionTest extends TestCase
                 $client->prices->update($id, ['active' => false]);
             } catch (\Throwable $e) {
                 // limpeza é best effort: falha ao arquivar não invalida o teste
+            }
+        }
+
+        foreach ($this->couponsCriados as $id) {
+            try {
+                $client->coupons->delete($id);
+            } catch (\Throwable $e) {
+                // limpeza é best effort, como acima
             }
         }
 
@@ -172,6 +183,54 @@ class StripeSubscriptionTest extends TestCase
         $subscription = $subscription->cancel(false, $gateway);
         $this->assertSame(SubscriptionStatus::CANCELED, $subscription->status);
         $this->assertNotNull($subscription->canceledAt);
+    }
+
+    /**
+     * O desconto vira um Coupon aplicado à assinatura: `cycles` acima de 1 num plano mensal é
+     * `repeating` com o fim em `validUntil`, a primeira fatura sai com o abatimento e a
+     * leitura devolve o desconto com o id do Coupon.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldCreateASubscriptionWithACouponDiscount($gateway)
+    {
+        $mensal = $this->createPlan($gateway, 10000, 'cupom');
+
+        $customerData = self::customerWithoutAddress();
+        $customer = new Customer();
+        $customer->name = $customerData['name'];
+        $customer->email = $customerData['email'];
+        $customer->taxDocument = $customerData['taxDocument'];
+
+        $creditCard = new CreditCard();
+        $creditCard->token = 'pm_card_visa';
+
+        $subscription = MultiPayment::setGateway($gateway)->newSubscription()
+            ->setPlanId($mensal->identifier)
+            ->setCustomer($customer)
+            ->setCreditCard($creditCard)
+            ->addAmountDiscount('Promo', 500, 3)
+            ->create();
+        $this->subscriptionsCriadas[] = $subscription->id;
+
+        $this->assertCount(1, $subscription->discounts);
+        $discount = $subscription->discounts[0];
+        $this->couponsCriados[] = $discount->id;
+        $this->assertNotEmpty($discount->id);
+        $this->assertSame('Promo', $discount->description);
+        $this->assertSame(500, $discount->amountOff);
+        // duração repeating de 3 meses: a Stripe informa o fim do desconto
+        $this->assertNotNull($discount->validUntil);
+        $this->assertEqualsWithDelta(
+            now()->addMonths(3)->getTimestamp(),
+            $discount->validUntil->getTimestamp(),
+            86400 * 4
+        );
+
+        $this->assertSame(9500, $subscription->latestInvoice->paidAmount);
+
+        $lida = MultiPayment::setGateway($gateway)->getSubscription($subscription->id);
+        $this->assertSame($discount->id, $lida->discounts[0]->id);
+        $this->assertSame(500, $lida->discounts[0]->amountOff);
     }
 
     /**

@@ -332,6 +332,50 @@ class SubscriptionTest extends TestCase
         $discount->validate();
     }
 
+    public function testDiscountRejectsCyclesAndValidUntilTogether(): void
+    {
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+        $discount->cycles = 3;
+        $discount->validUntil = Carbon::parse('2026-12-31');
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches('/cycles and validUntil are mutually exclusive/');
+
+        $discount->validate();
+    }
+
+    public function testBuilderDiscountsAcceptAValidUntilDate(): void
+    {
+        $gateway = Mockery::mock(GatewayContract::class);
+
+        $subscription = (new SubscriptionBuilder($gateway))
+            ->addAmountDiscount('Promo', 300, null, Carbon::parse('2026-12-31'))
+            ->get();
+
+        $this->assertSame('2026-12-31', $subscription->discounts[0]->validUntil->format('Y-m-d'));
+        $this->assertNull($subscription->discounts[0]->cycles);
+    }
+
+    public function testDiscountFillParsesValidUntil(): void
+    {
+        $discount = new SubscriptionDiscount();
+        $discount->fill(['description' => 'Promo', 'amount_off' => 500, 'valid_until' => '2026-12-31']);
+
+        $this->assertSame('2026-12-31', $discount->validUntil->format('Y-m-d'));
+
+        $carbon = new SubscriptionDiscount();
+        $carbon->fill(['valid_until' => Carbon::parse('2026-12-31 10:00:00')]);
+
+        $this->assertSame('2026-12-31 10:00:00', $carbon->validUntil->format('Y-m-d H:i:s'));
+
+        $empty = new SubscriptionDiscount();
+        $empty->fill(['description' => 'Promo', 'valid_until' => '']);
+
+        $this->assertNull($empty->validUntil);
+    }
+
     public function testPlanRejectsUnknownIntervalOnWrite(): void
     {
         $plan = new Plan();

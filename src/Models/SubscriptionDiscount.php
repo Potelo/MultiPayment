@@ -2,6 +2,7 @@
 
 namespace Potelo\MultiPayment\Models;
 
+use Carbon\Carbon;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -36,11 +37,37 @@ class SubscriptionDiscount extends Model
 
     /**
      * Quantos ciclos o desconto vale: null enquanto não for removido, 1 só na próxima fatura,
-     * N para N ciclos.
+     * N para N ciclos. Mutuamente exclusivo com validUntil.
      *
      * @var int|null
      */
     public ?int $cycles = null;
+
+    /**
+     * Data até a qual o desconto vale, inclusive. Mutuamente exclusivo com cycles. Na leitura,
+     * um desconto criado com `cycles` volta com a data equivalente aqui.
+     *
+     * @var Carbon|null
+     */
+    public ?Carbon $validUntil = null;
+
+    /**
+     * @inheritDoc
+     */
+    public function fill(array $data): void
+    {
+        // valor vazio conta como ausente, para não cair como string na propriedade de data
+        if (array_key_exists('valid_until', $data)) {
+            if (!empty($data['valid_until'])) {
+                $this->validUntil = $data['valid_until'] instanceof Carbon
+                    ? $data['valid_until']
+                    : Carbon::parse($data['valid_until']);
+            }
+            unset($data['valid_until']);
+        }
+
+        parent::fill($data);
+    }
 
     /**
      * @return void
@@ -104,6 +131,19 @@ class SubscriptionDiscount extends Model
                 $model,
                 'cycles',
                 'cycles must be null or at least 1.'
+            );
+        }
+
+        if (
+            in_array('cycles', $attributes)
+            && in_array('validUntil', $attributes)
+            && !is_null($this->cycles)
+            && !empty($this->validUntil)
+        ) {
+            throw ModelAttributeValidationException::invalid(
+                $model,
+                'cycles',
+                'cycles and validUntil are mutually exclusive.'
             );
         }
     }

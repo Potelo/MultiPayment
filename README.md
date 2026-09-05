@@ -20,6 +20,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [Pix Automático](#pix-automático)
     - [Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)
     - [Assinaturas e planos](#assinaturas-e-planos)
+    - [Emulações na Iugu](#emulações-na-iugu)
     - [CustomerBuilder](#customerbuilder)
     - [Salvar cartão (CreditCardBuilder)](#salvar-cartão-creditcardbuilder)
     - [getInvoice](#getinvoice)
@@ -110,12 +111,15 @@ Também é possível utilizar o Facade:
 
 ### Capabilities
 
-Cada driver declara o que suporta em dois níveis, pelo contract `DeclaresCapabilities`:
+Cada driver declara o que suporta em três níveis, pelo contract `DeclaresCapabilities`:
 `capabilities()` lista o que o gateway oferece e a lib implementa; `notYetImplemented()` lista o
-que o gateway oferece mas a lib ainda não construiu (planejado para uma versão futura). O que não
-aparece em nenhuma das duas listas é limitação do gateway. `supports(Capability $c)` responde
-sobre a primeira lista e `supportsAll(Capability ...$c)` exige todas de uma vez. Os valores são
-o enum `Potelo\MultiPayment\Enums\Capability`.
+que o gateway oferece mas a lib ainda não construiu (planejado para uma versão futura); e
+`emulated()` lista o que o gateway não oferece mas a lib entrega por conta própria (ver
+[Emulações na Iugu](#emulações-na-iugu)). O que não aparece em nenhuma das três listas é
+limitação do gateway. `supports(Capability $c)` responde verdadeiro para capability
+implementada ou emulada, `isEmulated(Capability $c)` diz se ela roda na lib, e
+`supportsAll(Capability ...$c)` exige todas de uma vez. Os valores são o enum
+`Potelo\MultiPayment\Enums\Capability`.
 
 Uma capability suportada pode valer só numa parte dos casos. `restriction(Capability $c)` devolve
 um `CapabilityRestriction` (`Potelo\MultiPayment\Capabilities\CapabilityRestriction`) com a
@@ -138,6 +142,8 @@ MultiPayment::supports(Capability::INSTALLMENTS, 'iugu');  // true
 MultiPayment::supportsAll(Capability::PIX, Capability::INVOICE_DUPLICATION);   // no gateway da instância
 MultiPayment::capabilities('stripe');                       // Capability[] que a lib implementa
 MultiPayment::notYetImplemented('stripe');                  // Capability[] planejadas
+MultiPayment::emulated('iugu');                             // [Capability::COUPONS, Capability::CANCEL_AT_PERIOD_END]
+MultiPayment::isEmulated(Capability::COUPONS, 'iugu');      // true: exige o comando de sincronização agendado
 
 // restrições dentro de um "sim", consultáveis antes de tokenizar ou de exibir a opção
 $brands = MultiPayment::restriction(Capability::CREDIT_CARD, 'stripe');
@@ -179,8 +185,9 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | sim | Stripe: nextBillingAt vale só na criação da assinatura; na troca de plano e na atualização a Stripe não aceita uma data arbitrária de próxima cobrança. |
 | `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | sim |  |
 | `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | sim |  |
-| `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | limitação do gateway | sim |  |
-| `NATIVE_COUPONS` | Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. | limitação do gateway | não implementado |  |
+| `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | emulado | sim |  |
+| `COUPONS` | Cupom de assinatura com prazo: desconto limitado a um número de ciclos ou válido até uma data (`validUntil`). | emulado | sim | Stripe: O cupom da Stripe dura meses inteiros (duration_in_months): cycles maior que 1 exige plano com intervalo mensal ou anual, e validUntil vira meses inteiros contados da aplicação, arredondados para cima. |
+| `PERCENT_DISCOUNT` | Desconto percentual (`percentOff`) sobre o valor da assinatura. | limitação do gateway | sim |  |
 | `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | sim |  |
 | `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |  |
 | `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | sim |  |
@@ -1078,13 +1085,18 @@ que possam ser reativados quando o ambiente passar a suportar o fluxo.
 
 Assinatura recorrente e plano estão disponíveis nos dois gateways. Na Iugu o plano é o
 recurso de plano nativo; no Stripe ele vira um par Product e Price recorrente (o id do plano
-é o id do Price, com prefixo `price_`), e a assinatura é a Subscription do Stripe Billing. O
-desconto de assinatura no Stripe (Coupon) está planejado para uma versão futura: um
-`SubscriptionDiscount` no Stripe lança `UnsupportedOperationException` (`NATIVE_COUPONS`,
-`not_implemented`) antes de criar a assinatura. Desconto percentual e desconto com `cycles`
-maior que 1 são recusados antes de qualquer requisição; o desconto simples de valor
-(`amountOff`) passa pela capability do model (a Iugu o entrega sem cupom), então a recusa vem
-do driver, depois de o cliente novo que acompanha a assinatura ter sido criado.
+é o id do Price, com prefixo `price_`), e a assinatura é a Subscription do Stripe Billing.
+
+O desconto (`SubscriptionDiscount`) funciona nos dois gateways. No Stripe cada desconto vira
+um Coupon criado na hora e aplicado à assinatura: `cycles` 1 é `duration` `once`, `cycles`
+acima de 1 e `validUntil` viram `repeating` com `duration_in_months` (o cupom da Stripe dura
+meses inteiros: `cycles` acima de 1 exige plano mensal ou anual, e `validUntil` vira meses
+contados da aplicação, arredondados para cima), e desconto sem prazo é `forever`; na leitura
+o desconto volta com o id do Coupon e, no `repeating`, com o fim em `validUntil`. Na Iugu o
+desconto é um subitem recorrente de valor negativo, e a validade (`validUntil`, ou a
+calculada de `cycles` pelo intervalo do plano) é emulada pela lib (ver
+[Emulações na Iugu](#emulações-na-iugu)). Desconto percentual (`percentOff`) só existe no
+Stripe (`PERCENT_DISCOUNT`); a Iugu o recusa antes de qualquer requisição.
 
 ```php
 use Potelo\MultiPayment\Models\Plan;
@@ -1145,8 +1157,9 @@ Operações sobre a assinatura:
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 
 $subscription->suspend();
-$subscription->resume();
+$subscription->resume();                        // desfaz a suspensão e o cancelamento agendado
 $subscription->cancel();                        // CANCELED; na Iugu, suspende e grava a marca de cancelamento
+$subscription->cancel(atPeriodEnd: true);       // segue ativa até o fim do período pago, com cancelAtPeriodEnd
 $subscription->changePlan('plano_anual');       // ProrationBehavior::CHARGE_DIFFERENCE: cobra o plano novo agora
 $subscription->changePlan('plano_anual', ProrationBehavior::NONE);   // nada é cobrado agora
 $preview = $subscription->previewPlanChange('plano_anual');          // simula sem aplicar (ver "Troca de plano")
@@ -1229,20 +1242,23 @@ Particularidades da Iugu:
 - **Cancelar é suspender com uma marca.** A Iugu só suspende, então `cancel()` faz duas
   requisições: `POST /suspend` e um `PUT` que grava `mp_canceled_at` (data e hora, ISO 8601)
   em `custom_variables`. A assinatura lê como `CANCELED` enquanto estiver suspensa com a marca,
-  `canceledAt` é preenchido a partir dela, e ela também aparece em `metadata`. `resume()` de
+  e `canceledAt` é preenchido a partir dela. `resume()` de
   uma assinatura cancelada reativa e remove a marca (`PUT` com `_destroy`), voltando a
   `ACTIVE`. Chamar `cancel()` de novo numa assinatura já cancelada só repete a suspensão e
   mantém a data original. Se a segunda requisição de `cancel()` ou de `resume()` falhar, a
   exceção sobe com a assinatura no estado intermediário (suspensa sem marca, ou ativa com a
   marca); repita a chamada, de preferência com a mesma chave de idempotência, que a Iugu aceita
-  `suspend` e `activate` repetidos. O prefixo `mp_` em `custom_variables` é reservado à lib: não
-  use chaves com esse prefixo em `metadata`; uma marca `mp_canceled_at` que não seja uma data lê
-  como ausente, com aviso no log. `cancel(atPeriodEnd: true)` lança `UnsupportedOperationException`
-  (`CANCEL_AT_PERIOD_END`, `gateway_limitation`); para encerrar ao fim do período, suspenda na
-  data (a emulação está planejada para uma versão futura).
-- **Desconto é sempre valor fixo.** `percentOff` e `cycles` maior que `1` lançam
-  `UnsupportedOperationException` (`NATIVE_COUPONS`, `gateway_limitation`); `cycles` aceita `1`
-  (uma fatura) ou `null` (até ser removido).
+  `suspend` e `activate` repetidos. Uma marca `mp_canceled_at` que não seja uma data lê
+  como ausente, com aviso no log. `cancel(atPeriodEnd: true)` é emulado pela lib e depende do
+  comando de sincronização agendado (ver [Emulações na Iugu](#emulações-na-iugu)).
+- **O prefixo `mp_` em `custom_variables` é reservado à lib** para o estado das emulações:
+  `metadata` com uma chave assim é recusado com `ModelAttributeValidationException`, e na
+  leitura as variáveis `mp_` não aparecem em `metadata` (viram os campos tipados:
+  `canceledAt`, `cancelAtPeriodEnd`, `validUntil` do desconto).
+- **Desconto é sempre valor fixo.** `percentOff` lança `UnsupportedOperationException`
+  (`PERCENT_DISCOUNT`, `gateway_limitation`); `cycles` aceita `1` (uma fatura, subitem sem
+  recorrência) ou `null` (até ser removido), e `cycles` maior que `1` ou `validUntil` são
+  emulados pela lib (ver [Emulações na Iugu](#emulações-na-iugu)).
 - **Plano anual é 12 meses, e plano diário não existe.** A Iugu só tem intervalos em semanas e
   meses, então `PlanInterval::YEAR` é enviado como `12 * intervalCount` meses e
   `PlanInterval::DAY` lança `ModelAttributeValidationException` antes de chamar a API. Na leitura vale a
@@ -1285,9 +1301,10 @@ Particularidades da Iugu:
   subitens na mesma chamada, então o pacote lê a assinatura, envia a remoção sozinha e só depois
   a atualização — até três requisições. Entre a remoção e a atualização a assinatura fica sem os
   itens removidos, e se a segunda falhar eles não voltam sozinhos.
-- **`cancelAtPeriodEnd` não é mapeado** na Iugu, nas duas direções. `canceledAt` vem da marca
-  `mp_canceled_at` gravada por `cancel()`. `paymentMethod` vai como `payable_with` e volta
-  quando a assinatura aceita um único método (`all` e listas com mais de um leem como nulo).
+- **`cancelAtPeriodEnd` e `canceledAt` vêm das marcas da lib** (`mp_cancel_at_period_end` e
+  `mp_canceled_at` em `custom_variables`), gravadas por `cancel()`. `paymentMethod` vai como
+  `payable_with` e volta quando a assinatura aceita um único método (`all` e listas com mais
+  de um leem como nulo).
 - **Reativar exige data de cobrança.** Assinatura criada sem `nextBillingAt` fica sem data no
   gateway e, por isso, não volta com `resume()`: a Iugu responde sem erro e sem mudar nada, e o
   `status` devolvido segue `SUSPENDED`.
@@ -1323,7 +1340,57 @@ ao que veio na leitura — um `save()` que mexeu só nos itens não altera a dat
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `trialEndsAt` ia só como
 > `expires_at`, e com cartão padrão a Iugu cobrava o primeiro ciclo na criação; agora o trial vai
 > com `only_charge_on_due_date`. `Subscription::$paymentMethod` passou a ser escrito
-> (`payable_with`) e lido; até a 4.1.0 era ignorado nas duas direções.
+> (`payable_with`) e lido; até a 4.1.0 era ignorado nas duas direções. O desconto de assinatura
+> no Stripe deixou de ser recusado e vira Coupon; desconto percentual passou a ser recusado na
+> Iugu com a capability `PERCENT_DISCOUNT` (antes `NATIVE_COUPONS`, hoje `COUPONS`); e as
+> variáveis `mp_` da Iugu saíram de `metadata` (a marca de cancelamento aparecia lá) e passaram
+> a ser recusadas na escrita.
+
+#### Emulações na Iugu
+
+A Iugu não oferece cupom com prazo nem cancelamento ao fim do ciclo; a lib emula os dois (a
+célula da [tabela de capabilities](#capabilities) diz "emulado", e `isEmulated()` responde
+verdadeiro). O estado da emulação vive em `custom_variables` da própria assinatura na Iugu,
+com o prefixo reservado `mp_`, então qualquer instância da lib lê o mesmo estado sem banco
+próprio:
+
+| Variável | Conteúdo |
+|---|---|
+| `mp_discount_<subitem_id>_until` | Data (`Y-m-d`) até a qual o subitem de desconto vale |
+| `mp_cancel_at_period_end` | `1` quando há cancelamento agendado |
+| `mp_cancel_scheduled_for` | Data (`Y-m-d`) em que a assinatura deve ser suspensa |
+| `mp_canceled_at` | Data em que a lib cancelou (gravada pelo `cancel()` imediato e pelo comando ao aplicar o agendado) |
+
+Como funciona cada emulação:
+
+- **Cupom com prazo.** O desconto continua sendo o subitem negativo; a validade (`validUntil`,
+  ou a data calculada de `cycles` pelo intervalo do plano, contada da primeira cobrança) é
+  gravada na variável do subitem numa segunda requisição depois da escrita. Na leitura o
+  desconto volta com `validUntil` preenchido. Se essa segunda requisição falhar na criação, a
+  exceção sobe com a assinatura já criada e o desconto sem prazo; reaplique a validade com um
+  `save()` da lista de descontos, que o update regrava a variável.
+- **Cancelamento ao fim do ciclo.** `cancel(atPeriodEnd: true)` não suspende: um único `PUT`
+  grava a intenção e a data programada (a data da próxima cobrança), a assinatura segue
+  `ACTIVE` com `cancelAtPeriodEnd` verdadeiro, e `resume()` limpa o agendamento.
+
+**A emulação só funciona se o comando `multipayment:sync-subscriptions` roda.** Ele percorre
+as assinaturas do gateway, remove o subitem de desconto cuja validade passou e suspende,
+gravando `mp_canceled_at`, a assinatura cujo cancelamento agendado chegou à data. Agende-o na
+aplicação:
+
+```php
+// app/Console/Kernel.php (ou routes/console.php)
+$schedule->command('multipayment:sync-subscriptions')->hourly();
+```
+
+O comando é idempotente (rodar duas vezes não muda nada na segunda), escreve cada ação na
+saída e no log, aceita `--gateway=iugu` para um gateway só e `--dry-run` para inspecionar sem
+escrever; num gateway que gerencia os dois recursos sozinho (Stripe), ele não faz nada e diz
+isso no log, e a varredura sem `--gateway` pula gateway configurado sem `api_key`. Entre o vencimento (do desconto ou do agendamento) e a execução seguinte do
+comando existe uma janela em que a Iugu ainda tem o subitem, ou a assinatura ativa: uma
+fatura gerada nessa janela sai com o desconto vencido, e a frequência do agendamento limita a
+janela. Uma aplicação que já emulava esses recursos por conta própria precisa desligar a
+lógica ao migrar, no mesmo deploy, para não remover o desconto nem suspender duas vezes.
 
 Particularidades do Stripe:
 
@@ -1357,6 +1424,13 @@ Particularidades do Stripe:
   `amount`); item com `recurring` falso vai como item avulso da primeira fatura. No update
   declarativo, item novo cria Price, item com `id` tem a quantidade atualizada e mantém o
   Price, item que saiu da lista é removido, e a troca não gera pró-rata.
+- **Descontos criam Coupons no Stripe.** Cada `SubscriptionDiscount` novo vira um Coupon
+  criado na hora, aplicado via `discounts` da Subscription; a duração vem de `cycles` e
+  `validUntil` (ver [Assinaturas e planos](#assinaturas-e-planos)). No update a lista
+  informada substitui a da assinatura: desconto com `id` (o id do Coupon, como veio na
+  leitura) mantém o Coupon, desconto novo cria um, lista vazia remove todos, e a lista igual
+  à lida não é reenviada. O Coupon criado não é apagado quando sai da assinatura: ele fica na
+  conta, reutilizável pelo id.
 - **`suspend()` pausa a cobrança** (`pause_collection` com `behavior` `void`) e a assinatura
   lê como `PAUSED` (na Iugu, `SUSPENDED`); as faturas dos ciclos pausados são anuladas.
   `resume()` desfaz a pausa e também o cancelamento agendado por `cancel(atPeriodEnd: true)`.

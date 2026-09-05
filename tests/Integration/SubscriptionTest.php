@@ -200,10 +200,9 @@ class SubscriptionTest extends TestCase
         $this->assertSame(SubscriptionStatus::CANCELED, $cancelada->status);
         $this->assertNotNull($cancelada->canceledAt);
         $this->assertLessThan(5, abs(now()->diffInMinutes($cancelada->canceledAt)));
-        $this->assertSame(
-            $cancelada->canceledAt->toIso8601String(),
-            $cancelada->metadata['mp_canceled_at'] ?? null
-        );
+        // a marca mp_canceled_at vive em custom_variables e vira o campo tipado; metadata
+        // não expõe as variáveis reservadas da lib
+        $this->assertArrayNotHasKey('mp_canceled_at', $cancelada->metadata ?? []);
 
         $relida = new Subscription();
         $relida->id = $subscription->id;
@@ -219,6 +218,71 @@ class SubscriptionTest extends TestCase
             ->listSubscriptions($subscription->customer->id);
         $this->assertCount(1, $doCliente);
         $this->assertSame($subscription->id, $doCliente[0]->id);
+    }
+
+    /**
+     * O cancelamento ao fim do ciclo grava a intenção em `custom_variables` sem suspender, a
+     * leitura devolve `cancelAtPeriodEnd` e `resume()` desfaz o agendamento.
+     *
+     * @return void
+     */
+    public function testShouldScheduleAndUndoACancellationAtPeriodEnd(): void
+    {
+        $plan = $this->createPlan(10000, 'agendado');
+        $subscription = $this->createSubscription($plan, now()->addMonth());
+
+        $agendada = $subscription->cancel(true, self::GATEWAY);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $agendada->status);
+        $this->assertTrue($agendada->cancelAtPeriodEnd);
+        $this->assertNull($agendada->canceledAt);
+        $this->assertArrayNotHasKey('mp_cancel_at_period_end', $agendada->metadata ?? []);
+
+        $lida = MultiPayment::setGateway(self::GATEWAY)->getSubscription($subscription->id);
+        $this->assertTrue($lida->cancelAtPeriodEnd);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $lida->status);
+
+        $reativada = $lida->resume(self::GATEWAY);
+        $this->assertFalse($reativada->cancelAtPeriodEnd);
+        $this->assertSame(SubscriptionStatus::ACTIVE, $reativada->status);
+    }
+
+    /**
+     * A validade de um desconto vira a variável `mp_discount_<subitem_id>_until` na Iugu, e a
+     * leitura a devolve em `validUntil`, fora de `metadata`.
+     *
+     * @return void
+     */
+    public function testShouldStoreTheDiscountValidityInCustomVariables(): void
+    {
+        $plan = $this->createPlan(10000, 'validade');
+        $customer = $this->createCustomer(self::GATEWAY, $this->customerWithoutAddress());
+        $validUntil = now()->addMonths(2)->startOfDay();
+
+        $subscription = MultiPayment::setGateway(self::GATEWAY)->newSubscription()
+            ->setPlanId($plan->identifier)
+            ->setCustomerId($customer->id)
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
+            ->setNextBillingAt(now()->addMonth())
+            ->addAmountDiscount('Promo', 500, null, $validUntil)
+            ->create();
+        $this->criados['subscriptions'][] = $subscription->id;
+
+        $this->assertCount(1, $subscription->discounts);
+        $this->assertNotEmpty($subscription->discounts[0]->id);
+        $this->assertSame(
+            $validUntil->format('Y-m-d'),
+            $subscription->discounts[0]->validUntil->format('Y-m-d')
+        );
+
+        $lida = MultiPayment::setGateway(self::GATEWAY)->getSubscription($subscription->id);
+        $this->assertSame(
+            $validUntil->format('Y-m-d'),
+            $lida->discounts[0]->validUntil->format('Y-m-d')
+        );
+        $this->assertArrayNotHasKey(
+            'mp_discount_' . $lida->discounts[0]->id . '_until',
+            $lida->metadata ?? []
+        );
     }
 
     /**

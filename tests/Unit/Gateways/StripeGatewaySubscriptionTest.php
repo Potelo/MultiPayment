@@ -13,6 +13,7 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
+use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\DeclineCode;
@@ -33,7 +34,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
  */
 class StripeGatewaySubscriptionTest extends TestCase
 {
-    private const SUBSCRIPTION_EXPAND = ['default_payment_method', 'items.data.price.product'];
+    private const SUBSCRIPTION_EXPAND = ['default_payment_method', 'discounts.source.coupon', 'items.data.price.product'];
 
     protected function setUp(): void
     {
@@ -813,6 +814,320 @@ class StripeGatewaySubscriptionTest extends TestCase
         $subscription->id = $id;
 
         return (new StripeGateway())->getSubscription($subscription);
+    }
+
+    public function testCreateSubscriptionWithADiscountCreatesTheCouponAndAppliesIt(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::couponResponse(),
+            self::fixture('subscriptions/active'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_fake1';
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+        $subscription->discounts = [$discount];
+
+        (new StripeGateway())->createSubscription($subscription);
+
+        $this->assertSame('post /v1/coupons', self::calledPaths($httpClient)[0]);
+        $this->assertSame(
+            ['name' => 'Promo', 'amount_off' => 500, 'currency' => 'brl', 'duration' => 'forever'],
+            $httpClient->calls[0][2]
+        );
+        $this->assertSame([['coupon' => 'co_fake1']], $httpClient->calls[1][2]['discounts']);
+    }
+
+    public function testDiscountWithOneCycleCreatesAOnceCouponWithPercentOff(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::couponResponse(['amount_off' => null, 'percent_off' => 10.0, 'duration' => 'once']),
+            self::fixture('subscriptions/active'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_fake1';
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->percentOff = 10.0;
+        $discount->cycles = 1;
+        $subscription->discounts = [$discount];
+
+        (new StripeGateway())->createSubscription($subscription);
+
+        $this->assertSame(
+            ['name' => 'Promo', 'percent_off' => 10.0, 'duration' => 'once'],
+            $httpClient->calls[0][2]
+        );
+    }
+
+    /**
+     * `cycles` acima de 1 vira `repeating` com os meses dos ciclos do plano, lido do Price
+     * quando o intervalo ainda não é conhecido.
+     */
+    public function testDiscountCyclesBecomeTheMonthsOfTheMonthlyPlan(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::priceResponse(),
+            self::couponResponse(['duration' => 'repeating', 'duration_in_months' => 3]),
+            self::fixture('subscriptions/active'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_fake1';
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+        $discount->cycles = 3;
+        $subscription->discounts = [$discount];
+
+        (new StripeGateway())->createSubscription($subscription);
+
+        $this->assertSame('get /v1/prices/price_fake1', self::calledPaths($httpClient)[0]);
+        $this->assertSame('repeating', $httpClient->calls[1][2]['duration']);
+        $this->assertSame(3, $httpClient->calls[1][2]['duration_in_months']);
+    }
+
+    public function testDiscountValidUntilBecomesWholeMonthsRoundedUp(): void
+    {
+        Carbon::setTestNow('2026-09-04 12:00:00');
+        try {
+            $httpClient = RecordingStripeHttpClient::withResponses([
+                self::couponResponse(['duration' => 'repeating', 'duration_in_months' => 3]),
+                self::fixture('subscriptions/active'),
+                self::fixture('invoices/paid'),
+                self::fixture('payment_intents/paid'),
+            ]);
+
+            $subscription = self::subscriptionModel();
+            $subscription->planId = 'price_fake1';
+            $discount = new SubscriptionDiscount();
+            $discount->description = 'Promo';
+            $discount->amountOff = 500;
+            $discount->validUntil = Carbon::parse('2026-11-10');
+            $subscription->discounts = [$discount];
+
+            (new StripeGateway())->createSubscription($subscription);
+
+            $this->assertSame('repeating', $httpClient->calls[0][2]['duration']);
+            $this->assertSame(3, $httpClient->calls[0][2]['duration_in_months']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * O cupom da Stripe dura meses inteiros, então `cycles` acima de 1 num plano semanal não
+     * tem duração equivalente e é recusado antes de criar o cupom.
+     */
+    public function testDiscountCyclesOnAWeeklyPlanAreRefused(): void
+    {
+        $weeklyPrice = self::priceResponse();
+        $weeklyPrice['recurring']['interval'] = 'week';
+        $httpClient = RecordingStripeHttpClient::withResponses([$weeklyPrice]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_fake1';
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+        $discount->cycles = 3;
+        $subscription->discounts = [$discount];
+
+        try {
+            (new StripeGateway())->createSubscription($subscription);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::COUPONS, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('meses inteiros', $e->getMessage());
+        }
+        $this->assertSame(['get /v1/prices/price_fake1'], self::calledPaths($httpClient));
+    }
+
+    public function testGetSubscriptionParsesTheDiscounts(): void
+    {
+        $fixture = self::fixture('subscriptions/active');
+        $once = self::discountResponse(['id' => 'co_fake2', 'duration' => 'once']);
+        $fixture['discounts'] = [
+            self::discountResponse(['duration' => 'repeating', 'duration_in_months' => 3], 1796500000),
+            $once,
+        ];
+        RecordingStripeHttpClient::withResponses([
+            $fixture,
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+
+        $result = $this->getSubscription('sub_1UBJmkPjx0CusuMr3KQ2wXyZ');
+
+        $this->assertCount(2, $result->discounts);
+        $discount = $result->discounts[0];
+        $this->assertSame('co_fake1', $discount->id);
+        $this->assertSame('Promo', $discount->description);
+        $this->assertSame(500, $discount->amountOff);
+        $this->assertNull($discount->percentOff);
+        $this->assertNull($discount->cycles);
+        $this->assertSame(1796500000, $discount->validUntil->getTimestamp());
+
+        $this->assertSame('co_fake2', $result->discounts[1]->id);
+        $this->assertSame(1, $result->discounts[1]->cycles);
+        $this->assertNull($result->discounts[1]->validUntil);
+    }
+
+    /**
+     * Um discount que veio como id (sem expand) não tem o Coupon para ler: a lista fica nula,
+     * e um `save()` posterior não toca os descontos da assinatura.
+     */
+    public function testUnexpandedDiscountsDoNotOverwriteTheList(): void
+    {
+        $fixture = self::fixture('subscriptions/active');
+        $fixture['discounts'] = ['di_fake1'];
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $fixture,
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+            $fixture,
+        ]);
+
+        $subscription = $this->getSubscription('sub_1UBJmkPjx0CusuMr3KQ2wXyZ');
+        $this->assertNull($subscription->discounts);
+
+        $subscription->items = null;
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $this->assertCount(4, $httpClient->calls);
+        $this->assertArrayNotHasKey('discounts', $httpClient->calls[3][2]);
+    }
+
+    /**
+     * No update, os meses de `cycles` vêm do intervalo do plano lido em `original`, sem
+     * requisição extra ao Price.
+     */
+    public function testUpdateDiscountCyclesReadThePlanIntervalFromTheOriginal(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('subscriptions/active'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+            self::couponResponse(['duration' => 'repeating', 'duration_in_months' => 2]),
+            self::fixture('subscriptions/active'),
+        ]);
+
+        $subscription = $this->getSubscription('sub_1UBJmkPjx0CusuMr3KQ2wXyZ');
+        $subscription->items = null;
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+        $discount->cycles = 2;
+        $subscription->discounts = [$discount];
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $this->assertSame('post /v1/coupons', self::calledPaths($httpClient)[3]);
+        $this->assertSame(2, $httpClient->calls[3][2]['duration_in_months']);
+        $this->assertNotContains('get /v1/prices/price_fake1', self::calledPaths($httpClient));
+    }
+
+    public function testUpdateReplacesTheDiscounts(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::couponResponse(),
+            self::fixture('subscriptions/active'),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+        $subscription->discounts = [$discount];
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $this->assertSame([
+            'post /v1/coupons',
+            'post /v1/subscriptions/sub_1UBJmkPjx0CusuMr3KQ2wXyZ',
+        ], self::calledPaths($httpClient));
+        $this->assertSame([['coupon' => 'co_fake1']], $httpClient->calls[1][2]['discounts']);
+    }
+
+    public function testUpdateWithAnEmptyDiscountListClearsThem(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('subscriptions/active'),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
+        $subscription->discounts = [];
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $this->assertSame('', $httpClient->calls[0][2]['discounts']);
+    }
+
+    /**
+     * Um model lido do gateway traz os descontos com o id do Coupon; salvar sem mexer neles
+     * não recria cupom nem reenvia `discounts`.
+     */
+    public function testUpdateKeepsTheDiscountsThatCameFromTheGateway(): void
+    {
+        $fixture = self::fixture('subscriptions/active');
+        $fixture['discounts'] = [self::discountResponse()];
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            $fixture,
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+            $fixture,
+        ]);
+
+        $subscription = $this->getSubscription('sub_1UBJmkPjx0CusuMr3KQ2wXyZ');
+        $subscription->items = null;
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $this->assertCount(4, $httpClient->calls);
+        $this->assertSame('post /v1/subscriptions/sub_1UBJmkPjx0CusuMr3KQ2wXyZ', self::calledPaths($httpClient)[3]);
+        $this->assertArrayNotHasKey('discounts', $httpClient->calls[3][2]);
+    }
+
+    private static function couponResponse(array $overrides = []): array
+    {
+        return array_filter(array_merge([
+            'id' => 'co_fake1',
+            'object' => 'coupon',
+            'amount_off' => 500,
+            'currency' => 'brl',
+            'percent_off' => null,
+            'duration' => 'forever',
+            'duration_in_months' => null,
+            'name' => 'Promo',
+            'valid' => true,
+            'created' => 1786700000,
+            'metadata' => [],
+        ], $overrides), static fn ($value) => !is_null($value));
+    }
+
+    private static function discountResponse(array $couponOverrides = [], ?int $end = null): array
+    {
+        return [
+            'id' => 'di_fake1',
+            'object' => 'discount',
+            'source' => ['coupon' => self::couponResponse($couponOverrides), 'type' => 'coupon'],
+            'customer' => 'cus_VBen1v8T4Qa6XX',
+            'subscription' => 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ',
+            'start' => 1788565981,
+            'end' => $end,
+        ];
     }
 
     private static function subscriptionModel(): Subscription

@@ -33,6 +33,7 @@ use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
+use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
@@ -118,7 +119,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * Expand de toda leitura ou escrita de Subscription: o PaymentMethod padrão diz com que
      * método a assinatura é cobrada, e o Product de cada item dá a descrição dos itens.
      */
-    private const SUBSCRIPTION_EXPAND = ['default_payment_method', 'items.data.price.product'];
+    private const SUBSCRIPTION_EXPAND = ['default_payment_method', 'discounts.source.coupon', 'items.data.price.product'];
 
     /** Expand na leitura ou criação de um Price: o Product dá nome e identificador ao plano. */
     private const PRICE_EXPAND = ['product'];
@@ -199,6 +200,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::PLANS,
             Capability::PLAN_DEACTIVATION,
             Capability::CANCEL_AT_PERIOD_END,
+            Capability::COUPONS,
+            Capability::PERCENT_DISCOUNT,
             Capability::PLAN_CHANGE_PRORATION,
             Capability::MANAGES_RECURRENCE,
         ];
@@ -214,7 +217,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::AUTOMATIC_PIX,
             Capability::MULTIPLE_PAYMENT_METHODS,
             Capability::DELAYED_CAPTURE,
-            Capability::NATIVE_COUPONS,
         ];
     }
 
@@ -226,11 +228,19 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a fatura de assinatura
      * (`in_`) só é anulada depois de finalizada pela Stripe; rascunho é recusado.
      * `SUBSCRIPTIONS`: a Stripe só aceita `nextBillingAt` na criação da assinatura; na troca de
-     * plano e na atualização a data da próxima cobrança segue o ciclo.
+     * plano e na atualização a data da próxima cobrança segue o ciclo. `COUPONS`: o cupom da
+     * Stripe dura meses inteiros (`duration_in_months`), então `cycles` maior que 1 exige plano
+     * com intervalo mensal ou anual, e `validUntil` vira meses inteiros contados da aplicação,
+     * arredondados para cima.
      */
     public function restrictions(): array
     {
         return [
+            Capability::COUPONS->value => new CapabilityRestriction(
+                description: 'O cupom da Stripe dura meses inteiros (duration_in_months): cycles maior que 1'
+                    . ' exige plano com intervalo mensal ou anual, e validUntil vira meses inteiros contados'
+                    . ' da aplicação, arredondados para cima.',
+            ),
             Capability::CREDIT_CARD->value => new CapabilityRestriction(
                 description: 'Na conta brasileira só cartão de crédito Visa e Mastercard; outra bandeira é'
                     . ' recusada na cobrança com DeclineCode::BRAND_NOT_SUPPORTED.',
@@ -2819,15 +2829,18 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * `error_if_incomplete`); com Pix a assinatura nasce com a primeira fatura em aberto até o
      * pagamento (`default_incomplete`), lida em `latestInvoice`, com a página hospedada em
      * `url` para o pagador quitar. Boleto em
-     * assinatura ainda não está implementado neste driver, e desconto em `discounts` é
-     * recusado antes da rede (`NATIVE_COUPONS`). Os dias de `trialDays` vão como
+     * assinatura ainda não está implementado neste driver. Cada desconto de `discounts` vira
+     * um Coupon criado na hora e aplicado à assinatura: `cycles` 1 é `duration` `once`, mais
+     * de um ciclo ou `validUntil` viram `repeating` com `duration_in_months`, e desconto sem
+     * prazo é `forever`. Os dias de `trialDays` vão como
      * `trial_period_days`, que não muda entre tentativas com a mesma chave de idempotência;
      * o model devolvido traz a data em `trialEndsAt` e `trialDays` zerado. `nextBillingAt`
      * vira `billing_cycle_anchor`.
      *
      * A chave de idempotência vai no cabeçalho `Idempotency-Key` da criação; as requisições
      * secundárias usam derivadas (`{chave}:card` no cartão salvo antes,
-     * `{chave}:item{N}_product` no Product de cada item extra).
+     * `{chave}:item{N}_product` no Product de cada item extra, `{chave}:discount{N}_coupon`
+     * no Coupon de cada desconto).
      *
      * @throws ChargingException|NotFoundException|UnsupportedOperationException
      */
@@ -2840,7 +2853,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         if (empty($subscription->planId)) {
             throw ModelAttributeValidationException::required('Subscription', 'planId');
         }
-        $this->assertSubscriptionHasNoDiscounts($subscription);
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
         $paymentMethod = $this->subscriptionPaymentMethod($subscription);
@@ -2880,6 +2892,14 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $stripeSubscriptionData['items'] = array_merge($stripeSubscriptionData['items'], $itemsData['items']);
         if (!empty($itemsData['add_invoice_items'])) {
             $stripeSubscriptionData['add_invoice_items'] = $itemsData['add_invoice_items'];
+        }
+
+        if (!empty($subscription->discounts)) {
+            $stripeSubscriptionData['discounts'] = $this->stripeSubscriptionDiscountsData(
+                $subscription->discounts,
+                fn () => $this->stripePriceRecurring($priceId),
+                $idempotencyKey
+            );
         }
 
         if (!empty($subscription->metadata)) {
@@ -2932,9 +2952,11 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * `metadata` e os itens. `nextBillingAt` diferente do que veio do gateway é recusado: a
      * Stripe não aceita mudar a data da próxima cobrança fora do ciclo. Nos itens, item novo
      * cria Price sob demanda, item com `id` tem a quantidade atualizada e mantém o Price, e a
-     * troca não gera pró-rata (`proration_behavior` `none`). Desconto é recusado antes da
-     * rede (`NATIVE_COUPONS`). A chave de idempotência vai no cabeçalho da atualização e,
-     * derivada, nas requisições que a antecedem (`{chave}:card`, `{chave}:item{N}_product`).
+     * troca não gera pró-rata (`proration_behavior` `none`). Nos descontos, a lista informada
+     * substitui a da assinatura: desconto com `id` mantém o Coupon, desconto novo cria um, e
+     * lista vazia remove todos. A chave de idempotência vai no cabeçalho da atualização e,
+     * derivada, nas requisições que a antecedem (`{chave}:card`, `{chave}:item{N}_product`,
+     * `{chave}:discount{N}_coupon`).
      *
      * @throws ChargingException|UnsupportedOperationException
      */
@@ -2943,7 +2965,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
-        $this->assertSubscriptionHasNoDiscounts($subscription);
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
 
         $data = [];
@@ -2983,6 +3004,17 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             if (!empty($declared['add_invoice_items'])) {
                 $data['add_invoice_items'] = $declared['add_invoice_items'];
             }
+        }
+
+        if (!is_null($subscription->discounts) && !$this->isOriginalStripeDiscounts($subscription)) {
+            // lista vazia remove todos os descontos; a Stripe limpa o campo com string vazia
+            $data['discounts'] = empty($subscription->discounts)
+                ? ''
+                : $this->stripeSubscriptionDiscountsData(
+                    $subscription->discounts,
+                    fn () => $this->stripePlanRecurringForUpdate($subscription),
+                    $idempotencyKey
+                );
         }
 
         if (!empty($subscription->metadata)) {
@@ -3243,7 +3275,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
                 'customer' => $customer->id,
                 'status' => 'all',
                 'limit' => $limit,
-                'expand' => ['data.default_payment_method'],
+                'expand' => ['data.default_payment_method', 'data.discounts.source.coupon'],
             ],
             $page
         );
@@ -3297,22 +3329,199 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
-     * Recusa antes da rede uma assinatura com descontos: o cupom da Stripe (Coupon) está
-     * planejado para uma versão futura desta lib (`NATIVE_COUPONS`).
+     * Payload de `discounts` da assinatura: desconto com `id` mantém o Coupon existente;
+     * desconto novo cria um Coupon (`{chave}:discount{N}_coupon`) com a duração derivada de
+     * `cycles` e `validUntil`.
+     *
+     * @param  SubscriptionDiscount[]  $discounts
+     * @param  callable  $planRecurring  devolve `{interval, interval_count}` do plano, lido sob demanda
+     * @param  string|null  $idempotencyKey
+     * @return array
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     */
+    private function stripeSubscriptionDiscountsData(array $discounts, callable $planRecurring, ?string $idempotencyKey): array
+    {
+        $data = [];
+        foreach (array_values($discounts) as $index => $discount) {
+            if (!empty($discount->id)) {
+                $data[] = ['coupon' => $discount->id];
+                continue;
+            }
+
+            $couponData = $this->stripeCouponData($discount, $planRecurring);
+            $stripeCoupon = $this->stripeRequest(function () use ($couponData, $index, $idempotencyKey) {
+                return $this->client->coupons->create(
+                    $couponData,
+                    self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, "discount{$index}_coupon"))
+                );
+            });
+
+            $data[] = ['coupon' => $stripeCoupon->id];
+        }
+
+        return $data;
+    }
+
+    /**
+     * Payload de um Coupon a partir de um desconto de assinatura: `percent_off` ou
+     * `amount_off` em `brl`, e a duração de `stripeCouponDuration()`.
+     *
+     * @param  SubscriptionDiscount  $discount
+     * @param  callable  $planRecurring  devolve `{interval, interval_count}` do plano, lido sob demanda
+     * @return array
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     */
+    private function stripeCouponData(SubscriptionDiscount $discount, callable $planRecurring): array
+    {
+        if (empty($discount->description)) {
+            throw ModelAttributeValidationException::required('SubscriptionDiscount', 'description');
+        }
+        if (is_null($discount->percentOff) && is_null($discount->amountOff)) {
+            throw ModelAttributeValidationException::required('SubscriptionDiscount', 'amountOff or percentOff');
+        }
+
+        $couponData = ['name' => $discount->description];
+        if (!is_null($discount->percentOff)) {
+            $couponData['percent_off'] = $discount->percentOff;
+        } else {
+            $couponData['amount_off'] = $discount->amountOff;
+            $couponData['currency'] = 'brl';
+        }
+
+        return array_merge($couponData, $this->stripeCouponDuration($discount, $planRecurring));
+    }
+
+    /**
+     * Duração do Coupon: `cycles` 1 é `once`; desconto sem prazo é `forever`; `validUntil` e
+     * `cycles` acima de 1 viram `repeating` com `duration_in_months` (meses até `validUntil`,
+     * arredondados para cima, ou os meses de `cycles` ciclos do plano). `validUntil` no
+     * passado é recusado com `ModelAttributeValidationException`, e plano com intervalo
+     * fora de mês e ano com `cycles` acima de 1 é recusado, porque a duração do Coupon só
+     * conta em meses.
+     *
+     * @param  SubscriptionDiscount  $discount
+     * @param  callable  $planRecurring  devolve `{interval, interval_count}` do plano, lido sob demanda
+     * @return array
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     */
+    private function stripeCouponDuration(SubscriptionDiscount $discount, callable $planRecurring): array
+    {
+        if ($discount->cycles === 1) {
+            return ['duration' => 'once'];
+        }
+
+        if (!empty($discount->validUntil)) {
+            $now = Carbon::now();
+            if ($discount->validUntil->lessThanOrEqualTo($now)) {
+                throw ModelAttributeValidationException::invalid(
+                    'SubscriptionDiscount',
+                    'validUntil',
+                    'validUntil must be a future date to create the coupon.'
+                );
+            }
+
+            // diffInMonths trunca em algumas versões do Carbon; o mês parcial conta inteiro
+            $months = (int) $now->diffInMonths($discount->validUntil);
+            if ($now->copy()->addMonths($months)->lessThan($discount->validUntil)) {
+                $months++;
+            }
+
+            return ['duration' => 'repeating', 'duration_in_months' => max(1, $months)];
+        }
+
+        if (is_null($discount->cycles)) {
+            return ['duration' => 'forever'];
+        }
+
+        $recurring = $planRecurring();
+        $monthsPerCycle = match ($recurring['interval'] ?? null) {
+            'month' => (int) ($recurring['interval_count'] ?? 1),
+            'year' => 12 * (int) ($recurring['interval_count'] ?? 1),
+            default => throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::COUPONS,
+                'O cupom da Stripe dura meses inteiros, então cycles acima de 1 exige plano com'
+                . ' intervalo mensal ou anual; use validUntil.'
+            ),
+        };
+
+        return ['duration' => 'repeating', 'duration_in_months' => $discount->cycles * $monthsPerCycle];
+    }
+
+    /**
+     * Intervalo de cobrança do plano de uma assinatura existente, no formato de
+     * `price_data.recurring`: lido de `original` quando a assinatura veio do gateway, senão do
+     * item do plano na Stripe (uma leitura).
      *
      * @param  Subscription  $subscription
-     * @return void
-     * @throws UnsupportedOperationException
+     * @return array{interval: string|null, interval_count: int}
+     * @throws GatewayException|NotFoundException
      */
-    private function assertSubscriptionHasNoDiscounts(Subscription $subscription): void
+    private function stripePlanRecurringForUpdate(Subscription $subscription): array
     {
-        if (!empty($subscription->discounts)) {
-            throw UnsupportedOperationException::forGateway(
-                $this,
-                Capability::NATIVE_COUPONS,
-                'Desconto de assinatura no Stripe está planejado para uma versão futura desta lib.'
-            );
+        $stripeItems = $subscription->original->items->data ?? null;
+        $planItem = is_null($stripeItems)
+            ? $this->currentStripePlanItem($subscription)
+            : self::stripePlanItem((array) $stripeItems, $subscription->planId);
+        $recurring = $planItem->price->recurring ?? null;
+
+        return [
+            'interval' => $recurring->interval ?? null,
+            'interval_count' => (int) ($recurring->interval_count ?? 1),
+        ];
+    }
+
+    /**
+     * Diz se os descontos informados são os mesmos que vieram do gateway na leitura: todos com
+     * `id` e na mesma ordem dos Coupons da assinatura.
+     *
+     * @param  Subscription  $subscription
+     * @return bool
+     */
+    private function isOriginalStripeDiscounts(Subscription $subscription): bool
+    {
+        $original = $subscription->original->discounts ?? null;
+        if (!is_array($original) && !$original instanceof \Traversable) {
+            return false;
         }
+
+        $originalCoupons = [];
+        foreach ($original as $stripeDiscount) {
+            $coupon = is_object($stripeDiscount) ? ($stripeDiscount->source->coupon ?? null) : null;
+            $originalCoupons[] = is_object($coupon) ? ($coupon->id ?? null) : (is_string($coupon) ? $coupon : null);
+        }
+
+        $modelCoupons = array_map(
+            static fn (SubscriptionDiscount $discount) => $discount->id,
+            array_values($subscription->discounts)
+        );
+
+        return $modelCoupons === $originalCoupons && !in_array(null, $modelCoupons, true);
+    }
+
+    /**
+     * Converte um discount da Stripe (com o Coupon expandido em `source.coupon`) num desconto
+     * de assinatura. O `id` é o do Coupon; `cycles` volta 1 para `once` e nulo nos demais
+     * casos, e a duração `repeating` traz o fim em `validUntil`.
+     *
+     * @param  object  $stripeDiscount
+     * @return SubscriptionDiscount
+     */
+    private function parseStripeSubscriptionDiscount(object $stripeDiscount): SubscriptionDiscount
+    {
+        $coupon = is_object($stripeDiscount->source->coupon ?? null) ? $stripeDiscount->source->coupon : null;
+
+        $discount = new SubscriptionDiscount();
+        $discount->id = $coupon->id ?? null;
+        $discount->description = $coupon->name ?? null;
+        $discount->amountOff = isset($coupon->amount_off) ? (int) $coupon->amount_off : null;
+        $discount->percentOff = isset($coupon->percent_off) ? (float) $coupon->percent_off : null;
+        $discount->cycles = ($coupon->duration ?? null) === 'once' ? 1 : null;
+        $discount->validUntil = !empty($stripeDiscount->end ?? null)
+            ? Carbon::createFromTimestamp($stripeDiscount->end)
+            : null;
+
+        return $discount;
     }
 
     /**
@@ -3613,7 +3822,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      *
      * O item cujo Price é o plano (`stripePlanItem()`) dá o `planId` (`lookup_key`, senão o
      * id do Price) e a próxima cobrança (`current_period_end`); os demais itens viram
-     * `items`, e `amount` é a soma dos itens por ciclo. `paymentMethod` vem do PaymentMethod
+     * `items`, e `amount` é a soma dos itens por ciclo. Os discounts expandidos viram
+     * `discounts`, com o id do Coupon. `paymentMethod` vem do PaymentMethod
      * padrão expandido, senão do único tipo em `payment_settings`. Com $withLatestInvoice, a
      * fatura mais recente é lida por inteiro (`parseFromStripeInvoice()`), uma leitura a
      * mais.
@@ -3659,6 +3869,25 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
         if (!empty($stripeItems)) {
             $subscription->items = $items;
+        }
+
+        $stripeDiscounts = $stripeSubscription->discounts ?? null;
+        if (is_array($stripeDiscounts) || $stripeDiscounts instanceof \Traversable) {
+            $discounts = [];
+            $unexpanded = false;
+            foreach ($stripeDiscounts as $stripeDiscount) {
+                // sem expand o discount vem como id (string), que não tem o Coupon para ler
+                if (is_object($stripeDiscount)) {
+                    $discounts[] = $this->parseStripeSubscriptionDiscount($stripeDiscount);
+                } else {
+                    $unexpanded = true;
+                }
+            }
+            // com um discount ilegível, a lista fica como está: gravar uma lista incompleta
+            // faria um save() posterior remover da assinatura os descontos que existem
+            if (!$unexpanded) {
+                $subscription->discounts = $discounts;
+            }
         }
 
         $customerId = is_object($stripeSubscription->customer ?? null)

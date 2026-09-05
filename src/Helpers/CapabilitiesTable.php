@@ -14,6 +14,9 @@ class CapabilitiesTable
     /** Célula de capability que o gateway oferece e a lib implementa. */
     public const SUPPORTED = 'sim';
 
+    /** Célula de capability que o gateway não oferece e a lib entrega por emulação. */
+    public const EMULATED = 'emulado';
+
     /** Célula de capability que o gateway oferece mas a lib ainda não implementa. */
     public const NOT_IMPLEMENTED = 'não implementado';
 
@@ -58,8 +61,12 @@ class CapabilitiesTable
      */
     public static function cell(DeclaresCapabilities $gateway, Capability $capability): string
     {
-        if ($gateway->supports($capability)) {
+        if (in_array($capability, $gateway->capabilities(), true)) {
             return self::SUPPORTED;
+        }
+
+        if ($gateway->isEmulated($capability)) {
+            return self::EMULATED;
         }
 
         if (in_array($capability, $gateway->notYetImplemented(), true)) {

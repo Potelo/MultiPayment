@@ -7,9 +7,10 @@ use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 
 /**
- * Implementa `supports()`, `supportsAll()` e `restriction()` de `DeclaresCapabilities` sobre
- * as listas do driver e oferece as guardas que os drivers chamam antes de qualquer requisição.
- * `restrictions()` devolve lista vazia; o driver que tem restrição a sobrescreve.
+ * Implementa `supports()`, `supportsAll()`, `isEmulated()` e `restriction()` de
+ * `DeclaresCapabilities` sobre as listas do driver e oferece as guardas que os drivers chamam
+ * antes de qualquer requisição. `emulated()` e `restrictions()` devolvem lista vazia; o driver
+ * que emula ou restringe as sobrescreve.
  */
 trait ChecksCapabilities
 {
@@ -26,9 +27,25 @@ trait ChecksCapabilities
     /**
      * @inheritDoc
      */
+    public function emulated(): array
+    {
+        return [];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function isEmulated(Capability $capability): bool
+    {
+        return in_array($capability, $this->emulated(), true);
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function supports(Capability $capability): bool
     {
-        return in_array($capability, $this->capabilities(), true);
+        return in_array($capability, $this->capabilities(), true) || $this->isEmulated($capability);
     }
 
     /**

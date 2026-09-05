@@ -109,6 +109,33 @@ class MultiPayment
     }
 
     /**
+     * Capabilities que o gateway (o desta instância, por padrão) não oferece mas a lib entrega
+     * por emulação.
+     *
+     * @param  GatewayContract|string|null  $gateway
+     * @return Capability[]
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function emulated($gateway = null): array
+    {
+        return $this->gateway($gateway)->emulated();
+    }
+
+    /**
+     * Diz se a lib entrega a capability por emulação no gateway (o desta instância, por
+     * padrão).
+     *
+     * @param  Capability  $capability
+     * @param  GatewayContract|string|null  $gateway
+     * @return bool
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     */
+    public function isEmulated(Capability $capability, $gateway = null): bool
+    {
+        return $this->gateway($gateway)->isEmulated($capability);
+    }
+
+    /**
      * Diz se o gateway desta instância suporta todas as capabilities informadas. Para outro
      * gateway, use `gateway($nome)->supportsAll(...)`.
      *

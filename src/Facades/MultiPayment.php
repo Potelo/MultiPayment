@@ -33,6 +33,8 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static bool supports(\Potelo\MultiPayment\Enums\Capability $capability, $gateway = null)
  * @method static \Potelo\MultiPayment\Enums\Capability[] capabilities($gateway = null)
  * @method static \Potelo\MultiPayment\Enums\Capability[] notYetImplemented($gateway = null)
+ * @method static \Potelo\MultiPayment\Enums\Capability[] emulated($gateway = null)
+ * @method static bool isEmulated(\Potelo\MultiPayment\Enums\Capability $capability, $gateway = null)
  * @method static bool supportsAll(\Potelo\MultiPayment\Enums\Capability ...$capabilities)
  * @method static \Potelo\MultiPayment\Capabilities\CapabilityRestriction|null restriction(\Potelo\MultiPayment\Enums\Capability $capability, $gateway = null)
  * @method static array<string, \Potelo\MultiPayment\Capabilities\CapabilityRestriction> restrictions($gateway = null)

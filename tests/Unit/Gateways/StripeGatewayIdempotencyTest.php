@@ -17,6 +17,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
+use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\PaymentMethod;
@@ -544,6 +545,29 @@ class StripeGatewayIdempotencyTest extends TestCase
                     'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
                 ],
             ],
+            'createSubscription com desconto' => [
+                function (StripeGateway $g, ?string $key) {
+                    $subscription = self::subscriptionModel('pm_fake123');
+                    $discount = new SubscriptionDiscount();
+                    $discount->description = 'Promo';
+                    $discount->amountOff = 500;
+                    $subscription->discounts = [$discount];
+
+                    return $g->createSubscription($subscription, $key);
+                },
+                [
+                    self::couponResponse(),
+                    self::subscriptionFixture(),
+                    self::stripeInvoiceFixture(),
+                    self::fixture('payment_intents/paid'),
+                ],
+                [
+                    'post /v1/coupons' => 'chave-1:discount0_coupon',
+                    'post /v1/subscriptions' => 'chave-1',
+                    'get /v1/invoices/in_1UBJmkPjx0CusuMrN6Yc2Ha1' => null,
+                    'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
+                ],
+            ],
             'updateSubscription' => [
                 function (StripeGateway $g, ?string $key) {
                     $subscription = new Subscription();
@@ -554,6 +578,23 @@ class StripeGatewayIdempotencyTest extends TestCase
                 },
                 [self::subscriptionFixture()],
                 ['post /v1/subscriptions/sub_fake1' => 'chave-1'],
+            ],
+            'updateSubscription com desconto novo' => [
+                function (StripeGateway $g, ?string $key) {
+                    $subscription = new Subscription();
+                    $subscription->id = 'sub_fake1';
+                    $discount = new SubscriptionDiscount();
+                    $discount->description = 'Promo';
+                    $discount->amountOff = 500;
+                    $subscription->discounts = [$discount];
+
+                    return $g->updateSubscription($subscription, $key);
+                },
+                [self::couponResponse(), self::subscriptionFixture()],
+                [
+                    'post /v1/coupons' => 'chave-1:discount0_coupon',
+                    'post /v1/subscriptions/sub_fake1' => 'chave-1',
+                ],
             ],
             'suspendSubscription' => [
                 fn (StripeGateway $g, ?string $key) => $g->suspendSubscription(self::subscriptionWithId(), $key),
@@ -693,6 +734,21 @@ class StripeGatewayIdempotencyTest extends TestCase
             'type' => 'recurring',
             'unit_amount' => 10000,
             'unit_amount_decimal' => '10000',
+        ];
+    }
+
+    private static function couponResponse(): array
+    {
+        return [
+            'id' => 'co_fake1',
+            'object' => 'coupon',
+            'amount_off' => 500,
+            'currency' => 'brl',
+            'duration' => 'forever',
+            'name' => 'Promo',
+            'valid' => true,
+            'created' => 1786700000,
+            'metadata' => [],
         ];
     }
 
