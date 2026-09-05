@@ -1,9 +1,9 @@
 # Fixtures da Stripe
 
-Respostas da sandbox da Stripe, API `2026-07-29.dahlia`, gravadas em 2026-09-02 com o
-`expand` que o driver usa (`payments.data.payment.payment_intent` no Invoice;
-`latest_charge.balance_transaction` e `latest_charge.refunds` no PaymentIntent). Só o
-`client_secret` dos PaymentIntents foi substituído por um placeholder.
+Respostas da sandbox da Stripe, API `2026-07-29.dahlia`, gravadas em 2026-09-02 (as de
+boleto em 2026-09-04) com o `expand` que o driver usa (`payments.data.payment.payment_intent`
+no Invoice; `latest_charge.balance_transaction` e `latest_charge.refunds` no PaymentIntent).
+Só o `client_secret` dos PaymentIntents foi substituído por um placeholder.
 
 ## `invoices/`
 
@@ -32,11 +32,19 @@ Montadas sobre `open_requires_payment_method.json`, porque a sandbox não produz
 | `open_partially_paid.json` | `amount_paid` 5000 e `amount_remaining` 7345 |
 | `open_without_payment_intent.json` | `payments.data` vazio |
 
+Gravada na sandbox em 2026-09-04:
+
+| Arquivo | Como foi produzida |
+|---|---|
+| `open_boleto_send_invoice.json` | primeira fatura de uma assinatura `send_invoice` com `payment_settings.payment_method_types: ['boleto']`, finalizada na hora (GET com o expand do driver) |
+
 ## `payment_intents/`
 
 `after_declined_attempt.json`, `paid.json`, `partially_refunded.json`, `refunded.json` e
 `disputed.json` são o GET do PaymentIntent dos Invoices acima. `requires_action.json` é
 `after_declined_attempt.json` com o status trocado e um `next_action` de 3DS.
+`boleto_requires_action.json` (2026-09-04) é a resposta da criação de um PaymentIntent de
+boleto confirmado server-side, com o voucher em `next_action.boleto_display_details`.
 
 ## `disputes/`
 
@@ -72,6 +80,7 @@ e-mail foram renomeados para os valores estáveis das fixtures (`sub_1UBJmk...`,
 | `active_cancel_at_period_end.json` | a mesma depois de `cancelSubscription(atPeriodEnd: true)` |
 | `canceled.json` | a mesma depois do cancelamento imediato (já no plano anual, pela troca) |
 | `trialing.json` | assinatura criada com `trialDays` 7 no cartão salvo |
+| `active_send_invoice_boleto.json` | assinatura criada com `collection_method` `send_invoice`, `days_until_due` 3 e `payment_settings.payment_method_types: ['boleto']` (GET com o expand do driver; ids reais da sessão de 2026-09-04) |
 
 Montadas sobre `active.json` (ou `trialing.json`), porque a sandbox não produz o estado:
 

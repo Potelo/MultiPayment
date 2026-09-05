@@ -269,4 +269,42 @@ class StripeSubscriptionTest extends TestCase
         $credito = array_filter($preview->items, static fn ($item) => $item->price < 0);
         $this->assertNotEmpty($credito, 'a prévia deve trazer a linha de crédito do período não usado');
     }
+
+    /**
+     * A assinatura de boleto nasce ativa em modo de fatura enviada, com a primeira fatura já
+     * finalizada: aberta, com vencimento e com a página hospedada onde o pagador gera o
+     * voucher.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldCreateASubscriptionPaidWithBankSlip($gateway)
+    {
+        $mensal = $this->createPlan($gateway, 10000, 'boleto');
+
+        $customerData = self::customerWithoutAddress();
+        $customer = new Customer();
+        $customer->name = $customerData['name'];
+        $customer->email = $customerData['email'];
+        $customer->taxDocument = $customerData['taxDocument'];
+
+        $subscription = MultiPayment::setGateway($gateway)->newSubscription()
+            ->setPlanId($mensal->identifier)
+            ->setCustomer($customer)
+            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP])
+            ->create();
+        $this->subscriptionsCriadas[] = $subscription->id;
+
+        $this->assertSame(SubscriptionStatus::ACTIVE, $subscription->status);
+        $this->assertSame(PaymentMethod::BANK_SLIP, $subscription->paymentMethod);
+
+        $latestInvoice = $subscription->latestInvoice;
+        $this->assertNotNull($latestInvoice);
+        $this->assertSame(\Potelo\MultiPayment\Enums\InvoiceStatus::PENDING, $latestInvoice->status);
+        $this->assertStringContainsString('invoice.stripe.com', $latestInvoice->url);
+        // days_until_due padrão de 3 dias, com uma hora de tolerância de fuso
+        $this->assertEqualsWithDelta(
+            now()->addDays(3)->getTimestamp(),
+            $latestInvoice->dueDate->getTimestamp(),
+            3600
+        );
+    }
 }

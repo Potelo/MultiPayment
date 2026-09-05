@@ -325,6 +325,11 @@ class StripeGatewayIdempotencyTest extends TestCase
                 [$pendingPix],
                 ['post /v1/payment_intents' => 'chave-1'],
             ],
+            'createInvoice boleto' => [
+                fn (StripeGateway $g, ?string $key) => $g->createInvoice(self::bankSlipInvoiceModel(), $key),
+                [self::fixture('payment_intents/boleto_requires_action')],
+                ['post /v1/payment_intents' => 'chave-1'],
+            ],
             'refundInvoice' => [
                 fn (StripeGateway $g, ?string $key) => $g->refundInvoice(self::invoiceWithId(), null, $key),
                 [
@@ -566,6 +571,25 @@ class StripeGatewayIdempotencyTest extends TestCase
                     'post /v1/subscriptions' => 'chave-1',
                     'get /v1/invoices/in_1UBJmkPjx0CusuMrN6Yc2Ha1' => null,
                     'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
+                ],
+            ],
+            'createSubscription boleto' => [
+                function (StripeGateway $g, ?string $key) {
+                    $subscription = self::subscriptionModel();
+                    $subscription->planId = 'price_1UC8LwPjx0CusuMrr3Vq7Hpk';
+                    $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+
+                    return $g->createSubscription($subscription, $key);
+                },
+                [
+                    self::fixture('subscriptions/active_send_invoice_boleto'),
+                    self::fixture('invoices/open_boleto_send_invoice'),
+                    self::fixture('invoices/open_boleto_send_invoice'),
+                ],
+                [
+                    'post /v1/subscriptions' => 'chave-1',
+                    'post /v1/invoices/in_1UC8LxPjx0CusuMr8L1JgWdN/finalize' => 'chave-1:finalize',
+                    'get /v1/invoices/in_1UC8LxPjx0CusuMr8L1JgWdN' => null,
                 ],
             ],
             'updateSubscription' => [
@@ -812,6 +836,20 @@ class StripeGatewayIdempotencyTest extends TestCase
         $invoice->customer->name = 'Fake Customer';
         $invoice->customer->email = 'email@exemplo.com';
         $invoice->customer->taxDocument = '20176996915';
+
+        return $invoice;
+    }
+
+    private static function bankSlipInvoiceModel(): Invoice
+    {
+        $invoice = self::pixInvoiceModel();
+        $invoice->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $invoice->customer->address = new \Potelo\MultiPayment\Models\Address();
+        $invoice->customer->address->street = 'Av Paulista';
+        $invoice->customer->address->number = '1234';
+        $invoice->customer->address->city = 'Sao Paulo';
+        $invoice->customer->address->state = 'SP';
+        $invoice->customer->address->zipCode = '01310000';
 
         return $invoice;
     }

@@ -558,29 +558,65 @@ class StripeGatewayTest extends TestCase
     }
 
     /**
-     * Boleto está fora do escopo do gateway Stripe e deve falhar com mensagem específica.
+     * Deve criar uma fatura de boleto pendente com o voucher hospedado, a linha digitável e o
+     * PDF; o voucher em aberto não pode ser cancelado, e o estorno de boleto é recusado antes
+     * da rede.
      *
      * @return void
      */
     #[DataProvider('stripeGatewayDataProvider')]
-    public function testShouldRejectBankSlipInvoice($gateway)
+    public function testShouldCreateBankSlipInvoiceWithHostedVoucher($gateway)
     {
         $customerData = self::customerWithoutAddress();
-        $invoiceBuilder = MultiPayment::setGateway($gateway)->newInvoice()
+        $addressData = self::address();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
             ->addCustomer(
                 $customerData['name'],
                 $customerData['email'],
                 $customerData['taxDocument']
             )
-            ->addItem('Assinatura mensal', 9900, 1)
-            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP]);
+            ->addCustomerAddress(
+                $addressData['zipCode'],
+                $addressData['street'],
+                $addressData['number'],
+                $addressData['complement'],
+                $addressData['district'],
+                $addressData['city'],
+                $addressData['state'],
+                $addressData['country']
+            )
+            ->addItem('Assinatura mensal', 12345, 1)
+            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP])
+            ->setDueDate(Carbon::today()->addDays(3))
+            ->create();
+
+        $this->assertNotNull($invoice->id);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoice->status);
+        $this->assertEquals(PaymentMethod::BANK_SLIP, $invoice->paymentMethod);
+        $this->assertStringContainsString('boleto/voucher', $invoice->url);
+        $this->assertNotEmpty($invoice->bankSlip->number);
+        $this->assertStringEndsWith('/pdf', $invoice->bankSlip->url);
+        $this->assertSame(Carbon::today()->addDays(3)->format('Y-m-d'), $invoice->dueDate->format('Y-m-d'));
+
+        $invoiceFetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
+        $this->assertEquals(InvoiceStatus::PENDING, $invoiceFetched->status);
+        $this->assertEquals(PaymentMethod::BANK_SLIP, $invoiceFetched->paymentMethod);
+        $this->assertEquals($invoice->bankSlip->number, $invoiceFetched->bankSlip->number);
 
         try {
-            $invoiceBuilder->create();
-            $this->fail('Esperava UnsupportedOperationException');
+            $invoiceFetched->cancel($gateway);
+            $this->fail('Esperava UnsupportedOperationException ao cancelar boleto pendente');
         } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::BANK_SLIP, $e->capability);
-            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
+            $this->assertSame(Capability::INVOICE_CANCELLATION, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+
+        try {
+            MultiPayment::setGateway($gateway)->refundInvoice($invoice->id);
+            $this->fail('Esperava RefundNotSupportedException para estorno de boleto');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_BOLETO_NO_REFUND, $e->reason);
+            $this->assertTrue($e->manualRefundRequired);
         }
     }
 

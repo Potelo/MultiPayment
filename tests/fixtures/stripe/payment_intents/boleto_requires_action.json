@@ -1,0 +1,69 @@
+{
+  "id": "pi_3UC8LGPjx0CusuMr1jDGqScY",
+  "object": "payment_intent",
+  "allowed_payment_method_types": null,
+  "amount": 12345,
+  "amount_capturable": 0,
+  "amount_details": {
+    "tip": {}
+  },
+  "amount_received": 0,
+  "application": null,
+  "application_fee_amount": null,
+  "automatic_payment_methods": null,
+  "canceled_at": null,
+  "cancellation_reason": null,
+  "capture_method": "automatic_async",
+  "client_secret": "pi_fake_secret_placeholder",
+  "confirmation_method": "automatic",
+  "created": 1788571466,
+  "currency": "brl",
+  "customer": null,
+  "customer_account": null,
+  "description": null,
+  "excluded_payment_method_types": null,
+  "last_payment_error": null,
+  "latest_charge": null,
+  "livemode": false,
+  "managed_payments": {
+    "enabled": false
+  },
+  "metadata": {
+    "item_0_description": "Assinatura mensal",
+    "item_0_price": "12345",
+    "item_0_quantity": "1"
+  },
+  "next_action": {
+    "boleto_display_details": {
+      "expires_at": 1788836340,
+      "hosted_voucher_url": "https://payments.stripe.com/boleto/voucher/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQ1hRQ0F2NDBxZGZ0WFhjT3Q4M2Q2d1BvSVhkbTk50100QLU2LKPD",
+      "number": "01010101010101010101010101010101010101010101010",
+      "pdf": "https://payments.stripe.com/boleto/voucher/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQ1hRQ0F2NDBxZGZ0WFhjT3Q4M2Q2d1BvSVhkbTk50100QLU2LKPD/pdf"
+    },
+    "type": "boleto_display_details"
+  },
+  "on_behalf_of": null,
+  "payment_method": "pm_1UC8LGPjx0CusuMrOMQIs9ua",
+  "payment_method_configuration_details": null,
+  "payment_method_options": {
+    "boleto": {
+      "expires_after_days": 3
+    }
+  },
+  "payment_method_types": [
+    "boleto"
+  ],
+  "payment_record": null,
+  "processing": null,
+  "receipt_email": null,
+  "review": null,
+  "setup_future_usage": null,
+  "shared_payment_granted_token": null,
+  "shipping": null,
+  "source": null,
+  "statement_descriptor": null,
+  "statement_descriptor_suffix": null,
+  "status": "requires_action",
+  "transfer_data": null,
+  "transfer_group": null
+}

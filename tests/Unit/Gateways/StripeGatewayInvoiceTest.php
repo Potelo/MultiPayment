@@ -154,24 +154,246 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame([], $httpClient->calls);
     }
 
-    public function testRejectsBankSlipInvoiceAttributingTheLimitationToTheLibrary(): void
+    public function testCreatesBankSlipInvoiceFullyServerSideAndParsesTheVoucher(): void
+    {
+        Carbon::setTestNow('2026-09-04 10:00:00');
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->boletoPaymentIntentResponse()]);
+
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->dueDate = Carbon::parse('2026-09-07');
+        $result = (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertCount(1, $httpClient->calls);
+        [$method, $url, $params] = $httpClient->calls[0];
+        $this->assertSame('post', $method);
+        $this->assertSame('/v1/payment_intents', parse_url($url, PHP_URL_PATH));
+        $this->assertSame(['boleto'], $params['payment_method_types']);
+        $this->assertSame([
+            'type' => 'boleto',
+            'boleto' => ['tax_id' => '20176996915'],
+            'billing_details' => [
+                'name' => 'Fake Customer',
+                'email' => 'email@exemplo.com',
+                'address' => [
+                    'line1' => 'Av Paulista, 1234',
+                    'city' => 'Sao Paulo',
+                    'state' => 'SP',
+                    'postal_code' => '01310000',
+                    'country' => 'BR',
+                ],
+            ],
+        ], $params['payment_method_data']);
+        $this->assertSame('true', $params['confirm']);
+        $this->assertSame(['boleto' => ['expires_after_days' => 3]], $params['payment_method_options']);
+
+        $this->assertSame(InvoiceStatus::PENDING, $result->status);
+        $this->assertSame(PaymentMethod::BANK_SLIP, $result->paymentMethod);
+        $this->assertNull($result->paidAmount);
+        $this->assertStringContainsString('payments.stripe.com/boleto/voucher', $result->url);
+        $this->assertSame('01010101010101010101010101010101010101010101010', $result->bankSlip->number);
+        $this->assertStringEndsWith('/pdf', $result->bankSlip->url);
+        $this->assertNull($result->pix);
+    }
+
+    /**
+     * Sem `dueDate` no model, o vencimento do voucher (fim do dia na Stripe) preenche a data.
+     */
+    public function testGetBankSlipInvoiceFillsTheDueDateFromTheVoucherExpiry(): void
+    {
+        RecordingStripeHttpClient::withResponses([$this->boletoPaymentIntentResponse()]);
+
+        $result = $this->getInvoice();
+
+        $this->assertSame(1788836340, $result->dueDate->getTimestamp());
+        $this->assertSame(PaymentMethod::BANK_SLIP, $result->paymentMethod);
+    }
+
+    public function testBankSlipInvoiceRequiresCustomerTaxDocument(): void
+    {
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->customer->taxDocument = null;
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('taxDocument');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testBankSlipInvoiceRequiresCustomerAddress(): void
+    {
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->customer->address = null;
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('address');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    public function testBankSlipInvoiceRequiresCustomerEmail(): void
+    {
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->customer->email = null;
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('email');
+
+        (new StripeGateway())->createInvoice($invoice);
+    }
+
+    /**
+     * Endereço presente mas incompleto também é recusado: a Stripe exige rua, cidade, estado
+     * e CEP nos billing details do boleto.
+     */
+    public function testBankSlipInvoiceRequiresACompleteAddress(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
-        $invoice = $this->creditCardInvoiceModel();
-        $invoice->creditCard = null;
-        $invoice->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->customer->address->zipCode = null;
 
         try {
             (new StripeGateway())->createInvoice($invoice);
-            $this->fail('Boleto no Stripe deveria lançar UnsupportedOperationException');
-        } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::BANK_SLIP, $e->capability);
-            $this->assertSame('stripe', $e->gateway);
-            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
-            $this->assertStringContainsString('ainda não está implementada nesta lib', $e->getMessage());
-            $this->assertStringNotContainsStringIgnoringCase('não oferece', $e->getMessage());
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('address (street, city, state and zipCode)', $e->getMessage());
         }
         $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * Limites de valor do boleto na Stripe: R$ 5,00 a R$ 49.999,99.
+     */
+    #[DataProvider('bankSlipAmountOutsideLimitsProvider')]
+    public function testBankSlipInvoiceRejectsAmountOutsideStripeLimits(int $amount): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->items = null;
+        $invoice->amount = $amount;
+
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('amount must be between 500 and 4999999', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    public static function bankSlipAmountOutsideLimitsProvider(): array
+    {
+        return [
+            'abaixo do minimo' => [499],
+            'acima do maximo' => [5000000],
+        ];
+    }
+
+    #[DataProvider('bankSlipDueDateOutsideWindowProvider')]
+    public function testBankSlipInvoiceRejectsDueDateOutsideStripeWindow(string $dueDate): void
+    {
+        Carbon::setTestNow('2026-09-04 10:00:00');
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->dueDate = Carbon::parse($dueDate);
+
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('dueDate must be between today and 60 days', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    public static function bankSlipDueDateOutsideWindowProvider(): array
+    {
+        return [
+            'vencida ontem' => ['2026-09-03'],
+            'alem de 60 dias' => ['2026-11-04'],
+        ];
+    }
+
+    /**
+     * Vencimento hoje é aceito: `expires_after_days` zero vence às 23h59 de hoje na Stripe.
+     */
+    public function testBankSlipInvoiceDueTodaySendsZeroExpiresAfterDays(): void
+    {
+        Carbon::setTestNow('2026-09-04 10:00:00');
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->boletoPaymentIntentResponse()]);
+
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->dueDate = Carbon::parse('2026-09-04');
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(0, $httpClient->calls[0][2]['payment_method_options']['boleto']['expires_after_days']);
+    }
+
+    /**
+     * O teto de 60 dias é aceito, e a contagem usa a data corrente no fuso de São Paulo, onde
+     * a Stripe vira o dia do boleto.
+     */
+    public function testBankSlipInvoiceDueInExactlySixtyDaysSendsSixtyExpiresAfterDays(): void
+    {
+        // 01:00 UTC do dia 5 ainda é dia 4 em São Paulo: a contagem parte do dia 4
+        Carbon::setTestNow('2026-09-05 01:00:00');
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->boletoPaymentIntentResponse()]);
+
+        $invoice = $this->bankSlipInvoiceModel();
+        $invoice->dueDate = Carbon::parse('2026-11-03');
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame(60, $httpClient->calls[0][2]['payment_method_options']['boleto']['expires_after_days']);
+    }
+
+    public function testBankSlipInvoiceWithoutDueDateOmitsExpiresAfterDays(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->boletoPaymentIntentResponse()]);
+
+        (new StripeGateway())->createInvoice($this->bankSlipInvoiceModel());
+
+        $this->assertArrayNotHasKey('payment_method_options', $httpClient->calls[0][2]);
+    }
+
+    /**
+     * A Stripe não cancela um boleto com voucher em aberto; com o voucher no model, a recusa
+     * acontece antes da requisição.
+     */
+    public function testCancelPendingBankSlipInvoiceWithTheVoucherInHandIsRefusedBeforeTheNetwork(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->boletoPaymentIntentResponse()]);
+        $result = $this->getInvoice();
+
+        try {
+            (new StripeGateway())->cancelInvoice($result);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::INVOICE_CANCELLATION, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('voucher', $e->getMessage());
+        }
+        $this->assertCount(1, $httpClient->calls, 'o cancelamento não pode chegar à rede');
+    }
+
+    /**
+     * Boleto pendente sem o voucher no model é cancelável: o cancel chega ao gateway e a
+     * fatura volta cancelada com `bankSlip` limpo.
+     */
+    public function testCancelExpiredBankSlipInvoiceGoesToTheGateway(): void
+    {
+        $canceled = $this->boletoPaymentIntentResponse();
+        $canceled['status'] = 'canceled';
+        $canceled['next_action'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([$canceled]);
+
+        $expired = new Invoice();
+        $expired->id = 'pi_fake123';
+        $expired->paymentMethod = PaymentMethod::BANK_SLIP;
+        $expired->status = InvoiceStatus::PENDING;
+        $result = (new StripeGateway())->cancelInvoice($expired);
+
+        $this->assertSame('/v1/payment_intents/pi_fake123/cancel', parse_url($httpClient->calls[0][1], PHP_URL_PATH));
+        $this->assertSame(InvoiceStatus::CANCELED, $result->status);
+        $this->assertNull($result->bankSlip);
     }
 
     public function testRejectsUnknownPaymentMethodStringOnWriteWithoutHittingTheApi(): void
@@ -1147,9 +1369,6 @@ class StripeGatewayInvoiceTest extends TestCase
         (new StripeGateway())->refundInvoice(new Invoice());
     }
 
-    /**
-     * Boleto ainda não existe neste driver; a guarda já nasce coberta para quando entrar.
-     */
     public function testBoletoRefundWithThePaymentMethodInHandMakesNoRequest(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
@@ -2022,6 +2241,36 @@ class StripeGatewayInvoiceTest extends TestCase
         $invoice->pixExpiresAt = Carbon::now()->addHour();
 
         return $invoice;
+    }
+
+    private function bankSlipInvoiceModel(): Invoice
+    {
+        $invoice = $this->pixInvoiceModel();
+        $invoice->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $invoice->pixExpiresAt = null;
+        $invoice->customer->address = new \Potelo\MultiPayment\Models\Address();
+        $invoice->customer->address->street = 'Av Paulista';
+        $invoice->customer->address->number = '1234';
+        $invoice->customer->address->city = 'Sao Paulo';
+        $invoice->customer->address->state = 'SP';
+        $invoice->customer->address->zipCode = '01310000';
+
+        return $invoice;
+    }
+
+    /**
+     * Resposta gravada na sandbox em 2026-09-04 (ver o README das fixtures): PaymentIntent de
+     * boleto confirmado, em `requires_action` com o voucher em `boleto_display_details`.
+     */
+    private function boletoPaymentIntentResponse(): array
+    {
+        $response = json_decode(
+            file_get_contents(__DIR__ . '/../../fixtures/stripe/payment_intents/boleto_requires_action.json'),
+            true
+        );
+        $response['id'] = 'pi_fake123';
+
+        return $response;
     }
 
     /**

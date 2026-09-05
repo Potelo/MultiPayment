@@ -27,6 +27,7 @@ use Potelo\MultiPayment\Models\Model;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Address;
+use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
@@ -124,6 +125,22 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     /** Expand na leitura ou criação de um Price: o Product dá nome e identificador ao plano. */
     private const PRICE_EXPAND = ['product'];
 
+    /** Valor mínimo de um boleto na Stripe, em centavos (R$ 5,00). */
+    private const BOLETO_MIN_AMOUNT = 500;
+
+    /** Valor máximo de um boleto na Stripe, em centavos (R$ 49.999,99). */
+    private const BOLETO_MAX_AMOUNT = 4999999;
+
+    /** Prazo máximo de vencimento de um boleto na Stripe, em dias corridos a partir de hoje. */
+    private const BOLETO_MAX_EXPIRES_AFTER_DAYS = 60;
+
+    /**
+     * Prazo de pagamento (`days_until_due`) da fatura de assinatura cobrada por boleto,
+     * alinhado ao vencimento padrão do voucher na Stripe (3 dias). Sobrescritível por
+     * `gatewayOptions['days_until_due']`.
+     */
+    private const BOLETO_DAYS_UNTIL_DUE = 3;
+
     /** Tipo de InvoicePayment cujo pagamento é um PaymentIntent. */
     private const INVOICE_PAYMENT_TYPE_PAYMENT_INTENT = 'payment_intent';
 
@@ -189,6 +206,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         return [
             Capability::CREDIT_CARD,
             Capability::PIX,
+            Capability::BANK_SLIP,
             Capability::CARD_SETUP_AUTHENTICATION,
             Capability::PARTIAL_REFUND_CARD,
             Capability::PARTIAL_REFUND_PIX,
@@ -213,7 +231,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     public function notYetImplemented(): array
     {
         return [
-            Capability::BANK_SLIP,
             Capability::AUTOMATIC_PIX,
             Capability::MULTIPLE_PAYMENT_METHODS,
             Capability::DELAYED_CAPTURE,
@@ -224,9 +241,11 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * @inheritDoc
      *
      * `CREDIT_CARD`: a conta brasileira só aceita crédito Visa e Mastercard, e outra bandeira
-     * é recusada na cobrança com `DeclineCode::BRAND_NOT_SUPPORTED`. `INVOICE_DUPLICATION`:
-     * só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a fatura de assinatura
-     * (`in_`) só é anulada depois de finalizada pela Stripe; rascunho é recusado.
+     * é recusada na cobrança com `DeclineCode::BRAND_NOT_SUPPORTED`. `BANK_SLIP`: valor entre
+     * R$ 5,00 e R$ 49.999,99 e vencimento em até 60 dias, validados antes da requisição.
+     * `INVOICE_DUPLICATION`: só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a
+     * fatura de assinatura (`in_`) só é anulada depois de finalizada pela Stripe (rascunho é
+     * recusado), e o boleto pendente só depois de o voucher vencer.
      * `SUBSCRIPTIONS`: a Stripe só aceita `nextBillingAt` na criação da assinatura; na troca de
      * plano e na atualização a data da próxima cobrança segue o ciclo. `COUPONS`: o cupom da
      * Stripe dura meses inteiros (`duration_in_months`), então `cycles` maior que 1 exige plano
@@ -246,14 +265,19 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
                     . ' recusada na cobrança com DeclineCode::BRAND_NOT_SUPPORTED.',
                 allowedBrands: ['visa', 'mastercard'],
             ),
+            Capability::BANK_SLIP->value => new CapabilityRestriction(
+                description: 'A Stripe aceita boleto de R$ 5,00 a R$ 49.999,99, com vencimento de hoje a'
+                    . ' 60 dias; fora dessas janelas a criação é recusada antes da requisição.',
+            ),
             Capability::INVOICE_DUPLICATION->value => new CapabilityRestriction(
-                description: 'Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, outro estado'
-                    . ' ou fatura de assinatura são recusados.',
+                description: 'Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, boleto,'
+                    . ' outro estado ou fatura de assinatura são recusados.',
                 allowedPaymentMethods: [PaymentMethod::PIX],
             ),
             Capability::INVOICE_CANCELLATION->value => new CapabilityRestriction(
                 description: 'A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada'
-                    . ' pela Stripe; rascunho é recusado.',
+                    . ' pela Stripe (rascunho é recusado), e o boleto pendente só depois de o voucher'
+                    . ' vencer.',
             ),
             Capability::SUBSCRIPTIONS->value => new CapabilityRestriction(
                 description: 'nextBillingAt vale só na criação da assinatura; na troca de plano e na'
@@ -810,6 +834,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         return match ($paymentMethod) {
             PaymentMethod::CREDIT_CARD => $this->createCreditCardInvoice($invoice, $idempotencyKey),
             PaymentMethod::PIX => $this->createPixInvoice($invoice, $idempotencyKey),
+            PaymentMethod::BANK_SLIP => $this->createBankSlipInvoice($invoice, $idempotencyKey),
             default => throw UnsupportedOperationException::forGateway($this, Capability::forPaymentMethod($paymentMethod)),
         };
     }
@@ -973,6 +998,120 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
 
         return $expiresAt;
+    }
+
+    /**
+     * Cria e confirma um PaymentIntent de boleto 100% server-side. A fatura volta pendente com
+     * o voucher em `next_action.boleto_display_details`: `Invoice::$url` é a página hospedada,
+     * `bankSlip->number` é a linha digitável e `bankSlip->url` é o PDF. O pagamento é
+     * assíncrono (a compensação leva até um dia útil; acompanhar via `getInvoice()`).
+     *
+     * A Stripe exige CPF/CNPJ (`boleto.tax_id`), nome, e-mail e endereço completo do pagador
+     * (`billing_details`), valor entre R$ 5,00 e R$ 49.999,99 e vencimento
+     * (`expires_after_days`, derivado de `dueDate`) de hoje a 60 dias; tudo é validado antes
+     * da requisição. Sem `dueDate`, vale o prazo padrão da conta na Stripe (3 dias).
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @param  string|null  $idempotencyKey
+     * @return \Potelo\MultiPayment\Models\Invoice
+     * @throws GatewayException|ModelAttributeValidationException
+     */
+    private function createBankSlipInvoice(Invoice $invoice, ?string $idempotencyKey): Invoice
+    {
+        // a sandbox aceita boleto sem os dados do pagador, mas a produção exige documento,
+        // nome, e-mail e endereço completo; falhar cedo evita um erro obscuro da API
+        if (empty($invoice->customer) || empty($invoice->customer->taxDocument)) {
+            throw ModelAttributeValidationException::required('Customer', 'taxDocument');
+        }
+        foreach (['name', 'email'] as $attribute) {
+            if (empty($invoice->customer->{$attribute})) {
+                throw ModelAttributeValidationException::required('Customer', $attribute);
+            }
+        }
+        $address = $invoice->customer->address;
+        if (empty($address) || empty($address->street) || empty($address->city)
+            || empty($address->state) || empty($address->zipCode)) {
+            throw ModelAttributeValidationException::required('Customer', 'address (street, city, state and zipCode)');
+        }
+
+        $stripePaymentIntentData = $this->invoiceToStripeData($invoice);
+        $amount = $stripePaymentIntentData['amount'];
+        if ($amount < self::BOLETO_MIN_AMOUNT || $amount > self::BOLETO_MAX_AMOUNT) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'amount',
+                'amount must be between ' . self::BOLETO_MIN_AMOUNT . ' and ' . self::BOLETO_MAX_AMOUNT
+                . ' cents for bank slip invoices on the stripe gateway'
+            );
+        }
+
+        $stripePaymentIntentData['payment_method_types'] = ['boleto'];
+        $stripePaymentIntentData['payment_method_data'] = [
+            'type' => 'boleto',
+            'boleto' => ['tax_id' => $invoice->customer->taxDocument],
+            'billing_details' => array_filter([
+                'name' => $invoice->customer->name,
+                'email' => $invoice->customer->email,
+                'address' => array_filter([
+                    'line1' => trim(($address->street ?? '') . ', ' . ($address->number ?: 'S/N'), ', '),
+                    'line2' => $address->complement,
+                    'city' => $address->city,
+                    'state' => $address->state,
+                    'postal_code' => $address->zipCode,
+                    // a Stripe exige o código ISO de duas letras, e o boleto é só do Brasil
+                    'country' => 'BR',
+                ], static fn ($value) => !is_null($value) && $value !== ''),
+            ]),
+        ];
+        $stripePaymentIntentData['confirm'] = true;
+        $expiresAfterDays = $this->boletoExpiresAfterDays($invoice);
+        if (!is_null($expiresAfterDays)) {
+            $stripePaymentIntentData['payment_method_options']['boleto']['expires_after_days'] = $expiresAfterDays;
+        }
+        $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
+
+        $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $idempotencyKey) {
+            return $this->client->paymentIntents->create(
+                $this->withExpand($stripePaymentIntentData, self::PAYMENT_INTENT_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
+    }
+
+    /**
+     * Dias corridos até o vencimento do boleto (`expires_after_days`), derivados de `dueDate`:
+     * zero vence hoje às 23h59 (fuso de São Paulo) e o teto da Stripe é 60. Nulo quando a
+     * fatura não informa `dueDate` (vale o prazo padrão da conta). Vencimento no passado ou
+     * além do teto é recusado antes da requisição. A contagem parte da data corrente em São
+     * Paulo, o fuso em que a Stripe vira o dia do boleto, e trata `dueDate` como a data de
+     * calendário que o consumidor informou, qualquer que seja o fuso dela.
+     *
+     * @param  \Potelo\MultiPayment\Models\Invoice  $invoice
+     * @return int|null
+     * @throws ModelAttributeValidationException
+     */
+    private function boletoExpiresAfterDays(Invoice $invoice): ?int
+    {
+        if (empty($invoice->dueDate)) {
+            return null;
+        }
+
+        $days = Carbon::now('America/Sao_Paulo')->startOfDay()->diffInDays(
+            Carbon::parse($invoice->dueDate->format('Y-m-d'), 'America/Sao_Paulo'),
+            false
+        );
+        if ($days < 0 || $days > self::BOLETO_MAX_EXPIRES_AFTER_DAYS) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'dueDate',
+                'dueDate must be between today and ' . self::BOLETO_MAX_EXPIRES_AFTER_DAYS
+                . ' days in the future for bank slip invoices on the stripe gateway'
+            );
+        }
+
+        return (int) $days;
     }
 
     /**
@@ -1460,9 +1599,12 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
         $this->parseCardDetails($invoice, $stripeCharge);
 
-        // sem next_action de pix não há QR utilizável: a página de instruções some junto,
-        // inclusive num model reutilizado (ex.: fatura pix expirada re-cobrada com cartão)
-        $invoice->url = $this->parsePixDisplay($invoice, $stripePaymentIntent);
+        // sem next_action não há QR nem voucher utilizável: a página hospedada some junto,
+        // inclusive num model reutilizado (ex.: fatura pix expirada re-cobrada com cartão);
+        // os dois parses rodam sempre, para limpar o que sobrou do outro método
+        $pixUrl = $this->parsePixDisplay($invoice, $stripePaymentIntent);
+        $boletoUrl = $this->parseBoletoDisplay($invoice, $stripePaymentIntent);
+        $invoice->url = $pixUrl ?? $boletoUrl;
 
         return $invoice;
     }
@@ -1531,6 +1673,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
         $this->parseCardDetails($invoice, $stripeCharge);
         $this->parsePixDisplay($invoice, $stripePaymentIntent);
+        $this->parseBoletoDisplay($invoice, $stripePaymentIntent);
 
         return $invoice;
     }
@@ -1744,6 +1887,40 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             : $invoice->pixExpiresAt;
 
         return $qrCode->hosted_instructions_url ?? null;
+    }
+
+    /**
+     * Preenche `bankSlip` (linha digitável em `number`, PDF em `url`) a partir de
+     * `next_action.boleto_display_details` do PaymentIntent e devolve a página hospedada do
+     * voucher; `dueDate`, quando vazio, recebe o instante em que o voucher vence. Sem voucher
+     * (boleto pago, vencido ou outro método), limpa `bankSlip` e devolve nulo.
+     *
+     * @param  Invoice  $invoice
+     * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
+     * @return string|null
+     */
+    private function parseBoletoDisplay(Invoice $invoice, ?StripePaymentIntent $stripePaymentIntent): ?string
+    {
+        // isset() passa pelo __isset: um next_action de outro tipo não tem a chave e o
+        // StripeObject registraria "Undefined property" no log ao lê-la
+        $nextAction = $stripePaymentIntent?->next_action;
+        $voucher = isset($nextAction->boleto_display_details) ? $nextAction->boleto_display_details : null;
+        if (empty($voucher)) {
+            $invoice->bankSlip = null;
+
+            return null;
+        }
+
+        if (empty($invoice->bankSlip)) {
+            $invoice->bankSlip = new BankSlip();
+        }
+        $invoice->bankSlip->number = $voucher->number ?? null;
+        $invoice->bankSlip->url = $voucher->pdf ?? null;
+        if (empty($invoice->dueDate) && !empty($voucher->expires_at)) {
+            $invoice->dueDate = Carbon::createFromTimestamp($voucher->expires_at);
+        }
+
+        return $voucher->hosted_voucher_url ?? null;
     }
 
     /**
@@ -2152,10 +2329,14 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * @inheritDoc
      *
      * Na origem `PAYMENT_INTENT` cancela o PaymentIntent; na origem `INVOICE` (id `in_`) anula o
-     * Invoice da Stripe (`void`), e a Stripe cancela sozinha o PaymentIntent padrão dele. A
-     * chave de idempotência vai no cabeçalho `Idempotency-Key` do cancelamento.
+     * Invoice da Stripe (`void`), e a Stripe cancela sozinha o PaymentIntent padrão dele. O
+     * boleto com voucher em aberto não pode ser cancelado na Stripe: quando o model traz o
+     * voucher (`bankSlip` numa fatura pendente), a recusa acontece antes da requisição; sem
+     * ele, a recusa da Stripe chega como `ValidationException`. Depois que o voucher vence, a
+     * fatura volta a ser cancelável. A chave de idempotência vai no cabeçalho
+     * `Idempotency-Key` do cancelamento.
      *
-     * @throws ModelAttributeValidationException
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
      */
     public function cancelInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
@@ -2166,6 +2347,17 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
         if (self::isStripeInvoiceId($invoice->id)) {
             return $this->voidStripeInvoice($invoice, $idempotencyKey);
+        }
+
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP
+            && $invoice->status === InvoiceStatus::PENDING
+            && !empty($invoice->bankSlip)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_CANCELLATION,
+                "O boleto pendente [{$invoice->id}] não pode ser cancelado na Stripe enquanto o voucher"
+                . ' não vence; aguarde o vencimento (a fatura volta a ser cancelável) ou o pagamento.'
+            );
         }
 
         // só estados não-terminais são canceláveis; PaymentIntent pago recusa o cancel
@@ -2828,8 +3020,11 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * cobrada na criação e a recusa sobe como `ChargingException` (`payment_behavior`
      * `error_if_incomplete`); com Pix a assinatura nasce com a primeira fatura em aberto até o
      * pagamento (`default_incomplete`), lida em `latestInvoice`, com a página hospedada em
-     * `url` para o pagador quitar. Boleto em
-     * assinatura ainda não está implementado neste driver. Cada desconto de `discounts` vira
+     * `url` para o pagador quitar. Com boleto a assinatura nasce ativa em modo de fatura
+     * enviada (`send_invoice`, com `days_until_due` de 3 dias, sobrescritível por
+     * `gatewayOptions['days_until_due']`): a primeira fatura é finalizada na hora e volta em
+     * `latestInvoice` aberta, com a página hospedada em `url`, onde o pagador gera o voucher;
+     * as faturas dos ciclos seguintes seguem o mesmo prazo. Cada desconto de `discounts` vira
      * um Coupon criado na hora e aplicado à assinatura: `cycles` 1 é `duration` `once`, mais
      * de um ciclo ou `validUntil` viram `repeating` com `duration_in_months`, e desconto sem
      * prazo é `forever`. Os dias de `trialDays` vão como
@@ -2840,7 +3035,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * A chave de idempotência vai no cabeçalho `Idempotency-Key` da criação; as requisições
      * secundárias usam derivadas (`{chave}:card` no cartão salvo antes,
      * `{chave}:item{N}_product` no Product de cada item extra, `{chave}:discount{N}_coupon`
-     * no Coupon de cada desconto).
+     * no Coupon de cada desconto, `{chave}:finalize` na finalização da fatura de boleto).
      *
      * @throws ChargingException|NotFoundException|UnsupportedOperationException
      */
@@ -2861,9 +3056,19 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $stripeSubscriptionData = [
             'customer' => $subscription->customer->id,
             'items' => [['price' => $priceId]],
-            'collection_method' => 'charge_automatically',
-            'payment_behavior' => $paymentMethod === PaymentMethod::PIX ? 'default_incomplete' : 'error_if_incomplete',
         ];
+        if ($paymentMethod === PaymentMethod::BANK_SLIP) {
+            // boleto é assíncrono demais para a cobrança automática na criação (a janela de
+            // 23 horas de `incomplete` venceria antes da compensação): a assinatura nasce
+            // ativa e cada ciclo emite uma fatura em aberto com prazo de pagamento
+            $stripeSubscriptionData['collection_method'] = 'send_invoice';
+            $stripeSubscriptionData['days_until_due'] = self::BOLETO_DAYS_UNTIL_DUE;
+        } else {
+            $stripeSubscriptionData['collection_method'] = 'charge_automatically';
+            $stripeSubscriptionData['payment_behavior'] = $paymentMethod === PaymentMethod::PIX
+                ? 'default_incomplete'
+                : 'error_if_incomplete';
+        }
 
         if (!is_null($paymentMethod)) {
             $stripeSubscriptionData['payment_settings'] = [
@@ -2915,11 +3120,44 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             );
         });
 
+        if ($paymentMethod === PaymentMethod::BANK_SLIP) {
+            $this->finalizeFirstBoletoInvoice($stripeSubscription, self::derivedIdempotencyKey($idempotencyKey, 'finalize'));
+        }
+
         if (!is_null($trialDays)) {
             $subscription->trialDays = null;
         }
 
         return $this->parseStripeSubscription($stripeSubscription, $subscription, true);
+    }
+
+    /**
+     * Finaliza a primeira fatura de uma assinatura de boleto: no modo `send_invoice` ela nasce
+     * rascunho, sem página hospedada, e a Stripe só a finalizaria sozinha cerca de uma hora
+     * depois. Sem fatura na assinatura (trial), o método não faz nada. Num retry com a mesma
+     * chave de idempotência a Stripe repete a finalização original.
+     *
+     * @param  \Stripe\Subscription  $stripeSubscription
+     * @param  string|null  $idempotencyKey
+     * @return void
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function finalizeFirstBoletoInvoice(StripeSubscription $stripeSubscription, ?string $idempotencyKey): void
+    {
+        $latestInvoiceId = is_object($stripeSubscription->latest_invoice ?? null)
+            ? $stripeSubscription->latest_invoice->id
+            : ($stripeSubscription->latest_invoice ?? null);
+        if (empty($latestInvoiceId)) {
+            return;
+        }
+
+        $this->stripeRequest(function () use ($latestInvoiceId, $idempotencyKey) {
+            return $this->client->invoices->finalizeInvoice(
+                $latestInvoiceId,
+                [],
+                self::stripeOptions($idempotencyKey)
+            );
+        });
     }
 
     /**
@@ -2948,7 +3186,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * @inheritDoc
      *
      * Escreve o cartão (`default_payment_method`), o método de pagamento
-     * (`payment_settings`), o trial (`trial_end`; os dias de `trialDays` viram a data agora),
+     * (`payment_settings`; a troca para boleto muda a assinatura para o modo de fatura enviada
+     * com prazo de 3 dias, e a troca de boleto para outro método a devolve à cobrança
+     * automática), o trial (`trial_end`; os dias de `trialDays` viram a data agora),
      * `metadata` e os itens. `nextBillingAt` diferente do que veio do gateway é recusado: a
      * Stripe não aceita mudar a data da próxima cobrança fora do ciclo. Nos itens, item novo
      * cria Price sob demanda, item com `id` tem a quantidade atualizada e mantém o Price, e a
@@ -2982,6 +3222,17 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $data['payment_settings'] = [
                 'payment_method_types' => [self::paymentMethodToStripeType($paymentMethod)],
             ];
+            // a troca de método muda também o modo de cobrança: boleto exige fatura enviada
+            // com prazo (send_invoice), os demais cobram automaticamente. O modo vai sempre
+            // que o método muda, sem depender do estado lido do gateway: num model fresco
+            // (só o id) o driver não sabe o modo atual, e reescrever o mesmo modo na Stripe
+            // não tem efeito
+            if ($paymentMethod === PaymentMethod::BANK_SLIP) {
+                $data['collection_method'] = 'send_invoice';
+                $data['days_until_due'] = self::BOLETO_DAYS_UNTIL_DUE;
+            } else {
+                $data['collection_method'] = 'charge_automatically';
+            }
         }
 
         // a atualização só aceita a data do fim do trial, então os dias viram a data agora
@@ -3289,8 +3540,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     /**
      * Resolve o único método de pagamento da assinatura, como `invoicePaymentMethod()` faz
      * para a fatura; nulo quando o model não aponta método (a Stripe cobra o método padrão do
-     * cliente). Mais de um método é recusado (`MULTIPLE_PAYMENT_METHODS`), e um método que o
-     * driver ainda não cobre em assinatura (boleto) também (`BANK_SLIP`).
+     * cliente). Mais de um método é recusado (`MULTIPLE_PAYMENT_METHODS`), e um método fora
+     * do mapa do driver é recusado pela capability dele.
      *
      * @param  Subscription  $subscription
      * @return PaymentMethod|null
@@ -3309,7 +3560,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
 
         $method = empty($methods) ? null : reset($methods);
-        if (!is_null($method) && $method !== PaymentMethod::CREDIT_CARD && $method !== PaymentMethod::PIX) {
+        if (!is_null($method) && !in_array($method, self::PAYMENT_METHOD_TYPES, true)) {
             throw UnsupportedOperationException::forGateway($this, Capability::forPaymentMethod($method));
         }
 

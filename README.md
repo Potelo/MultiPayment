@@ -134,7 +134,7 @@ vez de capturar a exceção depois:
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Facades\MultiPayment;
 
-if (!MultiPayment::gateway('stripe')->supports(Capability::BANK_SLIP)) {
+if (!MultiPayment::gateway('stripe')->supports(Capability::AUTOMATIC_PIX)) {
     $gateway = 'iugu';                                   // roteia antes de exibir a opção
 }
 
@@ -168,7 +168,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 |---|---|---|---|---|
 | `CREDIT_CARD` | Fatura paga com cartão de crédito. | sim | sim | Stripe: Na conta brasileira só cartão de crédito Visa e Mastercard; outra bandeira é recusada na cobrança com DeclineCode::BRAND_NOT_SUPPORTED. |
 | `PIX` | Fatura paga com Pix avulso, com QR Code de pagamento único. | sim | sim |  |
-| `BANK_SLIP` | Fatura paga com boleto bancário. | sim | não implementado |  |
+| `BANK_SLIP` | Fatura paga com boleto bancário. | sim | sim | Stripe: A Stripe aceita boleto de R$ 5,00 a R$ 49.999,99, com vencimento de hoje a 60 dias; fora dessas janelas a criação é recusada antes da requisição. |
 | `AUTOMATIC_PIX` | Recorrência de Pix Automático criada junto com a fatura, com reagendamento e cancelamento pela lib. | sim | não implementado |  |
 | `MULTIPLE_PAYMENT_METHODS` | Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. | sim | não implementado |  |
 | `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |  |
@@ -178,8 +178,8 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `PARTIAL_REFUND_CARD` | Estorno de parte do valor numa fatura paga com cartão. | sim | sim |  |
 | `PARTIAL_REFUND_PIX` | Estorno de parte do valor numa fatura paga com Pix. | limitação do gateway | sim |  |
 | `REFUND_BANK_SLIP` | Estorno pela API de uma fatura paga com boleto. | limitação do gateway | limitação do gateway |  |
-| `INVOICE_DUPLICATION` | Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). | sim | sim | Stripe: Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, outro estado ou fatura de assinatura são recusados. |
-| `INVOICE_CANCELLATION` | Cancelamento de uma fatura ainda não paga (`cancelInvoice`). | sim | sim | Stripe: A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada pela Stripe; rascunho é recusado. |
+| `INVOICE_DUPLICATION` | Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). | sim | sim | Stripe: Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, boleto, outro estado ou fatura de assinatura são recusados. |
+| `INVOICE_CANCELLATION` | Cancelamento de uma fatura ainda não paga (`cancelInvoice`). | sim | sim | Stripe: A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada pela Stripe (rascunho é recusado), e o boleto pendente só depois de o voucher vencer. |
 | `IDEMPOTENCY` | Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo gateway ou pela deduplicação da lib (`IdempotencyStore`). | sim | sim |  |
 | `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem depender da deduplicação da lib. | limitação do gateway | sim |  |
 | `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | sim | Stripe: nextBillingAt vale só na criação da assinatura; na troca de plano e na atualização a Stripe não aceita uma data arbitrária de próxima cobrança. |
@@ -196,8 +196,9 @@ Sobre as restrições e algumas células:
 
 - **Operação fora da restrição** lança `UnsupportedOperationException::restricted()`, com a
   capability, `reason` `gateway_limitation` e a mensagem que descreve a restrição: duplicação
-  fora de Pix pendente e cancelamento de rascunho de fatura de assinatura no Stripe, cartão que
-  pertence a outro cliente no Stripe (ver [Particularidades do Stripe](#particularidades-do-stripe)).
+  fora de Pix pendente, cancelamento de rascunho de fatura de assinatura ou de boleto com
+  voucher em aberto no Stripe, cartão que pertence a outro cliente no Stripe (ver
+  [Particularidades do Stripe](#particularidades-do-stripe)).
   A bandeira fora da restrição de `CREDIT_CARD` chega depois, na cobrança, como
   `CardDeclinedException` com `DeclineCode::BRAND_NOT_SUPPORTED`; por isso vale consultar
   `restriction()->allowsBrand()` antes de tokenizar.
@@ -443,10 +444,29 @@ recusado na validação, porque a fatura com Pix Automático é criada com `PIX`
 - **Pix expirado continua pendente e re-cobrável.** Na Iugu, fatura expirada vira `canceled`;
   no Stripe ela volta a aguardar pagamento (`pending`) e pode ser paga com cartão via
   `chargeInvoiceWithCreditCard` ou duplicada com `duplicateInvoice` (nova expiração;
-  a original é cancelada). Só fatura Pix pendente de venda avulsa é duplicável: cartão, fatura
-  em outro estado ou fatura de assinatura lança `UnsupportedOperationException`
+  a original é cancelada). Só fatura Pix pendente de venda avulsa é duplicável: cartão, boleto,
+  fatura em outro estado ou fatura de assinatura lança `UnsupportedOperationException`
   (`INVOICE_DUPLICATION`, `gateway_limitation`); `restriction(Capability::INVOICE_DUPLICATION)`
   publica a regra.
+- **Boleto exige `tax_document`, nome, e-mail e endereço do cliente.** O CPF/CNPJ vai no
+  voucher (`boleto.tax_id`) e os demais nos billing details (a sandbox aceita boleto sem
+  esses dados, a produção os exige); a falta de qualquer um, inclusive de rua, cidade, estado
+  ou CEP no endereço, lança `ModelAttributeValidationException` antes da rede. O valor deve
+  ficar entre R$ 5,00 e
+  R$ 49.999,99 e o vencimento (`dueDate`) de hoje a 60 dias, também validados antes da
+  requisição; sem `dueDate`, vale o prazo padrão da conta na Stripe (3 dias). A fatura volta
+  pendente com a página hospedada do voucher em `url`, a linha digitável em `bankSlip->number`
+  e o PDF em `bankSlip->url` (a Stripe só publica o número, então `barcode_data` e
+  `barcode_image` ficam vazios). A compensação leva até um dia útil depois do pagamento;
+  acompanhe por `getInvoice()`.
+- **Boleto pendente não pode ser cancelado nem re-cobrado.** A Stripe não invalida o voucher
+  antes do vencimento: `cancelInvoice()` numa fatura com o voucher em aberto é recusado
+  (`UnsupportedOperationException` restrita de `INVOICE_CANCELLATION` quando o model traz o
+  voucher; `ValidationException` quando a recusa vem do gateway), e
+  `chargeInvoiceWithCreditCard()` também é recusado pelo gateway enquanto o voucher vale.
+  Vencido o voucher, a fatura volta a aguardar pagamento (`pending`) e pode ser cancelada ou
+  cobrada com cartão. Estorno de boleto fica fora da API nos dois gateways
+  (`REFUND_BANK_SLIP`).
 - **Cartão pertence a um único cliente.** Cobrar, buscar ou excluir um `pm_` informando outro
   cliente lança `UnsupportedOperationException` (`CREDIT_CARD`, `gateway_limitation`) antes da
   operação.
@@ -875,8 +895,8 @@ o deixava nulo, traz o valor de `declineCode`. Compare com `declineCode`.
 > `GatewayNotAvailableException` deixa de repetir credencial errada; quem capturava
 > `GatewayException` para chave recusada na Iugu precisa capturar `AuthenticationException`.
 >
-> Na mesma versão, operação não suportada ou ainda não implementada (boleto, Pix Automático,
-> assinatura e plano no Stripe; cancelamento ao fim do período, desconto percentual e desativação
+> Na mesma versão, operação não suportada ou ainda não implementada (Pix Automático no Stripe;
+> desconto percentual e desativação
 > de plano na Iugu; cartão com dados crus e duplicação fora de Pix pendente no Stripe) deixou de
 > chegar como `GatewayException` (ou `GatewayException::methodNotFound`) e passou a lançar
 > `UnsupportedOperationException`, que herda de `MultiPaymentException`. Um
@@ -955,14 +975,18 @@ $pix = $payment->newInvoice()
 $pix->pix->qrCodeText;
 
 $boleto = $payment->newInvoice()
-    ->setPaymentMethod(PaymentMethod::BANK_SLIP)   // no Stripe: UnsupportedOperationException, antes da rede
+    ->setPaymentMethod(PaymentMethod::BANK_SLIP)
     ->addCustomer('Nome do cliente', 'email@example.com', '20176996915')
     ->addCustomerAddress('41820330', 'Rua', '123', null, 'Bairro', 'Salvador', 'BA')
     ->addItem('Mensalidade', 10000, 1)
     ->setDueDate(today()->addDays(3))              // vencimento
     ->create();
-$boleto->bankSlip->number;
+$boleto->bankSlip->number;                         // linha digitável nos dois gateways
 ```
+
+No Stripe o boleto exige CPF/CNPJ e endereço do cliente, aceita valores de R$ 5,00 a
+R$ 49.999,99 e vencimento de hoje a 60 dias, tudo validado antes da requisição (ver
+[Particularidades do Stripe](#particularidades-do-stripe)).
 
 `setPaymentMethod()` decide como a fatura é criada quando `availablePaymentMethods` fica vazia;
 `setAvailablePaymentMethods([...])` (ou `addAvailablePaymentMethod()`) abre a fatura a mais de
@@ -987,7 +1011,7 @@ alternativa por array está em [charge](#charge-alternativa-por-array).
 
 | Propriedade | Array / builder | Iugu | Stripe |
 |---|---|---|---|
-| `dueDate` | `due_date` / `setDueDate()` | `due_date` (o dia; a fatura vencida continua pagável) | `due_date` da fatura de assinatura; na venda avulsa por Pix sem `pixExpiresAt`, o fim desse dia vira a expiração do QR Code |
+| `dueDate` | `due_date` / `setDueDate()` | `due_date` (o dia; a fatura vencida continua pagável) | `due_date` da fatura de assinatura; no boleto avulso vira `expires_after_days` (de hoje a 60 dias) e a leitura devolve o instante em que o voucher vence; na venda avulsa por Pix sem `pixExpiresAt`, o fim desse dia vira a expiração do QR Code |
 | `pixExpiresAt` | `pix_expires_at` / `setPixExpiresAt()` | `pix_qr_code_expires_at` (ISO 8601); sem `dueDate`, o vencimento é o dia em que o QR Code expira; a leitura só o preenche quando a fatura o devolve | `payment_method_options.pix.expires_at`, entre 10 segundos e 14 dias no futuro (sem ele, a Stripe usa 4 horas); volta na leitura |
 
 As duas aceitam `Carbon` (ou `CarbonImmutable`) e, no array, string em `Y-m-d` ou ISO 8601 com
@@ -1417,8 +1441,14 @@ Particularidades do Stripe:
   `default_incomplete`, status `PENDING`): `latestInvoice` traz a fatura para o pagador
   quitar (`url` é a página hospedada). O método `pix` em assinatura depende de habilitação na
   conta Stripe; sem ela, a criação é recusada pelo gateway com `ValidationException`
-  ("The payment method type `pix` is invalid"). Boleto em assinatura ainda não está
-  implementado nesta lib.
+  ("The payment method type `pix` is invalid").
+- **Com boleto, a assinatura nasce ativa em modo de fatura enviada** (`collection_method`
+  `send_invoice`, com `days_until_due` de 3 dias, sobrescritível por
+  `gateway_options['days_until_due']`): a primeira fatura é finalizada na criação e volta em
+  `latestInvoice` aberta, com vencimento e com a página hospedada em `url`, onde o pagador
+  gera o voucher; as faturas dos ciclos seguintes são emitidas pela Stripe com o mesmo prazo.
+  A troca de método de uma assinatura existente para boleto muda o modo de cobrança para
+  `send_invoice`, e a troca de boleto para cartão ou Pix devolve a cobrança automática.
 - **Itens extras criam Prices no Stripe.** Cada `SubscriptionItem` vira um subscription item
   com um Product e um Price próprios, criados na hora (o item precisa de `description` e
   `amount`); item com `recurring` falso vai como item avulso da primeira fatura. No update

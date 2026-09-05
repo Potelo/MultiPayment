@@ -142,6 +142,141 @@ class StripeGatewaySubscriptionTest extends TestCase
         $this->assertSame(InvoiceStatus::PENDING, $result->latestInvoice->status);
     }
 
+    /**
+     * Com boleto a assinatura nasce ativa em modo de fatura enviada, e a primeira fatura é
+     * finalizada na hora para já ter a página hospedada onde o pagador gera o voucher.
+     */
+    public function testCreateSubscriptionWithBoletoSendsTheInvoiceAndFinalizesTheFirstOne(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('subscriptions/active_send_invoice_boleto'),
+            self::fixture('invoices/open_boleto_send_invoice'),
+            self::fixture('invoices/open_boleto_send_invoice'),
+        ]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_1UC8LwPjx0CusuMrr3Vq7Hpk';
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+
+        $result = (new StripeGateway())->createSubscription($subscription);
+
+        $this->assertSame([
+            'post /v1/subscriptions',
+            'post /v1/invoices/in_1UC8LxPjx0CusuMr8L1JgWdN/finalize',
+            'get /v1/invoices/in_1UC8LxPjx0CusuMr8L1JgWdN',
+        ], self::calledPaths($httpClient));
+
+        $params = $httpClient->calls[0][2];
+        $this->assertSame('send_invoice', $params['collection_method']);
+        $this->assertSame(3, $params['days_until_due']);
+        $this->assertSame(['payment_method_types' => ['boleto']], $params['payment_settings']);
+        $this->assertArrayNotHasKey('payment_behavior', $params);
+
+        $this->assertSame(SubscriptionStatus::ACTIVE, $result->status);
+        $this->assertSame(PaymentMethod::BANK_SLIP, $result->paymentMethod);
+        $this->assertSame(InvoiceStatus::PENDING, $result->latestInvoice->status);
+        $this->assertStringContainsString('invoice.stripe.com', $result->latestInvoice->url);
+        $this->assertSame(1788830709, $result->latestInvoice->dueDate->getTimestamp());
+    }
+
+    /**
+     * A chave de idempotência da criação deriva a da finalização da primeira fatura.
+     */
+    public function testCreateSubscriptionWithBoletoDerivesTheFinalizeIdempotencyKey(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('subscriptions/active_send_invoice_boleto'),
+            self::fixture('invoices/open_boleto_send_invoice'),
+            self::fixture('invoices/open_boleto_send_invoice'),
+        ]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_1UC8LwPjx0CusuMrr3Vq7Hpk';
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+
+        (new StripeGateway())->createSubscription($subscription, 'chave-sub-1');
+
+        $this->assertSame('chave-sub-1', $httpClient->header(0, 'Idempotency-Key'));
+        $this->assertSame('chave-sub-1:finalize', $httpClient->header(1, 'Idempotency-Key'));
+    }
+
+    /**
+     * Assinatura de boleto sem primeira fatura (trial) não tem o que finalizar.
+     */
+    public function testCreateSubscriptionWithBoletoAndNoInvoiceSkipsTheFinalization(): void
+    {
+        $created = self::fixture('subscriptions/active_send_invoice_boleto');
+        $created['latest_invoice'] = null;
+        $httpClient = RecordingStripeHttpClient::withResponses([$created]);
+
+        $subscription = self::subscriptionModel();
+        $subscription->planId = 'price_1UC8LwPjx0CusuMrr3Vq7Hpk';
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+
+        $result = (new StripeGateway())->createSubscription($subscription);
+
+        $this->assertSame(['post /v1/subscriptions'], self::calledPaths($httpClient));
+        $this->assertNull($result->latestInvoice);
+    }
+
+    public function testUpdateSubscriptionSwitchingToBoletoChangesTheCollectionMethod(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([self::fixture('subscriptions/active_send_invoice_boleto')]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UC8LxPjx0CusuMrKfvHqdWA';
+        $subscription->paymentMethod = PaymentMethod::BANK_SLIP;
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $params = $httpClient->calls[0][2];
+        $this->assertSame(['payment_method_types' => ['boleto']], $params['payment_settings']);
+        $this->assertSame('send_invoice', $params['collection_method']);
+        $this->assertSame(3, $params['days_until_due']);
+    }
+
+    /**
+     * A volta à cobrança automática não depende do estado lido do gateway: num model fresco,
+     * só com o id, a troca de boleto para outro método também escreve `collection_method`.
+     */
+    public function testUpdateSubscriptionSwitchingFromBoletoRestoresAutomaticCollection(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([self::fixture('subscriptions/active')]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UC8LxPjx0CusuMrKfvHqdWA';
+        $subscription->paymentMethod = PaymentMethod::PIX;
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $params = $httpClient->calls[0][2];
+        $this->assertSame(['payment_method_types' => ['pix']], $params['payment_settings']);
+        $this->assertSame('charge_automatically', $params['collection_method']);
+        $this->assertArrayNotHasKey('days_until_due', $params);
+    }
+
+    /**
+     * O método lido do gateway não reescreve o modo de cobrança: um update de outra coisa numa
+     * assinatura de boleto não mexe em `collection_method`.
+     */
+    public function testUpdateSubscriptionKeepsTheCollectionMethodWhenTheBoletoCameFromTheGateway(): void
+    {
+        $original = json_decode(json_encode(self::fixture('subscriptions/active_send_invoice_boleto')));
+        $httpClient = RecordingStripeHttpClient::withResponses([self::fixture('subscriptions/active_send_invoice_boleto')]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UC8LxPjx0CusuMrKfvHqdWA';
+        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $subscription->metadata = ['origem' => 'teste'];
+        $subscription->original = $original;
+
+        (new StripeGateway())->updateSubscription($subscription);
+
+        $params = $httpClient->calls[0][2];
+        $this->assertArrayNotHasKey('payment_settings', $params);
+        $this->assertArrayNotHasKey('collection_method', $params);
+    }
+
     public function testCreateSubscriptionWithExtraItemsCreatesPricesOnDemand(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([
@@ -729,14 +864,14 @@ class StripeGatewaySubscriptionTest extends TestCase
             $this->assertSame(Capability::MULTIPLE_PAYMENT_METHODS, $e->capability);
         }
 
-        $boleto = new Subscription();
-        $boleto->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
-        $boleto->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $automaticPix = new Subscription();
+        $automaticPix->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
+        $automaticPix->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
         try {
-            $gateway->updateSubscription($boleto);
-            $this->fail('Esperava UnsupportedOperationException');
-        } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::BANK_SLIP, $e->capability);
+            $gateway->updateSubscription($automaticPix);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('paymentMethod must be one of', $e->getMessage());
         }
 
         $this->assertSame([], $httpClient->calls);

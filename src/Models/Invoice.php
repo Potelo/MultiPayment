@@ -172,8 +172,9 @@ class Invoice extends Model
 
     /**
      * Data de vencimento da fatura. Na Iugu é o `due_date` (o dia; a fatura vencida continua
-     * pagável); no Stripe é o `due_date` da fatura de assinatura e, na venda avulsa por Pix sem
-     * `pixExpiresAt`, o fim desse dia vira a expiração do QR Code.
+     * pagável); no Stripe é o `due_date` da fatura de assinatura, no boleto avulso vira os
+     * dias até o vencimento do voucher (a leitura devolve o instante em que ele vence) e, na
+     * venda avulsa por Pix sem `pixExpiresAt`, o fim desse dia vira a expiração do QR Code.
      *
      * @var Carbon|null
      */

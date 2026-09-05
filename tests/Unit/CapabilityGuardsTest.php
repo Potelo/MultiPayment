@@ -60,7 +60,7 @@ class CapabilityGuardsTest extends TestCase
         parent::tearDown();
     }
 
-    public function testBankSlipSubscriptionOnStripeFailsBeforeCreatingTheCustomer(): void
+    public function testMultiMethodSubscriptionOnStripeFailsBeforeCreatingTheCustomer(): void
     {
         $customer = new Customer();
         $customer->name = 'Fulano';
@@ -69,9 +69,9 @@ class CapabilityGuardsTest extends TestCase
         $builder = (new MultiPayment('stripe'))->newSubscription()
             ->setPlanId('plano_mensal')
             ->setCustomer($customer)
-            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP]);
+            ->setAvailablePaymentMethods([PaymentMethod::PIX, PaymentMethod::CREDIT_CARD]);
 
-        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $builder->create());
+        $this->assertNotImplemented(Capability::MULTIPLE_PAYMENT_METHODS, fn () => $builder->create());
     }
 
     /**
@@ -86,9 +86,9 @@ class CapabilityGuardsTest extends TestCase
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
         $subscription->gateway = 'stripe';
-        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $subscription->availablePaymentMethods = [PaymentMethod::PIX, PaymentMethod::CREDIT_CARD];
 
-        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $subscription->save(new IuguGateway($api)));
+        $this->assertNotImplemented(Capability::MULTIPLE_PAYMENT_METHODS, fn () => $subscription->save(new IuguGateway($api)));
         $this->assertCount(0, $api->calls);
     }
 
@@ -101,18 +101,18 @@ class CapabilityGuardsTest extends TestCase
     {
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
-        $subscription->availablePaymentMethods = [PaymentMethod::BANK_SLIP];
+        $subscription->availablePaymentMethods = [PaymentMethod::PIX, PaymentMethod::CREDIT_CARD];
 
-        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $subscription->delete('stripe'));
+        $this->assertNotImplemented(Capability::MULTIPLE_PAYMENT_METHODS, fn () => $subscription->delete('stripe'));
     }
 
-    public function testBankSlipChargeOnStripeFailsBeforeCreatingTheCustomer(): void
+    public function testMultiMethodChargeOnStripeFailsBeforeCreatingTheCustomer(): void
     {
         $multiPayment = new MultiPayment('stripe');
 
-        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $multiPayment->charge([
+        $this->assertNotImplemented(Capability::MULTIPLE_PAYMENT_METHODS, fn () => $multiPayment->charge([
             'items' => [['description' => 'Mensalidade', 'price' => 10000, 'quantity' => 1]],
-            'available_payment_methods' => [PaymentMethod::BANK_SLIP->value],
+            'available_payment_methods' => [PaymentMethod::BANK_SLIP->value, PaymentMethod::PIX->value],
             'customer' => ['name' => 'Fulano', 'email' => 'fulano@exemplo.com', 'tax_document' => '20176996915'],
         ]));
     }
@@ -180,16 +180,18 @@ class CapabilityGuardsTest extends TestCase
     }
 
     /**
-     * A primeira capability recusada é a do método de pagamento, antes da de multi-método.
+     * A capability de multi-método é recusada antes da de cartão com dados crus, na ordem em
+     * que `requiredCapabilities()` as declara.
      */
-    public function testTheFirstMissingCapabilityIsThePaymentMethod(): void
+    public function testTheFirstMissingCapabilityIsTheOneDeclaredFirst(): void
     {
         $builder = (new MultiPayment('stripe'))->newInvoice()
             ->addCustomer('Fulano', 'fulano@exemplo.com', '20176996915')
             ->addItem('Mensalidade', 10000, 1)
-            ->setAvailablePaymentMethods([PaymentMethod::PIX, PaymentMethod::BANK_SLIP]);
+            ->setAvailablePaymentMethods([PaymentMethod::PIX, PaymentMethod::CREDIT_CARD])
+            ->addCreditCard('4111111111111111', '12', '2030', '123', 'Fulano', 'Silva');
 
-        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $builder->create());
+        $this->assertNotImplemented(Capability::MULTIPLE_PAYMENT_METHODS, fn () => $builder->create());
     }
 
     /**
@@ -221,8 +223,8 @@ class CapabilityGuardsTest extends TestCase
     }
 
     /**
-     * Com a lista vazia, `paymentMethod` decide a capability exigida, e a fatura de boleto no
-     * Stripe falha pelo array de `charge()` antes de criar o cliente.
+     * Com a lista vazia, `paymentMethod` decide a capability exigida, e a fatura multi-método
+     * no Stripe falha pelo array de `charge()` antes de criar o cliente.
      */
     public function testInvoiceRequiredCapabilitiesDeriveFromPaymentMethodWhenTheListIsEmpty(): void
     {
@@ -238,9 +240,9 @@ class CapabilityGuardsTest extends TestCase
         );
 
         $multiPayment = new MultiPayment('stripe');
-        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $multiPayment->charge([
+        $this->assertNotImplemented(Capability::MULTIPLE_PAYMENT_METHODS, fn () => $multiPayment->charge([
             'items' => [['description' => 'Mensalidade', 'price' => 10000, 'quantity' => 1]],
-            'payment_method' => 'bank_slip',
+            'available_payment_methods' => ['pix', 'bank_slip'],
             'customer' => ['name' => 'Fulano', 'email' => 'fulano@exemplo.com'],
         ]));
         $this->assertSame([], $this->stripeHttp->calls);
@@ -381,8 +383,9 @@ class CapabilityGuardsTest extends TestCase
         $this->assertInstanceOf(IuguGateway::class, $multiPayment->gateway('iugu'));
         $this->assertSame($iugu, $multiPayment->gateway($iugu));
         $this->assertTrue($multiPayment->supports(Capability::PIX));
-        $this->assertFalse($multiPayment->supports(Capability::BANK_SLIP));
-        $this->assertTrue($multiPayment->supports(Capability::BANK_SLIP, 'iugu'));
+        $this->assertTrue($multiPayment->supports(Capability::BANK_SLIP));
+        $this->assertFalse($multiPayment->supports(Capability::AUTOMATIC_PIX));
+        $this->assertTrue($multiPayment->supports(Capability::AUTOMATIC_PIX, 'iugu'));
         $this->assertTrue($multiPayment->gateway('iugu')->supports(Capability::INSTALLMENTS));
         $this->assertSame((new StripeGateway())->capabilities(), $multiPayment->capabilities());
         $this->assertSame((new StripeGateway())->notYetImplemented(), $multiPayment->notYetImplemented('stripe'));
@@ -404,7 +407,7 @@ class CapabilityGuardsTest extends TestCase
         Facade::getFacadeApplication()->bind('multiPayment', fn () => new MultiPayment('stripe'));
 
         $this->assertTrue(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::PIX));
-        $this->assertFalse(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::BANK_SLIP));
+        $this->assertFalse(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::AUTOMATIC_PIX));
         $this->assertContains(Capability::SUBSCRIPTIONS, \Potelo\MultiPayment\Facades\MultiPayment::capabilities('iugu'));
         $this->assertInstanceOf(StripeGateway::class, \Potelo\MultiPayment\Facades\MultiPayment::gateway());
     }
