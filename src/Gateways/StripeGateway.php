@@ -31,6 +31,7 @@ use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Models\PaymentError;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
@@ -247,6 +248,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::PLAN_CHANGE_PRORATION,
             Capability::MANAGES_RECURRENCE,
             Capability::AUTOMATIC_PIX,
+            Capability::GATEWAY_DUNNING,
         ];
     }
 
@@ -801,13 +803,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $stripeDeclineCode = $error?->decline_code ?? null;
         $gatewayCode = $stripeDeclineCode ?: $code;
 
-        $declineCode = StripeDeclineCodes::toDeclineCode($gatewayCode);
-        if ($declineCode === null) {
-            $declineCode = DeclineCode::UNKNOWN;
-            if (!empty($gatewayCode)) {
-                LogHelper::info('Código de recusa da Stripe sem tradução para DeclineCode', ['gateway' => 'stripe', 'code' => $gatewayCode]);
-            }
-        }
+        $declineCode = self::declineCodeFromGatewayCode($gatewayCode);
 
         $exception = ChargingException::declined(
             'stripe',
@@ -823,6 +819,66 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $exception->reason = self::chargeFailureReason($code, $stripeDeclineCode);
 
         return $exception;
+    }
+
+    /**
+     * Traduz o código de recusa da Stripe para `DeclineCode`, no vocabulário do pacote. Código
+     * fora da tabela devolve `UNKNOWN` com registro em nível `info`; sem código, `UNKNOWN` sem
+     * registro.
+     *
+     * @param  string|null  $gatewayCode  `decline_code` ou, na falta dele, `code` do erro
+     * @return DeclineCode
+     */
+    private static function declineCodeFromGatewayCode(?string $gatewayCode): DeclineCode
+    {
+        $declineCode = StripeDeclineCodes::toDeclineCode($gatewayCode);
+        if (!is_null($declineCode)) {
+            return $declineCode;
+        }
+
+        if (!empty($gatewayCode)) {
+            LogHelper::info('Código de recusa da Stripe sem tradução para DeclineCode', ['gateway' => 'stripe', 'code' => $gatewayCode]);
+        }
+
+        return DeclineCode::UNKNOWN;
+    }
+
+    /**
+     * Converte o erro de pagamento da Stripe (`last_payment_error` do PaymentIntent ou
+     * `last_finalization_error` do Invoice) num `PaymentError` para a leitura da fatura, com o
+     * mesmo mapeamento de `DeclineCode` da recusa síncrona. `occurredAt` vem do `created` do
+     * charge recusado, quando o erro aponta para ele; `retryable` vem do `advice_code`, quando
+     * a Stripe o envia. Nulo quando não há erro.
+     *
+     * @param  object|null  $stripeError  `\Stripe\StripeObject` com `code`, `decline_code`, `advice_code`, `message` e `charge`
+     * @param  object|null  $stripeCharge  o `latest_charge` expandido, para datar a tentativa recusada
+     * @return PaymentError|null
+     */
+    private function parseStripePaymentError(?object $stripeError, ?object $stripeCharge): ?PaymentError
+    {
+        if (empty($stripeError)) {
+            return null;
+        }
+
+        $code = $stripeError->code ?? null;
+        $stripeDeclineCode = $stripeError->decline_code ?? null;
+        $gatewayCode = $stripeDeclineCode ?: $code;
+
+        $error = new PaymentError();
+        $error->declineCode = self::declineCodeFromGatewayCode($gatewayCode);
+        $error->gatewayCode = $gatewayCode;
+        $error->message = $stripeError->message ?? null;
+        $error->retryable = StripeDeclineCodes::retryableFromAdvice($stripeError->advice_code ?? null);
+
+        $failedChargeId = $stripeError->charge ?? null;
+        if (!empty($failedChargeId) && ($stripeCharge->id ?? null) === $failedChargeId && !empty($stripeCharge->created)) {
+            $error->occurredAt = Carbon::createFromTimestamp($stripeCharge->created);
+        }
+
+        $error->gateway = 'stripe';
+        $error->original = $stripeError;
+
+        return $error;
     }
 
     /**
@@ -1207,7 +1263,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
         $stripePaymentIntentData = [
             'amount' => $amount,
-            'currency' => 'brl', // o pacote inteiro é BRL implícito (valores em centavos)
+            'currency' => strtolower($invoice->currency ?? 'BRL'),
         ];
 
         if (!empty($invoice->customer) && !empty($invoice->customer->id)) {
@@ -1415,9 +1471,11 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * @inheritDoc
      *
      * Na Stripe o restante é `amount_captured` menos `amount_refunded` do charge
-     * (`Invoice::$paidAmount` menos `Invoice::$refundedAmount`, porque o valor pago vem bruto); a
-     * fatura é lida quando o model não traz o valor pago ou o acumulado estornado confiável. A
-     * fatura de assinatura (`in_`) é recusada como em `refundInvoice()`, antes da leitura.
+     * (`Invoice::$paidAmount` menos `Invoice::$refundedAmount`, porque o valor pago vem bruto);
+     * fatura paga com boleto devolve zero, porque `refundInvoice()` a recusa
+     * (`REFUND_BANK_SLIP` é limitação do gateway). A fatura é lida quando o model não traz o
+     * valor pago, o método de pagamento ou o acumulado estornado confiável. A fatura de
+     * assinatura (`in_`) é recusada como em `refundInvoice()`, antes da leitura.
      *
      * @throws UnsupportedOperationException
      */
@@ -1435,27 +1493,36 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
     /**
      * Restante estornável de uma fatura já lida: `paidAmount` menos `refundedAmount`; zero
-     * quando nada foi pago.
+     * quando nada foi pago e para fatura paga com boleto, que o estorno recusa.
      *
      * @param  Invoice  $invoice
      * @return int
      */
     private static function stripeRefundableAmount(Invoice $invoice): int
     {
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
+            return 0;
+        }
+
         return max(0, (int) ($invoice->paidAmount ?? 0) - (int) ($invoice->refundedAmount ?? 0));
     }
 
     /**
      * Diz se o model traz o que basta para calcular o restante estornável sem reler a fatura:
-     * valor pago presente e `refundedAmount` sendo o acumulado do gateway, ou seja, sem valor
-     * pedido pelo caminho antigo e preenchido sempre que a fatura está fora de `PAID`.
+     * valor pago e método de pagamento presentes e `refundedAmount` sendo o acumulado do
+     * gateway, ou seja, sem valor pedido pelo caminho antigo e preenchido sempre que a fatura
+     * está fora de `PAID`.
      *
      * @param  Invoice  $invoice
      * @return bool
      */
     private static function hasReliableRefundableAmount(Invoice $invoice): bool
     {
-        if (is_null($invoice->paidAmount) || !is_null($invoice->requestedRefundAmount())) {
+        if (
+            is_null($invoice->paidAmount)
+            || is_null($invoice->paymentMethod)
+            || !is_null($invoice->requestedRefundAmount())
+        ) {
             return false;
         }
 
@@ -1620,6 +1687,13 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $invoice->paidAt = $paidCharge ? Carbon::createFromTimestamp($paidCharge->created) : null;
         $invoice->fee = self::chargeFee($paidCharge);
         $invoice->createdAt = Carbon::createFromTimestamp($stripePaymentIntent->created);
+        $invoice->currency = isset($stripePaymentIntent->currency)
+            ? strtoupper($stripePaymentIntent->currency)
+            : $invoice->currency;
+        $invoice->lastPaymentError = $this->parseStripePaymentError(
+            $stripePaymentIntent->last_payment_error ?? null,
+            $stripeCharge
+        );
         $invoice->original = $stripePaymentIntent;
 
         $this->parseInvoiceCustomer($invoice, $stripePaymentIntent->customer ?? null);
@@ -1692,6 +1766,17 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             ? Carbon::createFromTimestamp($stripeInvoice->due_date)
             : null;
         $invoice->url = $stripeInvoice->hosted_invoice_url ?? null;
+        $invoice->currency = isset($stripeInvoice->currency)
+            ? strtoupper($stripeInvoice->currency)
+            : $invoice->currency;
+        // paga fora da Stripe, o erro do PaymentIntent cancelado não descreve o pagamento
+        // recebido, como em parsePaymentMethod()
+        $invoice->lastPaymentError = $invoice->status !== InvoiceStatus::EXTERNALLY_PAID
+            ? $this->parseStripePaymentError(
+                ($stripeInvoice->last_finalization_error ?? null) ?? ($stripePaymentIntent->last_payment_error ?? null),
+                $stripeCharge
+            )
+            : null;
         $invoice->original = $stripeInvoice;
 
         $this->parseInvoiceCustomer($invoice, $stripeInvoice->customer ?? null);
@@ -3369,7 +3454,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * @inheritDoc
      *
      * Pausa a cobrança (`pause_collection` com `behavior` `void`): a assinatura continua
-     * existindo na Stripe e lê como `PAUSED` nesta lib, e as faturas dos ciclos pausados são
+     * existindo na Stripe e lê como `SUSPENDED` nesta lib, e as faturas dos ciclos pausados são
      * anuladas. A chave de idempotência vai no cabeçalho `Idempotency-Key` da atualização.
      */
     public function suspendSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
@@ -3514,16 +3599,19 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * @inheritDoc
      *
      * Usa a prévia de fatura da Stripe (`invoices.create_preview`) com o item do plano
-     * apontando o Price novo e `always_invoice`, o mesmo fluxo de
-     * `ProrationBehavior::CHARGE_DIFFERENCE`; as linhas voltam reais em `items`, com o
-     * crédito do período não usado em `price` negativo. `effectiveAt` é o fim de período da
-     * linha mais distante, quando acontece a próxima cobrança normal; `appliesImmediately` é
-     * verdadeiro, porque a Stripe aplica o plano novo na hora, independente do pagamento.
-     * Além da prévia, custa a leitura da assinatura (o item do plano) e, quando `planId` é um
-     * identificador, a busca do Price.
+     * apontando o Price novo e o `proration_behavior` da política informada (`always_invoice`,
+     * `none` ou `create_prorations`); as linhas voltam reais em `items`, com o crédito do
+     * período não usado em `price` negativo. `effectiveAt` é o fim de período da linha mais
+     * distante, quando acontece a próxima cobrança normal; `appliesImmediately` é verdadeiro,
+     * porque a Stripe aplica o plano novo na hora, independente do pagamento. Além da prévia,
+     * custa a leitura da assinatura (o item do plano) e, quando `planId` é um identificador, a
+     * busca do Price.
      */
-    public function previewSubscriptionPlanChange(Subscription $subscription, string $planId): SubscriptionPlanChange
-    {
+    public function previewSubscriptionPlanChange(
+        Subscription $subscription,
+        string $planId,
+        ProrationBehavior $proration = ProrationBehavior::CHARGE_DIFFERENCE
+    ): SubscriptionPlanChange {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
         }
@@ -3531,12 +3619,12 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $priceId = $this->resolveStripePriceId($planId);
         $planItem = $this->currentStripePlanItem($subscription);
 
-        $preview = $this->stripeRequest(function () use ($subscription, $planItem, $priceId) {
+        $preview = $this->stripeRequest(function () use ($subscription, $planItem, $priceId, $proration) {
             return $this->client->invoices->createPreview([
                 'subscription' => $subscription->id,
                 'subscription_details' => [
                     'items' => [['id' => $planItem->id, 'price' => $priceId]],
-                    'proration_behavior' => 'always_invoice',
+                    'proration_behavior' => ProrationBehaviors::toStripe($proration),
                 ],
             ]);
         });
@@ -4254,7 +4342,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * id do Price) e a próxima cobrança (`current_period_end`); os demais itens viram
      * `items`, e `amount` é a soma dos itens por ciclo. Os discounts expandidos viram
      * `discounts`, com o id do Coupon. `paymentMethod` vem do PaymentMethod
-     * padrão expandido, senão do único tipo em `payment_settings`. Com $withLatestInvoice, a
+     * padrão expandido, senão do único tipo em `payment_settings`; quando o padrão é um
+     * cartão, `creditCard` recebe id, bandeira, últimos dígitos e validade
+     * (`parseSubscriptionCardDetails()`). Com $withLatestInvoice, a
      * fatura mais recente é lida por inteiro (`parseFromStripeInvoice()`), uma leitura a
      * mais.
      *
@@ -4356,7 +4446,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $pixMandateOptions = $stripeSubscription->payment_settings->payment_method_options->pix->mandate_options ?? null;
         if (is_object($pixMandateOptions)) {
             // o mandato faz do Pix Automático o método da assinatura; a lista fica de fora
-            // para um save() posterior não recusar o método como ausente dela
+            // para um save() posterior não recusar o método como ausente dela, e um cartão
+            // que sobrou no model sai, porque a assinatura com mandato não cobra cartão
+            $subscription->creditCard = null;
             $subscription->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
             $subscription->automaticPix = $this->parsePixMandateOptions(
                 $pixMandateOptions,
@@ -4368,6 +4460,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $method = is_object($defaultPaymentMethod)
                 ? (self::PAYMENT_METHOD_TYPES[$defaultPaymentMethod->type ?? ''] ?? null)
                 : null;
+            $this->parseSubscriptionCardDetails($subscription, $defaultPaymentMethod);
             $types = $stripeSubscription->payment_settings->payment_method_types ?? null;
             if (is_array($types)) {
                 $methods = array_values(array_filter(array_map(
@@ -4393,10 +4486,53 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             }
         }
 
+        $subscription->currency = isset($stripeSubscription->currency)
+            ? strtoupper($stripeSubscription->currency)
+            : $subscription->currency;
         $subscription->gateway = 'stripe';
         $subscription->original = $stripeSubscription;
 
         return $subscription;
+    }
+
+    /**
+     * Preenche `Subscription::$creditCard` com o cartão do PaymentMethod padrão expandido (id,
+     * bandeira, últimos dígitos e validade). Um PaymentMethod padrão expandido de outro tipo
+     * limpa o campo, para um cartão de leitura ou escrita anterior não sobreviver no model;
+     * sem PaymentMethod padrão (nulo ou sem expand), o campo fica como está.
+     *
+     * @param  Subscription  $subscription
+     * @param  object|string|null  $defaultPaymentMethod
+     * @return void
+     */
+    private function parseSubscriptionCardDetails(Subscription $subscription, object|string|null $defaultPaymentMethod): void
+    {
+        // isset() passa pelo __isset: num PaymentMethod de outro tipo a chave `card` não
+        // existe e o StripeObject registraria "Undefined property" no log ao lê-la
+        $cardDetails = is_object($defaultPaymentMethod) && isset($defaultPaymentMethod->card)
+            ? $defaultPaymentMethod->card
+            : null;
+        if (empty($cardDetails)) {
+            if (is_object($defaultPaymentMethod)) {
+                $subscription->creditCard = null;
+            }
+
+            return;
+        }
+
+        if (empty($subscription->creditCard)) {
+            $subscription->creditCard = new CreditCard();
+        }
+        $subscription->creditCard->id = $defaultPaymentMethod->id ?? $subscription->creditCard->id;
+        $subscription->creditCard->brand = $cardDetails->brand ?? null;
+        $subscription->creditCard->lastDigits = $cardDetails->last4 ?? null;
+        $subscription->creditCard->month = isset($cardDetails->exp_month)
+            ? str_pad((string) $cardDetails->exp_month, 2, '0', STR_PAD_LEFT)
+            : $subscription->creditCard->month;
+        $subscription->creditCard->year = isset($cardDetails->exp_year)
+            ? (string) $cardDetails->exp_year
+            : $subscription->creditCard->year;
+        $subscription->creditCard->gateway = 'stripe';
     }
 
     /**

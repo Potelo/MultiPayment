@@ -16,6 +16,7 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Models\PaymentError;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\Plan;
@@ -229,6 +230,14 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     public function createInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         $this->assertSupportsAll($invoice->requiredCapabilities());
+        // a API da Iugu não tem parâmetro de moeda e cobra sempre em BRL
+        if (!empty($invoice->currency) && strcasecmp($invoice->currency, 'BRL') !== 0) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'currency',
+                "the iugu gateway only charges in BRL, [{$invoice->currency}] given"
+            );
+        }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         $iuguInvoiceData = [];
@@ -767,7 +776,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @inheritDoc
      *
      * Na Iugu o restante é `paid_cents`, que a API devolve líquido do que já foi estornado
-     * (`Invoice::$paidAmount`); a fatura é lida quando o model não o traz.
+     * (`Invoice::$paidAmount`); fatura paga com boleto devolve zero, porque `refundInvoice()`
+     * a recusa (`REFUND_BANK_SLIP` é limitação do gateway). A fatura é lida quando o model não
+     * traz o valor pago ou o método de pagamento.
      */
     public function refundableAmount(Invoice $invoice): int
     {
@@ -775,20 +786,26 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
 
-        $current = is_null($invoice->paidAmount) ? $this->getInvoice(clone $invoice) : $invoice;
+        $current = is_null($invoice->paidAmount) || is_null($invoice->paymentMethod)
+            ? $this->getInvoice(clone $invoice)
+            : $invoice;
 
         return self::iuguRefundableAmount($current);
     }
 
     /**
      * Restante estornável de uma fatura já lida: `paid_cents`, líquido do estornado; zero
-     * quando nada foi pago.
+     * quando nada foi pago e para fatura paga com boleto, que o estorno recusa.
      *
      * @param  Invoice  $invoice
      * @return int
      */
     private static function iuguRefundableAmount(Invoice $invoice): int
     {
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
+            return 0;
+        }
+
         return max(0, (int) ($invoice->paidAmount ?? 0));
     }
 
@@ -1441,6 +1458,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $invoice->paidAmount = $iuguInvoice->paid_cents ?? null;
         $invoice->setRefundedAmountFromGateway($iuguInvoice->refunded_cents ?? null);
         $invoice->refunds = $this->parseRefunds($invoice);
+        // a Iugu só opera BRL
+        $invoice->currency = $iuguInvoice->currency ?? 'BRL';
+        // a Iugu não documenta o campo do LR na fatura; o driver aceita os formatos dos
+        // outros canais (`LR`, `lr` e o trecho `LR: xx` das mensagens)
+        $invoice->lastPaymentError = self::parseIuguPaymentError(IuguDeclineCodes::extractLr($iuguInvoice));
         $invoice->dueDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         // a Iugu não documenta a expiração do QR Code na fatura; quando vier, ela vale, senão
         // fica o que o model já tinha
@@ -1655,13 +1677,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private function cardDeclined(object $iuguCharge): ChargingException
     {
         $lr = IuguDeclineCodes::extractLr($iuguCharge);
-        $declineCode = IuguDeclineCodes::toDeclineCode($lr);
-        if ($declineCode === null) {
-            $declineCode = DeclineCode::UNKNOWN;
-            if ($lr !== null) {
-                LogHelper::info('Código LR da Iugu sem tradução para DeclineCode', ['gateway' => 'iugu', 'lr' => $lr]);
-            }
-        }
+        $declineCode = self::declineCodeFromLr($lr);
 
         $detail = $iuguCharge->info_message ?? $iuguCharge->message ?? '';
         $exception = ChargingException::declined(
@@ -1675,6 +1691,50 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $exception->chargeResponse = $iuguCharge;
 
         return $exception;
+    }
+
+    /**
+     * Traduz o código LR para `DeclineCode`, no vocabulário do pacote. LR fora da tabela
+     * devolve `UNKNOWN` com registro em nível `info`; sem LR, `UNKNOWN` sem registro.
+     *
+     * @param  string|null  $lr
+     * @return DeclineCode
+     */
+    private static function declineCodeFromLr(?string $lr): DeclineCode
+    {
+        $declineCode = IuguDeclineCodes::toDeclineCode($lr);
+        if (!is_null($declineCode)) {
+            return $declineCode;
+        }
+
+        if (!is_null($lr)) {
+            LogHelper::info('Código LR da Iugu sem tradução para DeclineCode', ['gateway' => 'iugu', 'lr' => $lr]);
+        }
+
+        return DeclineCode::UNKNOWN;
+    }
+
+    /**
+     * Converte o código LR que a fatura lida expuser num `PaymentError`, com o mesmo
+     * mapeamento de `DeclineCode` da recusa síncrona; nulo quando a fatura não traz LR. A Iugu
+     * não informa mensagem nem instante da tentativa recusada na fatura, então `message`,
+     * `occurredAt` e `retryable` ficam nulos.
+     *
+     * @param  string|null  $lr
+     * @return PaymentError|null
+     */
+    private static function parseIuguPaymentError(?string $lr): ?PaymentError
+    {
+        if (is_null($lr)) {
+            return null;
+        }
+
+        $error = new PaymentError();
+        $error->declineCode = self::declineCodeFromLr($lr);
+        $error->gatewayCode = $lr;
+        $error->gateway = 'iugu';
+
+        return $error;
     }
 
     /**
@@ -2527,7 +2587,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
-     * Simula o fluxo de `ProrationBehavior::CHARGE_DIFFERENCE` (`change_plan_simulation`).
+     * A Iugu tem um único endpoint de simulação (`change_plan_simulation`), o do fluxo de
+     * `ProrationBehavior::CHARGE_DIFFERENCE`: a prévia com `NONE` devolve a mesma simulação, e
+     * `CREDIT` é recusado antes da rede, como em `changeSubscriptionPlan()`
+     * (`PLAN_CHANGE_PRORATION` é limitação da Iugu).
      * `appliesImmediately` depende de como a assinatura é paga: verdadeiro quando o único
      * método é cartão (a Iugu cobra o cartão padrão na hora); falso quando há boleto ou Pix,
      * porque a Iugu só efetiva a troca depois do pagamento da fatura gerada. Quando o model não
@@ -2537,10 +2600,19 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function previewSubscriptionPlanChange(
         Subscription $subscription,
-        string $planId
+        string $planId,
+        ProrationBehavior $proration = ProrationBehavior::CHARGE_DIFFERENCE
     ): SubscriptionPlanChange {
         if (empty($subscription->id)) {
             throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        if (!is_null($proration->requiredCapability())) {
+            $this->assertSupports(
+                $proration->requiredCapability(),
+                'A Iugu não gera crédito do período não usado ao trocar de plano; use'
+                . ' ProrationBehavior::CHARGE_DIFFERENCE ou ProrationBehavior::NONE.'
+            );
         }
 
         $source = $subscription;
@@ -2976,6 +3048,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             ?? $subscription->status;
         $subscription->planId = $iuguSubscription->plan_identifier ?? $subscription->planId;
         $subscription->amount = $iuguSubscription->price_cents ?? $subscription->amount;
+        // a Iugu só opera BRL
+        $subscription->currency = $iuguSubscription->currency ?? 'BRL';
 
         if (!empty($iuguSubscription->customer_id)) {
             // cliente de outro id não é o mesmo cliente: manter os atributos antigos produziria

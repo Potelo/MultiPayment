@@ -55,8 +55,9 @@ interface InvoiceContract
     public function refundInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Refund;
 
     /**
-     * Valor que ainda pode ser estornado na fatura, em centavos: zero para fatura não paga ou
-     * já integralmente estornada. Lê a fatura (um GET) quando o model não traz o valor pago.
+     * Valor que ainda pode ser estornado na fatura, em centavos: zero para fatura não paga,
+     * já integralmente estornada ou paga com boleto, cujo estorno `refundInvoice()` recusa.
+     * Lê a fatura (um GET) quando o model não traz o valor pago ou o método de pagamento.
      *
      * @param  Invoice  $invoice
      * @return int

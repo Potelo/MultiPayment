@@ -368,7 +368,7 @@ class SubscriptionTest extends TestCase
         $planoNovo = $this->createPlan(30000, 'destino');
         $subscription = $this->createSubscription($plan, now()->addMonth());
 
-        $preview = $subscription->previewPlanChange($planoNovo->identifier, self::GATEWAY);
+        $preview = $subscription->previewPlanChange($planoNovo->identifier, gateway: self::GATEWAY);
         $this->assertSame('iugu', $preview->gateway);
         $this->assertSame(30000, $preview->amount);
         // a Iugu não devolve linhas; a lib monta a de cobrança do plano novo a partir de cost

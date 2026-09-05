@@ -109,6 +109,13 @@ enum Capability: string
     case MANAGES_RECURRENCE = 'manages_recurrence';
 
     /**
+     * O gateway conduz a régua de retentativas da cobrança recusada de uma assinatura de forma
+     * adaptativa, dispensando régua da aplicação; sem ela, a retentativa do gateway é fixa ou
+     * ausente, e retentar além dela é decisão da aplicação.
+     */
+    case GATEWAY_DUNNING = 'gateway_dunning';
+
+    /**
      * Capability que uma fatura precisa para ser paga com o método informado.
      *
      * @param  PaymentMethod  $paymentMethod

@@ -258,7 +258,7 @@ class StripeSubscriptionTest extends TestCase
             ->create();
         $this->subscriptionsCriadas[] = $subscription->id;
 
-        $preview = $subscription->previewPlanChange($anual->identifier, $gateway);
+        $preview = $subscription->previewPlanChange($anual->identifier, gateway: $gateway);
 
         $this->assertNotEmpty($preview->items);
         $this->assertTrue($preview->appliesImmediately);

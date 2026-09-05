@@ -640,10 +640,10 @@ class SubscriptionTest extends TestCase
         $gateway = self::subscriptionGateway();
         $gateway->shouldReceive('previewSubscriptionPlanChange')
             ->once()
-            ->with($subscription, 'plano_anual')
+            ->with($subscription, 'plano_anual', ProrationBehavior::CHARGE_DIFFERENCE)
             ->andReturn($planChange);
 
-        $this->assertSame($planChange, $subscription->previewPlanChange('plano_anual', $gateway));
+        $this->assertSame($planChange, $subscription->previewPlanChange('plano_anual', gateway: $gateway));
     }
 
     public function testCreateSavesTheCustomerBeforeTheSubscription(): void

@@ -55,7 +55,7 @@ class SubscriptionStatusesTest extends TestCase
             'unpaid' => ['unpaid', SubscriptionStatus::PAST_DUE],
             'canceled' => ['canceled', SubscriptionStatus::CANCELED],
             'paused' => ['paused', SubscriptionStatus::PAUSED],
-            'active com pause_collection' => ['active_pause_collection', SubscriptionStatus::PAUSED],
+            'active com pause_collection' => ['active_pause_collection', SubscriptionStatus::SUSPENDED],
         ];
     }
 
@@ -88,7 +88,7 @@ class SubscriptionStatusesTest extends TestCase
             SubscriptionStatuses::toSubscriptionStatus((object) ['status' => 'incomplete_expired', 'pause_collection' => $paused])
         );
         $this->assertSame(
-            SubscriptionStatus::PAUSED,
+            SubscriptionStatus::SUSPENDED,
             SubscriptionStatuses::toSubscriptionStatus((object) ['status' => 'past_due', 'pause_collection' => $paused])
         );
     }

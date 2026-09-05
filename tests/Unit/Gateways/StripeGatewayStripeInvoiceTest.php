@@ -13,6 +13,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
@@ -313,6 +314,30 @@ class StripeGatewayStripeInvoiceTest extends TestCase
     }
 
     /**
+     * Paga fora da Stripe, a fatura não traz `lastPaymentError`: o erro do PaymentIntent
+     * cancelado não descreve o pagamento recebido, como vale para o método de pagamento.
+     */
+    public function testExternallyPaidInvoiceHasNoLastPaymentError(): void
+    {
+        $response = self::fixture('invoices/paid_out_of_band');
+        foreach ($response['payments']['data'] as $index => $payment) {
+            if (($payment['payment']['type'] ?? null) === 'payment_intent') {
+                $response['payments']['data'][$index]['payment']['payment_intent']['last_payment_error'] = [
+                    'code' => 'card_declined',
+                    'decline_code' => 'generic_decline',
+                    'message' => 'Your card was declined.',
+                ];
+            }
+        }
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $result = $this->getInvoice('in_1UBHUHPjx0CusuMrD81KgsNd');
+
+        $this->assertSame(InvoiceStatus::EXTERNALLY_PAID, $result->status);
+        $this->assertNull($result->lastPaymentError);
+    }
+
+    /**
      * `amount_paid_off_stripe`, quando a versão da API o devolve, também sinaliza pagamento
      * externo.
      */
@@ -405,6 +430,55 @@ class StripeGatewayStripeInvoiceTest extends TestCase
         $this->assertSame(InvoiceStatus::UNKNOWN, $result->status);
         $this->assertSame('succeeded', $this->logger->records[0]['context']['payment_intent_status']);
         $this->assertSame('failed', $this->logger->records[0]['context']['charge_status']);
+    }
+
+    /**
+     * A fatura de assinatura com tentativa recusada traz `lastPaymentError` preenchido do
+     * `last_payment_error` do PaymentIntent, com o mesmo `DeclineCode` da recusa síncrona; a
+     * data vem do charge recusado e a orientação de retentativa vem do `advice_code`.
+     */
+    public function testADeclinedAttemptFillsTheLastPaymentErrorOnTheInvoice(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/open_after_declined_attempt'),
+            self::fixture('payment_intents/after_declined_attempt'),
+        ]);
+
+        $result = $this->getInvoice('in_1UBHTnPjx0CusuMrjxjg8WhK');
+
+        $error = $result->lastPaymentError;
+        $this->assertNotNull($error);
+        $this->assertSame(DeclineCode::GENERIC, $error->declineCode);
+        $this->assertSame('generic_decline', $error->gatewayCode);
+        $this->assertSame('Your card was declined.', $error->message);
+        $this->assertTrue($error->retryable());
+        $this->assertSame(1788368268, $error->occurredAt->getTimestamp());
+        $this->assertSame('stripe', $error->gateway);
+        $this->assertSame('BRL', $result->currency);
+        $this->assertSame([], $this->logger->records);
+    }
+
+    /**
+     * O `last_finalization_error` da fatura tem precedência sobre o `last_payment_error` do
+     * PaymentIntent; um erro de finalização não aponta um charge e fica sem `occurredAt`.
+     */
+    public function testTheFinalizationErrorTakesPrecedenceOverThePaymentIntentError(): void
+    {
+        $stripeInvoice = self::fixture('invoices/open_after_declined_attempt');
+        $stripeInvoice['last_finalization_error'] = [
+            'code' => 'expired_card',
+            'message' => 'A finalização da fatura falhou.',
+            'type' => 'card_error',
+        ];
+        RecordingStripeHttpClient::withResponses([$stripeInvoice, self::fixture('payment_intents/after_declined_attempt')]);
+
+        $error = $this->getInvoice('in_1UBHTnPjx0CusuMrjxjg8WhK')->lastPaymentError;
+
+        $this->assertSame(DeclineCode::EXPIRED_CARD, $error->declineCode);
+        $this->assertSame('expired_card', $error->gatewayCode);
+        $this->assertSame('A finalização da fatura falhou.', $error->message);
+        $this->assertNull($error->occurredAt);
+        $this->assertSame([], $this->logger->records);
     }
 
     /**

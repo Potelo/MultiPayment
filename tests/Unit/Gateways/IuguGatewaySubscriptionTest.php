@@ -1005,6 +1005,63 @@ class IuguGatewaySubscriptionTest extends TestCase
     }
 
     /**
+     * A prévia com `ProrationBehavior::CREDIT` é recusada antes de qualquer requisição, como
+     * em `changeSubscriptionPlan()`: a Iugu não gera crédito ao trocar de plano.
+     */
+    public function testPreviewWithCreditIsRefusedBeforeTheNetwork(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::CREDIT_CARD;
+
+        try {
+            (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p', ProrationBehavior::CREDIT);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::PLAN_CHANGE_PRORATION, $e->capability);
+        }
+
+        $this->assertSame([], $api->calls);
+    }
+
+    /**
+     * A Iugu tem um único endpoint de simulação, então a prévia com `NONE` devolve a mesma
+     * simulação de `CHARGE_DIFFERENCE`.
+     */
+    public function testPreviewWithNoneReturnsTheSameSimulation(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['cost' => 30000, 'discount' => 0, 'expires_at' => '2026-10-02', 'new_plan' => 'p', 'old_plan' => 'o'],
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->paymentMethod = PaymentMethod::CREDIT_CARD;
+
+        $planChange = (new IuguGateway($api))->previewSubscriptionPlanChange($subscription, 'p', ProrationBehavior::NONE);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertStringContainsString('/change_plan_simulation/p', $api->calls[0]['url']);
+        $this->assertSame(30000, $planChange->amount);
+    }
+
+    /**
+     * A leitura preenche `currency`; a resposta da Iugu não traz o campo e vale `BRL`, a única
+     * moeda que ela opera.
+     */
+    public function testGetSubscriptionFillsTheCurrency(): void
+    {
+        $api = new QueuedIuguApiRequest([$this->subscriptionResponse()]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+
+        $this->assertSame('BRL', (new IuguGateway($api))->getSubscription($subscription)->currency);
+    }
+
+    /**
      * `creditCard` é atributo de escrita e não diz como a assinatura é paga no gateway: com
      * ele sozinho o driver ainda lê a assinatura, e `payable_with: all` responde falso.
      */

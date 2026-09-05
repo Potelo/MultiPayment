@@ -429,7 +429,7 @@ class StripeGatewaySubscriptionTest extends TestCase
             'unpaid' => ['unpaid', SubscriptionStatus::PAST_DUE],
             'canceled' => ['canceled', SubscriptionStatus::CANCELED],
             'paused' => ['paused', SubscriptionStatus::PAUSED],
-            'pause_collection' => ['active_pause_collection', SubscriptionStatus::PAUSED],
+            'pause_collection' => ['active_pause_collection', SubscriptionStatus::SUSPENDED],
         ];
     }
 
@@ -485,7 +485,7 @@ class StripeGatewaySubscriptionTest extends TestCase
 
         $this->assertSame(['post /v1/subscriptions/sub_1UBJmkPjx0CusuMr3KQ2wXyZ'], self::calledPaths($httpClient));
         $this->assertSame(['behavior' => 'void'], $httpClient->calls[0][2]['pause_collection']);
-        $this->assertSame(SubscriptionStatus::PAUSED, $result->status);
+        $this->assertSame(SubscriptionStatus::SUSPENDED, $result->status);
     }
 
     public function testResumeClearsThePauseAndTheScheduledCancellation(): void
@@ -670,6 +670,111 @@ class StripeGatewaySubscriptionTest extends TestCase
         $this->assertSame(1819904400, $preview->effectiveAt->getTimestamp());
         $this->assertTrue($preview->appliesImmediately);
         $this->assertSame('stripe', $preview->gateway);
+    }
+
+    /**
+     * A política informada vai como `proration_behavior` da prévia: `NONE` simula a troca sem
+     * as linhas de pró-rata.
+     */
+    public function testPreviewPlanChangeSendsTheGivenProrationBehavior(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::priceListResponse('price_fake2', 'plano_anual'),
+            self::fixture('subscriptions/active'),
+            self::previewInvoiceResponse(),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
+
+        (new StripeGateway())->previewSubscriptionPlanChange($subscription, 'plano_anual', ProrationBehavior::NONE);
+
+        $this->assertSame('none', $httpClient->calls[2][2]['subscription_details']['proration_behavior']);
+    }
+
+    /**
+     * A leitura preenche `creditCard` com id, bandeira, últimos dígitos e validade do
+     * PaymentMethod padrão expandido, e `currency` com a moeda da assinatura.
+     */
+    public function testGetSubscriptionFillsTheDefaultCardAndTheCurrency(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            self::fixture('subscriptions/active'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+
+        $result = $this->getSubscription('sub_1UBJmkPjx0CusuMr3KQ2wXyZ');
+
+        $this->assertSame('pm_1UBJmjPjx0CusuMrQ4hM2Kp9', $result->creditCard->id);
+        $this->assertSame('visa', $result->creditCard->brand);
+        $this->assertSame('4242', $result->creditCard->lastDigits);
+        $this->assertSame('09', $result->creditCard->month);
+        $this->assertSame('2027', $result->creditCard->year);
+        $this->assertSame('stripe', $result->creditCard->gateway);
+        $this->assertSame('BRL', $result->currency);
+    }
+
+    /**
+     * Num model lido do gateway o cartão vem preenchido, então a troca de método exige limpar
+     * `creditCard`: sem isso a atualização é recusada antes de qualquer requisição, e o cartão
+     * antigo nunca chega ao payload como `default_payment_method` de um método que não é
+     * cartão.
+     */
+    public function testChangingThePaymentMethodOfAReadModelRequiresClearingTheCard(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            self::fixture('subscriptions/active'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+        $gateway = new StripeGateway();
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
+        $subscription = $gateway->getSubscription($subscription);
+        $this->assertNotNull($subscription->creditCard);
+
+        $subscription->paymentMethod = PaymentMethod::PIX;
+        $subscription->availablePaymentMethods = null;
+
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        try {
+            $gateway->updateSubscription($subscription);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('remove the card', $e->getMessage());
+        }
+
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * O PaymentMethod padrão expandido de outro tipo não vira cartão e limpa um `creditCard`
+     * que sobrou no model de uma leitura ou escrita anterior.
+     */
+    public function testANonCardDefaultPaymentMethodClearsTheCreditCard(): void
+    {
+        $response = self::fixture('subscriptions/active');
+        $response['default_payment_method'] = [
+            'id' => 'pm_fake_boleto',
+            'object' => 'payment_method',
+            'type' => 'boleto',
+        ];
+        RecordingStripeHttpClient::withResponses([
+            $response,
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
+
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
+        $subscription->creditCard = new CreditCard();
+        $subscription->creditCard->id = 'pm_antigo';
+
+        $result = (new StripeGateway())->getSubscription($subscription);
+
+        $this->assertNull($result->creditCard);
     }
 
     public function testUpdateSubscriptionReplacesTheItemsDeclaratively(): void

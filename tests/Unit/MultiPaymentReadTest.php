@@ -9,10 +9,13 @@ use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\MultiPayment;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\PlanInterval;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Exceptions\NotFoundException;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Tests\Unit\Gateways\QueuedIuguApiRequest;
 
@@ -168,6 +171,59 @@ class MultiPaymentReadTest extends TestCase
         } catch (GatewayNotAvailableException) {
             $this->assertCount(1, $api->calls);
         }
+    }
+
+    /**
+     * `previewSubscriptionPlanChange()` pela fachada aceita o id da assinatura: o model só
+     * tem o id, então o driver lê a assinatura antes de simular a troca.
+     */
+    public function testPreviewSubscriptionPlanChangeSimulatesByTheSubscriptionId(): void
+    {
+        $api = (new QueuedIuguApiRequest([
+            (object) [
+                'id' => 'sub_1',
+                'customer_id' => 'cus_1',
+                'plan_identifier' => 'plano_mensal',
+                'price_cents' => 10000,
+                'expires_at' => '2026-10-01',
+                'active' => true,
+                'suspended' => false,
+                'in_trial' => false,
+                'payable_with' => 'credit_card',
+            ],
+            (object) [
+                'cost' => 30000,
+                'discount' => 0,
+                'expires_at' => '2026-10-02',
+                'new_plan' => 'plano_anual',
+                'old_plan' => 'plano_mensal',
+            ],
+        ]))->installAsSdkRequester();
+
+        $preview = (new MultiPayment('iugu'))->previewSubscriptionPlanChange('sub_1', 'plano_anual');
+
+        $this->assertCount(2, $api->calls);
+        $this->assertStringContainsString('/subscriptions/sub_1/change_plan_simulation/plano_anual', $api->calls[1]['url']);
+        $this->assertSame(30000, $preview->amount);
+        $this->assertTrue($preview->appliesImmediately);
+    }
+
+    /**
+     * A política que o gateway não oferece é recusada antes de qualquer requisição também pela
+     * fachada.
+     */
+    public function testPreviewSubscriptionPlanChangeRefusesCreditOnIugu(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        try {
+            (new MultiPayment('iugu'))->previewSubscriptionPlanChange('sub_1', 'plano_anual', ProrationBehavior::CREDIT);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::PLAN_CHANGE_PRORATION, $e->capability);
+        }
+
+        $this->assertSame([], $api->calls);
     }
 
     private static function planResponse(): object

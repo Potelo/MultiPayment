@@ -24,6 +24,7 @@ use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\IgnoreDeprecations;
+use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
@@ -96,6 +97,22 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame('Assinatura mensal', $result->items[0]->description);
         $this->assertSame(12345, $result->items[0]->price);
         $this->assertSame('stripe', $result->gateway);
+    }
+
+    /**
+     * A moeda do model vai no payload do PaymentIntent, em minúsculas; sem `currency` vale
+     * `brl`, asserido no teste do cartão salvo.
+     */
+    public function testCreateInvoiceSendsTheGivenCurrency(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->currency = 'USD';
+
+        (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame('usd', $httpClient->calls[0][2]['currency']);
     }
 
     /**
@@ -1720,8 +1737,9 @@ class StripeGatewayInvoiceTest extends TestCase
 
     /**
      * `refundableAmount()` é `paidAmount` menos `refundedAmount` (o valor pago da Stripe vem
-     * bruto); um model lido do gateway não paga requisição, um model só com o id lê a fatura, e
-     * um model com o acumulado escrito pelo caminho antigo relê a fatura.
+     * bruto); um model lido do gateway não paga requisição, um model só com o id (ou sem o
+     * método de pagamento) lê a fatura, e um model com o acumulado escrito pelo caminho antigo
+     * relê a fatura.
      */
     public function testRefundableAmountIsThePaidMinusTheRefundedAndReadsTheInvoiceOnlyWhenNeeded(): void
     {
@@ -1735,6 +1753,7 @@ class StripeGatewayInvoiceTest extends TestCase
             $partiallyRefunded,
             $refunded,
             $this->paidCardPaymentIntentResponse(status: 'requires_payment_method'),
+            $partiallyRefunded,
         ]);
         $gateway = new StripeGateway();
 
@@ -1746,6 +1765,79 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame(0, $gateway->refundableAmount($this->invoiceWithId()));
         $this->assertSame(0, $gateway->refundableAmount($this->invoiceWithId()), 'fatura não paga');
         $this->assertCount(4, $httpClient->calls);
+
+        $preloaded = $this->invoiceWithId();
+        $preloaded->status = InvoiceStatus::PAID;
+        $preloaded->paidAmount = 12345;
+        $this->assertSame(10000, $gateway->refundableAmount($preloaded));
+        $this->assertCount(5, $httpClient->calls, 'sem o método de pagamento a fatura é lida');
+    }
+
+    /**
+     * `refundableAmount()` de boleto pago devolve zero, o mesmo que `refundInvoice()` permite
+     * estornar pela API; o model com valor pago e método não custa requisição.
+     */
+    public function testRefundableAmountOfAPaidBoletoIsZero(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+
+        $invoice = $this->invoiceWithId();
+        $invoice->status = InvoiceStatus::PAID;
+        $invoice->paymentMethod = PaymentMethod::BANK_SLIP;
+        $invoice->paidAmount = 10000;
+
+        $this->assertSame(0, (new StripeGateway())->refundableAmount($invoice));
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * O PaymentIntent com tentativa recusada traz `lastPaymentError` preenchido na leitura,
+     * com o mesmo `DeclineCode` da recusa síncrona; a data vem do charge recusado e a
+     * orientação de retentativa vem do `advice_code`.
+     */
+    public function testAFailedAttemptFillsTheLastPaymentErrorOnTheInvoice(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse(status: 'requires_payment_method');
+        $response['last_payment_error'] = [
+            'code' => 'card_declined',
+            'decline_code' => 'generic_decline',
+            'advice_code' => 'try_again_later',
+            'message' => 'Your card was declined.',
+            'charge' => 'ch_fake123',
+            'type' => 'card_error',
+        ];
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $result = (new StripeGateway())->getInvoice($this->invoiceWithId());
+
+        $error = $result->lastPaymentError;
+        $this->assertNotNull($error);
+        $this->assertSame(DeclineCode::GENERIC, $error->declineCode);
+        $this->assertSame('generic_decline', $error->gatewayCode);
+        $this->assertSame('Your card was declined.', $error->message);
+        $this->assertTrue($error->retryable, 'advice_code try_again_later sobrescreve o padrão do DeclineCode');
+        $this->assertTrue($error->retryable());
+        $this->assertSame(1786700010, $error->occurredAt->getTimestamp());
+        $this->assertSame('stripe', $error->gateway);
+        $this->assertSame('BRL', $result->currency);
+    }
+
+    /**
+     * A leitura sem tentativa recusada deixa `lastPaymentError` nulo, inclusive num model
+     * reutilizado que o trazia de uma leitura anterior.
+     */
+    public function testASuccessfulReadClearsTheLastPaymentError(): void
+    {
+        $declined = $this->paidCardPaymentIntentResponse(status: 'requires_payment_method');
+        $declined['last_payment_error'] = ['code' => 'card_declined', 'message' => 'Your card was declined.'];
+        RecordingStripeHttpClient::withResponses([$declined, $this->paidCardPaymentIntentResponse()]);
+        $gateway = new StripeGateway();
+
+        $invoice = $gateway->getInvoice($this->invoiceWithId());
+        $this->assertNotNull($invoice->lastPaymentError);
+
+        $invoice = $gateway->getInvoice($invoice);
+        $this->assertNull($invoice->lastPaymentError);
     }
 
     public function testRefundableAmountReReadsTheInvoiceWhenTheLegacyPathWroteTheRefundedAmount(): void

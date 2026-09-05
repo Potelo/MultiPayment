@@ -439,4 +439,21 @@ class InvoiceTest extends TestCase
             }
         }
     }
+
+    /**
+     * `currency` aceita um código ISO 4217 de três letras; qualquer outro valor falha na
+     * validação.
+     */
+    public function testCurrencyMustBeAThreeLetterCode(): void
+    {
+        $invoice = new Invoice();
+        $invoice->currency = 'BRL';
+        $invoice->validate(['currency']);
+
+        $invoice->currency = 'REAIS';
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches('/ISO 4217/');
+        $invoice->validate(['currency']);
+    }
 }

@@ -322,7 +322,8 @@ class IuguGatewayRefundTest extends TestCase
 
     /**
      * `refundableAmount()` é `paid_cents`, que a Iugu devolve líquido do já estornado; um model
-     * que já traz `paidAmount` não paga requisição, um model só com o id lê a fatura.
+     * que já traz `paidAmount` e `paymentMethod` não paga requisição, um model só com o id (ou
+     * sem o método de pagamento) lê a fatura.
      */
     public function testRefundableAmountIsThePaidCentsAndReadsTheInvoiceOnlyWhenNeeded(): void
     {
@@ -331,6 +332,7 @@ class IuguGatewayRefundTest extends TestCase
             $this->paidInvoiceResponse(['status' => 'refunded', 'refunded_cents' => 10000, 'paid_cents' => 0]),
             $this->paidInvoiceResponse(['status' => 'pending', 'paid_at' => null, 'paid_cents' => 0, 'payment_method' => null]),
             $this->paidInvoiceResponse(['status' => 'partially_refunded', 'refunded_cents' => 2500, 'paid_cents' => 7500]),
+            $this->paidInvoiceResponse(['paid_cents' => 5000]),
         ]);
         $gateway = new IuguGateway($api);
 
@@ -341,17 +343,19 @@ class IuguGatewayRefundTest extends TestCase
 
         $read = $gateway->getInvoice($this->invoiceWithId());
         $this->assertSame(7500, $gateway->refundableAmount($read));
+        $this->assertCount(4, $api->calls, 'o model lido do gateway não custa outra requisição');
+
         $preloaded = $this->invoiceWithId();
         $preloaded->paidAmount = 5000;
         $this->assertSame(5000, $gateway->refundableAmount($preloaded));
-        $this->assertCount(4, $api->calls, 'o model com paidAmount não custa requisição');
+        $this->assertCount(5, $api->calls, 'sem o método de pagamento a fatura é lida');
     }
 
     /**
-     * `refundableAmount()` é o restante aritmético: boleto pago devolve `paid_cents` mesmo sem
-     * estorno pela API; a recusa de boleto continua em `refundInvoice()`.
+     * `refundableAmount()` de boleto pago devolve zero, o mesmo que `refundInvoice()` permite
+     * estornar pela API.
      */
-    public function testRefundableAmountOfAPaidBankSlipIsTheArithmeticRemainder(): void
+    public function testRefundableAmountOfAPaidBankSlipIsZero(): void
     {
         $api = new QueuedIuguApiRequest([$this->paidInvoiceResponse([
             'payment_method' => 'iugu_bank_slip',
@@ -359,7 +363,7 @@ class IuguGatewayRefundTest extends TestCase
         ])]);
         $gateway = new IuguGateway($api);
 
-        $this->assertSame(10000, $gateway->refundableAmount($this->invoiceWithId()));
+        $this->assertSame(0, $gateway->refundableAmount($this->invoiceWithId()));
         $this->assertOnlyTheInvoiceWasRead($api);
     }
 

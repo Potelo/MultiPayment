@@ -14,9 +14,11 @@ class CreditCard extends Model
 {
 
     /**
-     * @var mixed
+     * Id do cartão salvo no gateway (`pm_` no Stripe, o id do payment method na Iugu).
+     *
+     * @var string|null
      */
-    public $id = null;
+    public ?string $id = null;
 
     /**
      * @var Customer|null

@@ -17,6 +17,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static CreditCardBuilder newCreditCard()
  * @method static \Potelo\MultiPayment\Builders\SubscriptionBuilder newSubscription()
  * @method static \Potelo\MultiPayment\Models\Subscription[] listSubscriptions(\Potelo\MultiPayment\Models\Customer|string $customer, int $page = 1, int $limit = 100)
+ * @method static \Potelo\MultiPayment\Models\SubscriptionPlanChange previewSubscriptionPlanChange(\Potelo\MultiPayment\Models\Subscription|string $subscription, string $planId, \Potelo\MultiPayment\Enums\ProrationBehavior $proration = \Potelo\MultiPayment\Enums\ProrationBehavior::CHARGE_DIFFERENCE)
  * @method static \Potelo\MultiPayment\Models\Plan[] listPlans(int $page = 1, int $limit = 100)
  * @method static Invoice getInvoice(string $id)
  * @method static \Potelo\MultiPayment\Models\Subscription getSubscription(string $id)

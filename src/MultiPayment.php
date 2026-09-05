@@ -12,6 +12,8 @@ use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Models\SubscriptionPlanChange;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
@@ -261,6 +263,37 @@ class MultiPayment
     }
 
     /**
+     * Simula a troca de plano de uma assinatura sem aplicá-la, com a política de pró-rata
+     * informada. Aceita o model ou só o id da assinatura; `CREDIT` num gateway sem
+     * `Capability::PLAN_CHANGE_PRORATION` lança `UnsupportedOperationException` antes de
+     * qualquer requisição.
+     *
+     * @param  Subscription|string  $subscription
+     * @param  string  $planId
+     * @param  ProrationBehavior  $proration  política de pró-rata simulada
+     *
+     * @return SubscriptionPlanChange
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     * @throws ConfigurationException|ModelAttributeValidationException
+     */
+    public function previewSubscriptionPlanChange(
+        Subscription|string $subscription,
+        string $planId,
+        ProrationBehavior $proration = ProrationBehavior::CHARGE_DIFFERENCE
+    ): SubscriptionPlanChange {
+        if (is_string($subscription)) {
+            $subscriptionModel = new Subscription();
+            $subscriptionModel->id = $subscription;
+            $subscription = $subscriptionModel;
+        }
+
+        /** @var SubscriptionContract $gateway */
+        $gateway = $this->gatewayImplementing(SubscriptionContract::class, Capability::SUBSCRIPTIONS);
+
+        return $gateway->previewSubscriptionPlanChange($subscription, $planId, $proration);
+    }
+
+    /**
      * List the gateway plans
      *
      * @param  int  $page
@@ -428,7 +461,8 @@ class MultiPayment
     }
 
     /**
-     * Valor que ainda pode ser estornado na fatura, em centavos; lê a fatura no gateway.
+     * Valor que ainda pode ser estornado na fatura, em centavos; lê a fatura no gateway. Fatura
+     * paga com boleto devolve zero, porque `refundInvoice()` a recusa.
      *
      * @param  string  $id
      * @return int

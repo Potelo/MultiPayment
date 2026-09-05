@@ -8,7 +8,10 @@ use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Gateways\IuguGateway;
+use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
+use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use Carbon\Carbon;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -131,6 +134,100 @@ class IuguGatewayInvoiceTest extends TestCase
         $payload = $api->calls[0]['data'];
         $this->assertSame(0, $payload['expires_in']);
         $this->assertArrayNotHasKey('payable_with', $payload);
+    }
+
+    /**
+     * A fatura com um código LR na resposta traz `lastPaymentError` com o `DeclineCode` da
+     * recusa síncrona; o driver aceita o campo nos dois formatos observados (`LR` e `lr`).
+     */
+    #[DataProvider('lrFieldProvider')]
+    public function testGetInvoiceReadsTheLrAsTheLastPaymentError(string $field): void
+    {
+        $response = $this->pendingInvoiceResponse();
+        $response->{$field} = '05';
+        $api = (new QueuedIuguApiRequest([$response]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+        $result = (new IuguGateway($api))->getInvoice($invoice);
+
+        $error = $result->lastPaymentError;
+        $this->assertNotNull($error);
+        $this->assertSame(DeclineCode::DO_NOT_HONOR, $error->declineCode);
+        $this->assertSame('05', $error->gatewayCode);
+        $this->assertSame('iugu', $error->gateway);
+        $this->assertFalse($error->retryable());
+        $this->assertNull($error->message);
+        $this->assertNull($error->occurredAt);
+    }
+
+    public static function lrFieldProvider(): array
+    {
+        return ['maiúsculo' => ['LR'], 'minúsculo' => ['lr']];
+    }
+
+    /**
+     * Sem código LR na resposta, `lastPaymentError` fica nulo, e `currency` vale `BRL`, a única
+     * moeda que a Iugu opera.
+     */
+    public function testGetInvoiceWithoutAnLrLeavesTheLastPaymentErrorNull(): void
+    {
+        $api = (new QueuedIuguApiRequest([$this->pendingInvoiceResponse()]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+        $result = (new IuguGateway($api))->getInvoice($invoice);
+
+        $this->assertNull($result->lastPaymentError);
+        $this->assertSame('BRL', $result->currency);
+    }
+
+    /**
+     * Um LR fora da tabela vira `DeclineCode::UNKNOWN`, com o código preservado em
+     * `gatewayCode` e uma linha em nível `info` no log.
+     */
+    public function testAnUnmappedLrReadsAsUnknownWithAnInfoLog(): void
+    {
+        Facade::getFacadeApplication()->instance('log', $logger = new RecordingLogger());
+
+        $response = $this->pendingInvoiceResponse();
+        $response->lr = 'ZZ9';
+        $api = (new QueuedIuguApiRequest([$response]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+        $result = (new IuguGateway($api))->getInvoice($invoice);
+
+        $this->assertSame(DeclineCode::UNKNOWN, $result->lastPaymentError->declineCode);
+        $this->assertSame('ZZ9', $result->lastPaymentError->gatewayCode);
+        $this->assertCount(1, $logger->records);
+        $this->assertSame('info', $logger->records[0]['level']);
+        $this->assertSame(['gateway' => 'iugu', 'lr' => 'ZZ9'], $logger->records[0]['context']);
+    }
+
+    /**
+     * A Iugu só cobra em BRL: `currency` com outro valor é recusada antes de qualquer
+     * requisição, inclusive antes de criar o cliente.
+     */
+    public function testCreateInvoiceRefusesACurrencyOtherThanBrl(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'currency' => 'USD',
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+        ]);
+
+        try {
+            (new IuguGateway($api))->createInvoice($invoice);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('BRL', $e->getMessage());
+        }
+
+        $this->assertSame([], $api->calls);
     }
 
     private function pendingInvoiceResponse(): object

@@ -194,6 +194,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | sim |  |
 | `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |  |
 | `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | sim |  |
+| `GATEWAY_DUNNING` | O gateway conduz a régua de retentativas da cobrança recusada de uma assinatura de forma adaptativa, dispensando régua da aplicação; sem ela, a retentativa do gateway é fixa ou ausente, e retentar além dela é decisão da aplicação. | limitação do gateway | sim |  |
 
 Sobre as restrições e algumas células:
 
@@ -222,6 +223,11 @@ Sobre as restrições e algumas células:
   `UnsupportedOperationException` (ver [Estorno](#estorno)).
 - **`MANAGES_RECURRENCE`** é informativa: diz quem agenda a cobrança do Pix Automático (ver
   [Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)).
+- **`GATEWAY_DUNNING`** também é informativa: no Stripe, os Smart Retries retentam a renovação
+  recusada por conta própria, sem régua da aplicação; na Iugu a régua do gateway é fixa e
+  curta (cinco tentativas), e a aplicação que quiser retentar além dela monta a própria régua
+  (o motivo da recusa fica em `Invoice::$lastPaymentError`, ver
+  [Motivo da recusa na leitura](#motivo-da-recusa-na-leitura)).
 - **`PLAN_CHANGE_PRORATION`** é o que `changePlan()` com `ProrationBehavior::CREDIT` exige; as
   outras duas políticas fazem parte de `SUBSCRIPTIONS` (ver [Troca de plano](#troca-de-plano)).
 
@@ -314,8 +320,8 @@ Os nove estados:
 | `TRIALING` | Em período de teste | `in_trial` | `trialing` | `isActive()` |
 | `ACTIVE` | Em dia | `active` | `active` | `isActive()` |
 | `PAST_DUE` | Cobrança vencida sem pagamento | derivado: `expires_at` no passado com alguma fatura de `recent_invoices` em aberto | `past_due`, `unpaid` | `isRecoverable()` |
-| `PAUSED` | Cobrança pausada pelo gateway | (não emite) | `paused`; qualquer status não encerrado com `pause_collection` preenchido | `isRecoverable()` |
-| `SUSPENDED` | Cobrança interrompida pela aplicação | `suspended` | (não emite; `suspend()` usa `pause_collection`, que lê como `PAUSED`) | `isRecoverable()` |
+| `PAUSED` | Cobrança pausada pelo gateway | (não emite) | `paused` (trial terminou sem método de pagamento) | `isRecoverable()` |
+| `SUSPENDED` | Cobrança interrompida pela aplicação | `suspended` | qualquer status não encerrado com `pause_collection` preenchido (é o que `suspend()` grava) | `isRecoverable()` |
 | `CANCELED` | Encerrada | `suspended` com a marca `mp_canceled_at` em `custom_variables`, gravada por `cancel()` | `canceled` | `isEnded()` |
 | `EXPIRED` | Ciclo terminou sem renovação | `active` falso com `expires_at` no passado e nenhuma fatura em aberto | `incomplete_expired` | `isEnded()` |
 | `UNKNOWN` | Status que a lib não reconhece | (não emite: a Iugu não tem campo de status) | qualquer outro | nenhum responde verdadeiro |
@@ -344,6 +350,13 @@ $subscription->status->value;                       // 'past_due', para gravar n
 
 Cada estado responde verdadeiro a exatamente um dos três helpers (`UNKNOWN` a nenhum), então
 os três `if` acima cobrem tudo que a lib produz.
+
+> **Mudança de comportamento (versão 5.0.0).** No Stripe, a assinatura com `pause_collection`
+> preenchido lê como `SUSPENDED` (nas prévias da 5.0.0 lia como `PAUSED`). Só a aplicação grava
+> `pause_collection` (inclusive via `suspend()`), então `suspend()` produz o mesmo estado nos
+> dois gateways e `PAUSED` fica reservado à pausa por iniciativa do gateway (o status `paused`
+> da Stripe, de trial que terminou sem método de pagamento). Quem comparava com `PAUSED` depois
+> de `suspend()` deve comparar com `SUSPENDED`, ou usar `isRecoverable()`, que cobre os dois.
 
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, `Subscription::$status` era uma
 > string e `cancel()` na Iugu devolvia `suspended`, o mesmo estado de `suspend()`. Agora a
@@ -892,6 +905,34 @@ normalização antiga (`card_declined`, `brand_not_supported`, `authentication_r
 `expired_card`, `insufficient_funds`, `incorrect_cvc`, ou o `code` original); na Iugu, que antes
 o deixava nulo, traz o valor de `declineCode`. Compare com `declineCode`.
 
+### Motivo da recusa na leitura
+
+A recusa síncrona chega como `CardDeclinedException`; a recusa que acontece longe da chamada
+(a renovação de assinatura que falhou, avisada por webhook) aparece na **leitura da fatura**:
+`Invoice::$lastPaymentError` é um `PaymentError` com o mesmo `DeclineCode` da exceção, o código
+original em `gatewayCode`, a mensagem do gateway em `message`, o momento da tentativa em
+`occurredAt` (quando o gateway o informa) e `retryable()`, que responde pela orientação do
+gateway (`advice_code` da Stripe) ou, na falta dela, por `DeclineCode::isRetryable()`. Nulo
+quando a fatura não tem tentativa recusada registrada.
+
+```php
+$invoice = MultiPayment::setGateway('stripe')->getInvoice($invoiceId);
+
+if ($invoice->status->isPayable() && $invoice->lastPaymentError?->retryable()) {
+    RetryCharge::dispatch($invoice)->delay(now()->addDay());
+}
+
+$invoice->lastPaymentError?->declineCode;    // DeclineCode::GENERIC
+$invoice->lastPaymentError?->gatewayCode;    // 'generic_decline' (Stripe) ou o LR (Iugu)
+```
+
+No Stripe o campo vem de `last_payment_error` do PaymentIntent (na fatura de assinatura,
+também de `last_finalization_error` do Invoice). Na Iugu o driver lê o código LR que a fatura
+expuser (os campos `LR` e `lr` e o trecho `LR: xx` das mensagens, os formatos que a Iugu usa na
+resposta de cobrança e no webhook); a Iugu não documenta o campo do LR na fatura, então na
+Iugu o campo pode vir nulo mesmo depois de uma recusa, e só `declineCode` e `gatewayCode` são
+preenchidos.
+
 > **Mudança de comportamento (versão 5.0.0).** Até a 4.1.0, credencial inválida chegava como
 > `GatewayNotAvailableException` (Stripe e chave Iugu não configurada) ou como `GatewayException`
 > genérica (chave Iugu recusada com 401), e um cartão inválido no caminho de dados crus da Iugu
@@ -1285,12 +1326,18 @@ $subscription->changePlan('basico', ProrationBehavior::NONE);
 $subscription->changePlan('plano_anual', ProrationBehavior::CREDIT);   // Iugu: UnsupportedOperationException
 ```
 
-`previewPlanChange()` simula a troca sem aplicá-la e devolve um `SubscriptionPlanChange`:
+`previewPlanChange()` simula a troca sem aplicá-la, com a mesma política de pró-rata de
+`changePlan()` (`CHARGE_DIFFERENCE` por padrão), e devolve um `SubscriptionPlanChange`. No
+Stripe a política vai na prévia (`proration_behavior`), então a simulação de `NONE` mostra a
+troca sem linhas de pró-rata; na Iugu, que só tem um fluxo de simulação, `NONE` devolve a mesma
+prévia de `CHARGE_DIFFERENCE`, e `CREDIT` é recusado antes da rede, como em `changePlan()`. A
+fachada tem o mesmo caminho por id: `MultiPayment::previewSubscriptionPlanChange($id, $planId,
+$proration)`.
 
 - **`amount`**: o que a troca cobraria agora, em centavos; quando há linhas, é a soma de `items`.
 - **`items`**: as linhas da fatura que a troca geraria, como `InvoiceItem` (crédito com `price`
   negativo). A lista nunca é nula. No Stripe as linhas vêm reais, da prévia de fatura
-  (`invoices.create_preview`) com `always_invoice`, o mesmo fluxo de `CHARGE_DIFFERENCE`. A
+  (`invoices.create_preview`) com a política informada. A
   Iugu não devolve linhas em `change_plan_simulation`, então
   a lib monta uma linha de cobrança do plano novo (`Plano <novo>`, valendo `cost` mais
   `discount`) e, quando `discount` é maior que zero, uma linha negativa de crédito do plano
@@ -1315,6 +1362,8 @@ foreach ($preview->items as $line) {              // nunca null
 $preview->amount;                                 // 30000
 $preview->effectiveAt;                            // Carbon: próxima cobrança depois da troca
 $preview->appliesImmediately;                     // false numa assinatura paga por Pix na Iugu
+
+$subscription->previewPlanChange('plano_anual', ProrationBehavior::CREDIT);   // Iugu: UnsupportedOperationException
 ```
 
 > **Obsoleto (desde 2026-09-02).** O booleano `$charge` de `changePlan()` continua aceito, na
@@ -1493,7 +1542,12 @@ Particularidades do Stripe:
   tem cartão próprio). Cartão sem id é salvo antes pelo fluxo de SetupIntent: se o emissor
   exigir autenticação do pagador, a assinatura não é criada e sobe `ChargingException` com
   `DeclineCode::AUTHENTICATION_REQUIRED` e o SetupIntent em `chargeResponse`; conclua com
-  `confirmCreditCardSetup()` e crie a assinatura com o id do cartão salvo.
+  `confirmCreditCardSetup()` e crie a assinatura com o id do cartão salvo. Na leitura,
+  `creditCard` volta preenchido com id, bandeira, últimos dígitos e validade do cartão padrão
+  da assinatura (na Iugu a leitura não o preenche, porque a Iugu não informa o cartão). Por
+  isso, trocar o método de uma assinatura lida exige limpar `creditCard` junto com a lista de
+  métodos; com o cartão preenchido e um método sem cartão, a atualização é recusada antes da
+  requisição com a orientação de removê-lo.
 - **Com cartão, a primeira fatura é cobrada na criação** (`payment_behavior`
   `error_if_incomplete`): a recusa do cartão sobe como `ChargingException` e a assinatura não
   é criada. Com trial não há cobrança e a assinatura nasce `TRIALING` (a fatura de valor zero
@@ -1529,7 +1583,7 @@ Particularidades do Stripe:
   à lida não é reenviada. O Coupon criado não é apagado quando sai da assinatura: ele fica na
   conta, reutilizável pelo id.
 - **`suspend()` pausa a cobrança** (`pause_collection` com `behavior` `void`) e a assinatura
-  lê como `PAUSED` (na Iugu, `SUSPENDED`); as faturas dos ciclos pausados são anuladas.
+  lê como `SUSPENDED`, o mesmo estado da Iugu; as faturas dos ciclos pausados são anuladas.
   `resume()` desfaz a pausa e também o cancelamento agendado por `cancel(atPeriodEnd: true)`.
   Assinatura cancelada de vez (`CANCELED`) não volta na Stripe: `resume()` é recusado pelo
   gateway com `ValidationException` (na Iugu, `resume()` reativa a cancelada).
@@ -1720,10 +1774,12 @@ total já estornado que o gateway informou; num model lido do gateway que já te
 **Quanto ainda pode ser estornado.** `$invoice->refundableAmount()` (ou
 `$payment->refundableAmount($id)`) devolve o restante em centavos, calculado pelo driver: na
 Iugu é `paidAmount`, porque `paid_cents` já vem líquido do estornado; na Stripe é `paidAmount`
-menos `refundedAmount`, porque o valor pago vem bruto. Zero para fatura não paga ou já
-integralmente estornada. Um model que traz o valor pago não custa requisição; um model só com o
-id lê a fatura. É o teto aritmético do estorno; as guardas de boleto, Pix parcial e prazo
-continuam valendo.
+menos `refundedAmount`, porque o valor pago vem bruto. Zero para fatura não paga, já
+integralmente estornada ou paga com boleto, cujo estorno `refund()` recusa nos dois gateways:
+uma tela que exibe o valor de `refundableAmount()` nunca promete um estorno que a lib vai
+recusar por limitação de capability. Um model que traz o valor pago e o método de pagamento não
+custa requisição; um model só com o id (ou sem o método) lê a fatura. É o teto aritmético do
+estorno; as guardas de Pix parcial e prazo continuam valendo.
 
 ```php
 $invoice = $payment->getInvoice($id);           // já partially_refunded
@@ -1877,6 +1933,8 @@ $invoice->save('iugu');      // cobra o cartão
 echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
 $invoice->originType; // InvoiceOriginType::INVOICE (na Iugu sempre; no Stripe, PAYMENT_INTENT ou INVOICE)
 $invoice->dueDate;    // vencimento; $invoice->pixExpiresAt é a expiração do QR Code do Pix
+$invoice->currency;   // 'BRL', preenchida na leitura
+$invoice->lastPaymentError;   // PaymentError ou null (ver "Motivo da recusa na leitura")
 ```
 #### Refund
 ```php
@@ -1898,6 +1956,10 @@ $subscription->creditCard = $card;      // ou $subscription->paymentMethod = Pay
 $subscription->trialDays = 7;
 $subscription->save('iugu');
 echo $subscription->id;
+
+$subscription = $payment->getSubscription($subscription->id);
+$subscription->creditCard?->lastDigits;   // '4242' no Stripe; null na Iugu, que não informa o cartão
+$subscription->currency;                  // 'BRL', preenchida na leitura
 ```
 #### Plan
 ```php
@@ -1918,6 +1980,7 @@ Chaves aceitas por `charge(array)` (e por `Invoice::fill()`), em `snake_case`; v
 | atributo                      | obrigatório                                                         | tipo                           | descrição                                 | exemplo                               |
 |-------------------------------|---------------------------------------------------------------------|--------------------------------|-------------------------------------------|---------------------------------------|
 | `amount`                      | **obrigatório** caso `items` não seja informado                     | int                            | valor em centavos; junto de `items`, precisa ser a soma deles | `10000`                               |
+| `currency`                    |                                                                     | string                         | moeda ISO 4217, `BRL` por padrão; a Iugu só aceita `BRL` | `'BRL'`                               |
 | `customer`                    | **obrigatório**                                                     | array                          | array com os dados do cliente             | `['name' => 'Nome do cliente'...]`    |
 | `customer.name`               | **obrigatório**                                                     | string                         | nome do cliente                           | `'Nome do cliente'`                   |
 | `customer.email`              | **obrigatório**                                                     | string                         | email do cliente                          | `'joaomaria@email.com'`               |

@@ -191,15 +191,17 @@ final class DeclineCodes
     }
 
     /**
-     * Lê o código LR de uma resposta de cobrança recusada: o campo `LR` quando existe, senão o
-     * trecho `LR: xx` de `info_message` ou `message`. Nulo quando a resposta não traz código.
+     * Lê o código LR de uma resposta da Iugu: o campo `LR` quando existe (o formato da
+     * resposta de `POST /v1/charge`), senão `lr` minúsculo (o formato do webhook
+     * `invoice.payment_failed`), senão o trecho `LR: xx` de `info_message` ou `message`. Nulo
+     * quando a resposta não traz código.
      *
-     * @param  object  $charge  resposta de `POST /v1/charge`
+     * @param  object  $charge  resposta de cobrança, fatura ou payload com o LR
      * @return string|null
      */
     public static function extractLr(object $charge): ?string
     {
-        $lr = $charge->LR ?? null;
+        $lr = $charge->LR ?? $charge->lr ?? null;
         if (is_string($lr) && trim($lr) !== '') {
             return strtoupper(trim($lr));
         }

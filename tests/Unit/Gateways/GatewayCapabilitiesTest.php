@@ -95,6 +95,7 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::PLAN_CHANGE_PRORATION->name =>    [self::LIMITATION,     self::SUPPORTED],
             Capability::SUBSCRIPTION_CREDITS->name =>     [self::NOT_IMPLEMENTED, self::LIMITATION],
             Capability::MANAGES_RECURRENCE->name =>       [self::LIMITATION,     self::SUPPORTED],
+            Capability::GATEWAY_DUNNING->name =>          [self::LIMITATION,     self::SUPPORTED],
         ];
 
         $cases = [];

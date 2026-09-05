@@ -121,19 +121,26 @@ interface SubscriptionContract
     ): Subscription;
 
     /**
-     * Simula a troca de plano sem aplicá-la, devolvendo o que seria cobrado. As linhas de
-     * `SubscriptionPlanChange::$items` nunca faltam: quando o gateway não as devolve, o driver
-     * as monta a partir dos totais da simulação.
+     * Simula a troca de plano sem aplicá-la, devolvendo o que seria cobrado com a política de
+     * pró-rata informada. As linhas de `SubscriptionPlanChange::$items` nunca faltam: quando o
+     * gateway não as devolve, o driver as monta a partir dos totais da simulação. Gateway com
+     * um único fluxo de simulação documenta no driver que políticas diferentes devolvem a
+     * mesma prévia; `CREDIT` num gateway sem `Capability::PLAN_CHANGE_PRORATION` lança
+     * `UnsupportedOperationException` antes de qualquer requisição, como em
+     * `changeSubscriptionPlan()`.
      *
      * @param  Subscription  $subscription
      * @param  string  $planId
+     * @param  ProrationBehavior  $proration  política de pró-rata simulada
      *
      * @return SubscriptionPlanChange
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
     public function previewSubscriptionPlanChange(
         Subscription $subscription,
-        string $planId
+        string $planId,
+        ProrationBehavior $proration = ProrationBehavior::CHARGE_DIFFERENCE
     ): SubscriptionPlanChange;
 
     /**

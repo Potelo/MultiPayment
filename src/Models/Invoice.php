@@ -192,6 +192,25 @@ class Invoice extends Model
     public ?Carbon $pixExpiresAt = null;
 
     /**
+     * Último erro de pagamento registrado pelo gateway na fatura, preenchido na leitura. No
+     * Stripe vem de `last_payment_error` do PaymentIntent (na fatura de assinatura, também de
+     * `last_finalization_error`); na Iugu, do código LR que a fatura expuser. Nulo quando não
+     * há tentativa recusada registrada.
+     *
+     * @var PaymentError|null
+     */
+    public ?PaymentError $lastPaymentError = null;
+
+    /**
+     * Moeda da fatura em código ISO 4217 (`BRL`), preenchida na leitura. Na escrita é
+     * opcional: o Stripe cria a cobrança na moeda informada (`BRL` por padrão) e a Iugu só
+     * opera `BRL` (outro valor é recusado antes da requisição).
+     *
+     * @var string|null
+     */
+    public ?string $currency = null;
+
+    /**
      * @var int|null
      */
     public ?int $fee = null;
@@ -292,6 +311,12 @@ class Invoice extends Model
             unset($data['automatic_pix_charge']);
         }
 
+        if (!empty($data['last_payment_error']) && is_array($data['last_payment_error'])) {
+            $this->lastPaymentError = new PaymentError();
+            $this->lastPaymentError->fill($data['last_payment_error']);
+            unset($data['last_payment_error']);
+        }
+
         parent::fill($data);
     }
 
@@ -362,6 +387,23 @@ class Invoice extends Model
                 $this->getClassName(),
                 'paymentMethod',
                 "paymentMethod must be one of: {$accepted}"
+            );
+        }
+    }
+
+    /**
+     * Na escrita, `currency` precisa ser um código ISO 4217 de três letras.
+     *
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    public function validateCurrencyAttribute(): void
+    {
+        if (!preg_match('/^[A-Za-z]{3}$/', (string) $this->currency)) {
+            throw ModelAttributeValidationException::invalid(
+                $this->getClassName(),
+                'currency',
+                'currency must be a three-letter ISO 4217 code'
             );
         }
     }
@@ -768,14 +810,14 @@ class Invoice extends Model
 
     /**
      * Copia também os objetos aninhados que os drivers preenchem na leitura (`customer` e seu
-     * `address`, `creditCard`, `bankSlip`, `pix`, `automaticPix`, `automaticPixCharge`), para
-     * que parsear a cópia não altere o model original.
+     * `address`, `creditCard`, `bankSlip`, `pix`, `automaticPix`, `automaticPixCharge`,
+     * `lastPaymentError`), para que parsear a cópia não altere o model original.
      *
      * @return void
      */
     public function __clone(): void
     {
-        foreach (['customer', 'creditCard', 'bankSlip', 'pix', 'automaticPix', 'automaticPixCharge'] as $property) {
+        foreach (['customer', 'creditCard', 'bankSlip', 'pix', 'automaticPix', 'automaticPixCharge', 'lastPaymentError'] as $property) {
             if (is_object($this->{$property})) {
                 $this->{$property} = clone $this->{$property};
             }
@@ -820,9 +862,10 @@ class Invoice extends Model
 
     /**
      * Valor que ainda pode ser estornado na fatura, em centavos, calculado pelo driver: zero para
-     * fatura não paga ou já integralmente estornada. Lê a fatura (um GET) quando o model não traz
-     * o valor pago. É o teto aritmético de `refund()`; as guardas de boleto, Pix parcial e prazo
-     * continuam valendo.
+     * fatura não paga, já integralmente estornada ou paga com boleto, cujo estorno `refund()`
+     * recusa (`REFUND_BANK_SLIP` é limitação dos dois gateways). Lê a fatura (um GET) quando o
+     * model não traz o valor pago ou o método de pagamento. É o teto aritmético de `refund()`;
+     * as guardas de Pix parcial e prazo continuam valendo.
      *
      * @return int
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException

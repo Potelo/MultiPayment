@@ -10,9 +10,11 @@ use Potelo\MultiPayment\Enums\SubscriptionStatus;
  * Fonte: máquina de estados da Subscription em
  * https://docs.stripe.com/billing/subscriptions/overview#subscription-statuses e o campo
  * `pause_collection` em https://docs.stripe.com/billing/subscriptions/pause-payment. A
- * Stripe tem dois jeitos de pausar: o status `paused` (trial terminou sem método de
- * pagamento) e `pause_collection` preenchido (cobrança pausada sem mudar o status); os dois
- * leem como `PAUSED`.
+ * Stripe tem dois jeitos de pausar, lidos como estados distintos: o status `paused` (trial
+ * terminou sem método de pagamento, iniciativa do gateway) lê como `PAUSED`, e
+ * `pause_collection` preenchido (cobrança pausada pela aplicação, inclusive via
+ * `suspendSubscription()`, sem mudar o status) lê como `SUSPENDED`, o mesmo estado que a
+ * suspensão produz na Iugu.
  */
 final class SubscriptionStatuses
 {
@@ -30,7 +32,7 @@ final class SubscriptionStatuses
 
     /**
      * Status genérico de uma Subscription da Stripe, a partir de `status` e de
-     * `pause_collection`. `pause_collection` preenchido devolve `PAUSED` a menos que a
+     * `pause_collection`. `pause_collection` preenchido devolve `SUSPENDED` a menos que a
      * assinatura já tenha terminado (`canceled`, `incomplete_expired`). Status fora do mapa
      * devolve `UNKNOWN` com aviso no log.
      *
@@ -47,7 +49,7 @@ final class SubscriptionStatuses
             && !$mapped->isEnded()
             && !empty($stripeSubscription->pause_collection)
         ) {
-            return SubscriptionStatus::PAUSED;
+            return SubscriptionStatus::SUSPENDED;
         }
 
         return $mapped;

@@ -142,6 +142,14 @@ class Subscription extends Model
     public ?int $amount = null;
 
     /**
+     * Moeda da assinatura em código ISO 4217 (`BRL`), preenchida na leitura. A moeda da
+     * cobrança vem do plano, então a escrita não a envia ao gateway.
+     *
+     * @var string|null
+     */
+    public ?string $currency = null;
+
+    /**
      * Método com que a assinatura é cobrada. Na escrita, quando `availablePaymentMethods` fica
      * vazia, o driver a deriva dele; na leitura é preenchido quando a assinatura aceita um
      * único método.
@@ -159,7 +167,8 @@ class Subscription extends Model
      * Cartão que a assinatura cobra. Informar o cartão implica `paymentMethod` de cartão.
      * Cartão sem `id` (token ou dados crus) é salvo no cliente ao criar a assinatura. Na Iugu
      * a assinatura cobra o cartão padrão do cliente, então o cartão informado passa a ser o
-     * padrão; a leitura não o preenche.
+     * padrão e a leitura não o preenche; no Stripe a leitura preenche id, bandeira, últimos
+     * dígitos e validade do cartão padrão da assinatura.
      *
      * @var CreditCard|null
      */
@@ -717,9 +726,14 @@ class Subscription extends Model
     }
 
     /**
-     * Simula a troca de plano sem aplicá-la.
+     * Simula a troca de plano sem aplicá-la, com a política de pró-rata informada (a mesma
+     * assinatura de `changePlan()`, sem o booleano antigo). `CREDIT` num gateway sem
+     * `Capability::PLAN_CHANGE_PRORATION` lança `UnsupportedOperationException` antes de
+     * qualquer requisição; na Iugu, que só tem um fluxo de simulação, `NONE` devolve a mesma
+     * prévia de `CHARGE_DIFFERENCE`.
      *
      * @param  string  $planId
+     * @param  ProrationBehavior  $proration  política de pró-rata simulada
      * @param  GatewayContract|string|null  $gateway
      *
      * @return SubscriptionPlanChange
@@ -731,9 +745,10 @@ class Subscription extends Model
      */
     public function previewPlanChange(
         string $planId,
+        ProrationBehavior $proration = ProrationBehavior::CHARGE_DIFFERENCE,
         GatewayContract|string|null $gateway = null
     ): SubscriptionPlanChange {
         return $this->resolveSubscriptionGateway($gateway)
-            ->previewSubscriptionPlanChange($this, $planId);
+            ->previewSubscriptionPlanChange($this, $planId, $proration);
     }
 }
