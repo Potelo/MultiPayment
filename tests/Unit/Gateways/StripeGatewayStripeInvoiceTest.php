@@ -297,6 +297,12 @@ class StripeGatewayStripeInvoiceTest extends TestCase
         $this->assertSame(InvoiceStatus::DISPUTED, $result->status);
         $this->assertSame(12345, $result->paidAmount);
         $this->assertSame(['charge' => 'ch_3UBHU5Pjx0CusuMr1q2mLg5W', 'limit' => 100], $httpClient->calls[2][2]);
+
+        // em Invoice::$disputes a contestação aponta a fatura lida, aqui o objeto Invoice
+        $this->assertCount(1, $result->disputes);
+        $this->assertSame('du_1UBHU8Pjx0CusuMr3hVB1hzt', $result->disputes[0]->id);
+        $this->assertSame('in_1UBHU4Pjx0CusuMrOTB0POaR', $result->disputes[0]->invoiceId);
+        $this->assertTrue($result->disputes[0]->status->isOpen());
     }
 
     /**

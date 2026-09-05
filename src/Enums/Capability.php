@@ -122,6 +122,12 @@ enum Capability: string
     case WEBHOOKS = 'webhooks';
 
     /**
+     * Contestação (chargeback) como entidade: buscar, listar, contestar com evidências e
+     * acatar (`getDispute`, `listDisputes`, `contestDispute`, `acceptDispute`).
+     */
+    case DISPUTES = 'disputes';
+
+    /**
      * Capability que uma fatura precisa para ser paga com o método informado.
      *
      * @param  PaymentMethod  $paymentMethod

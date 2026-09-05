@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\Pix;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
+use Potelo\MultiPayment\Models\Dispute;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\BankSlip;
@@ -31,6 +32,7 @@ use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
+use Potelo\MultiPayment\Enums\DisputeStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
@@ -41,6 +43,7 @@ use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Contracts\PlanContract;
+use Potelo\MultiPayment\Contracts\DisputeContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\IdempotencyStore;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -64,7 +67,7 @@ use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
 use Potelo\MultiPayment\Exceptions\WebhookSignatureException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract, SubscriptionSyncContract, WebhookContract
+class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract, SubscriptionSyncContract, WebhookContract, DisputeContract
 {
     use ChecksCapabilities;
     use ReadsWebhookHeaders;
@@ -126,6 +129,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private const IDEMPOTENCY_STORE_PREFIX = 'iugu:';
 
     /**
+     * Teto de páginas (de 100 itens) percorridas ao procurar as contestações de uma fatura na
+     * listagem da conta, guarda contra um endpoint que ignore a paginação.
+     */
+    private const DISPUTE_LIST_MAX_PAGES = 10;
+
+    /**
      * Cabeçalho da entrega de webhook em que o token configurado no registro chega, cru, sem
      * prefixo.
      */
@@ -156,6 +165,27 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         'invoice.partially_refunded' => WebhookEventType::REFUND_CREATED,
         'customer_payment_method.new' => WebhookEventType::PAYMENT_METHOD_UPDATED,
         'automatic_pix.authorization_changed' => WebhookEventType::PIX_MANDATE_CHANGED,
+    ];
+
+    /**
+     * Mapa dos status de contestação da Iugu para os genéricos do pacote. Lista oficial em
+     * https://dev.iugu.com/reference/status-de-retorno-de-contestacao. `error` (falha ao
+     * processar o arquivo de contestação) lê como `OPEN`, porque a contestação volta a exigir
+     * ação; `reverted` (contestação revertida) lê como `WON`, porque o valor fica com o
+     * recebedor.
+     */
+    private const DISPUTE_STATUSES = [
+        'pending' => DisputeStatus::OPEN,
+        'error' => DisputeStatus::OPEN,
+        'processing_file' => DisputeStatus::UNDER_REVIEW,
+        'contested_by_client' => DisputeStatus::UNDER_REVIEW,
+        'waiting_resolution' => DisputeStatus::UNDER_REVIEW,
+        'won' => DisputeStatus::WON,
+        'reverted' => DisputeStatus::WON,
+        'lost' => DisputeStatus::LOST,
+        'accepted' => DisputeStatus::ACCEPTED,
+        'accepted_by_client' => DisputeStatus::ACCEPTED,
+        'accepted_automatically' => DisputeStatus::ACCEPTED,
     ];
 
     private Iugu_APIRequest $apiRequest;
@@ -198,6 +228,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             Capability::SUBSCRIPTIONS,
             Capability::PLANS,
             Capability::WEBHOOKS,
+            Capability::DISPUTES,
         ];
     }
 
@@ -755,10 +786,241 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * Fatura contestada (`DISPUTED` ou `CHARGEBACK`) volta com `Invoice::$disputes` preenchido
+     * por uma consulta a `GET /v1/chargebacks` (um GET a mais); quando essa consulta falha, a
+     * fatura volta sem `disputes` e o motivo vai para o log.
      */
     public function getInvoice(Invoice $invoice): Invoice
     {
-        return $this->parseInvoice($this->fetchIuguInvoice((string) $invoice->id, 'getting invoice'), $invoice);
+        $invoice = $this->parseInvoice($this->fetchIuguInvoice((string) $invoice->id, 'getting invoice'), $invoice);
+
+        if (!empty($invoice->status) && $invoice->status->isContested()) {
+            $invoice->disputes = $this->invoiceDisputes((string) $invoice->id);
+        }
+
+        return $invoice;
+    }
+
+    /**
+     * Contestações da fatura, filtradas de `GET /v1/chargebacks` pelo `invoice_id` (a Iugu não
+     * tem consulta de contestação por fatura). A listagem é paginada até a página vir
+     * incompleta, com o teto de `DISPUTE_LIST_MAX_PAGES` páginas (teto atingido gera aviso no
+     * log e devolve o que foi encontrado). Devolve nulo, com aviso no log, quando a consulta
+     * falha, para a leitura da fatura não depender dela.
+     *
+     * @param  string  $invoiceId
+     * @return Dispute[]|null
+     */
+    private function invoiceDisputes(string $invoiceId): ?array
+    {
+        $matching = [];
+
+        try {
+            for ($pageNumber = 0; $pageNumber < self::DISPUTE_LIST_MAX_PAGES; $pageNumber++) {
+                $response = $this->iuguRequest(
+                    'GET',
+                    Iugu::getBaseURI() . '/chargebacks?limit=100&start=' . ($pageNumber * 100),
+                    [],
+                    'listing disputes'
+                );
+
+                $items = $this->iuguDisputeItems($response);
+                foreach ($items as $item) {
+                    $dispute = $this->parseIuguDispute($item);
+                    if ($dispute->invoiceId !== $invoiceId) {
+                        continue;
+                    }
+                    // deduplicado pelo id, para um endpoint que ignore o start não repetir a
+                    // mesma contestação a cada página
+                    $key = $dispute->id ?? 'sem-id-' . count($matching);
+                    $matching[$key] ??= $dispute;
+                }
+
+                if (count($items) < 100) {
+                    return array_values($matching);
+                }
+            }
+        } catch (MultiPaymentException $e) {
+            LogHelper::warning(
+                "Consulta de contestações da fatura [{$invoiceId}] falhou no gateway [iugu]; a fatura segue sem disputes",
+                ['gateway' => 'iugu', 'invoice_id' => $invoiceId, 'error' => $e->getMessage()]
+            );
+
+            return null;
+        }
+
+        LogHelper::warning(
+            "Listagem de contestações do gateway [iugu] atingiu o teto de páginas ao procurar a fatura [{$invoiceId}]; disputes pode estar incompleto",
+            ['gateway' => 'iugu', 'invoice_id' => $invoiceId, 'pages' => self::DISPUTE_LIST_MAX_PAGES]
+        );
+
+        return array_values($matching);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getDispute(Dispute $dispute): Dispute
+    {
+        if (empty($dispute->id)) {
+            throw ModelAttributeValidationException::required('Dispute', 'id');
+        }
+
+        $response = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/chargebacks/' . rawurlencode((string) $dispute->id),
+            [],
+            'getting dispute'
+        );
+
+        return $this->parseIuguDispute($response, $dispute);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listDisputes(int $page = 1, int $limit = 100): array
+    {
+        if ($page < 1) {
+            throw ModelAttributeValidationException::invalid('Dispute', 'page', 'Dispute page must be at least 1');
+        }
+        if ($limit < 1 || $limit > 100) {
+            throw ModelAttributeValidationException::invalid('Dispute', 'limit', 'Dispute limit must be between 1 and 100');
+        }
+
+        $query = http_build_query([
+            'limit' => $limit,
+            'start' => ($page - 1) * $limit,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        $response = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/chargebacks?' . $query,
+            [],
+            'listing disputes'
+        );
+
+        return array_map(fn ($item) => $this->parseIuguDispute($item), $this->iuguDisputeItems($response));
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * As evidências vão no corpo de `PUT /v1/chargebacks/{id}/contest`: os arquivos
+     * comprobatórios em base64 (`file_1` a `file_5`, até 10 páginas e 8 MB somados). A Iugu
+     * não aceita `Idempotency-Key` neste endpoint, então com chave a operação passa pela
+     * `IdempotencyStore`. Quando a resposta do endpoint não traz a contestação, ela é relida
+     * por `GET /v1/chargebacks/{id}`.
+     */
+    public function contestDispute(string $id, array $evidence, ?string $idempotencyKey = null): Dispute
+    {
+        return $this->parseIuguDispute($this->disputeAction($id, 'contest', $evidence, 'contesting dispute', $idempotencyKey));
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * A Iugu não aceita `Idempotency-Key` neste endpoint, então com chave a operação passa
+     * pela `IdempotencyStore`. Quando a resposta do endpoint não traz a contestação, ela é
+     * relida por `GET /v1/chargebacks/{id}`.
+     */
+    public function acceptDispute(string $id, ?string $idempotencyKey = null): Dispute
+    {
+        // o endpoint de acatar não está na documentação pública atual da Iugu; o caminho
+        // segue o padrão dos demais do grupo Chargeback
+        return $this->parseIuguDispute($this->disputeAction($id, 'accept', [], 'accepting dispute', $idempotencyKey));
+    }
+
+    /**
+     * Executa uma ação de contestação (`PUT /v1/chargebacks/{id}/{acao}`) e devolve o objeto
+     * de contestação: o da resposta, quando ela o traz, senão o relido por GET. Com chave de
+     * idempotência, a ação e a releitura passam juntas pela `IdempotencyStore`.
+     *
+     * @param  string  $id
+     * @param  string  $action
+     * @param  array  $data
+     * @param  string  $operation  descrição da operação, em inglês, para a mensagem
+     * @param  string|null  $idempotencyKey
+     * @return object|array
+     * @throws MultiPaymentException
+     */
+    private function disputeAction(string $id, string $action, array $data, string $operation, ?string $idempotencyKey): object|array
+    {
+        $url = Iugu::getBaseURI() . '/chargebacks/' . rawurlencode($id) . '/' . $action;
+        $perform = function () use ($url, $data, $operation, $id) {
+            $response = $this->iuguRequest('PUT', $url, $data, $operation);
+            $responseObject = (object) $response;
+            if (!empty($responseObject->id) || !empty($responseObject->status)) {
+                return $response;
+            }
+
+            return $this->iuguRequest(
+                'GET',
+                Iugu::getBaseURI() . '/chargebacks/' . rawurlencode($id),
+                [],
+                'getting dispute'
+            );
+        };
+
+        if (is_null($idempotencyKey)) {
+            return $perform();
+        }
+
+        return $this->rememberIuguOperation($idempotencyKey, 'PUT ' . $url, $perform);
+    }
+
+    /**
+     * Itens da resposta de `GET /v1/chargebacks`, tolerante ao envelope (`items`, `data`,
+     * `chargebacks` ou a própria lista).
+     *
+     * @param  object|array  $response
+     * @return array<int, mixed>
+     */
+    private function iuguDisputeItems(object|array $response): array
+    {
+        if (is_array($response)) {
+            return array_values($response);
+        }
+
+        foreach (['items', 'data', 'chargebacks'] as $property) {
+            if (isset($response->{$property}) && is_array($response->{$property})) {
+                return array_values($response->{$property});
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Converte o objeto de contestação da Iugu em um `Dispute` do MultiPayment. Status fora do
+     * mapa vira `UNKNOWN` com aviso no log; `dueBy` vem de `expires_at` (o prazo de resposta);
+     * `amount` e `closedAt` ficam nulos quando a Iugu não os informa.
+     *
+     * @param  mixed  $data
+     * @param  Dispute|null  $dispute
+     * @return Dispute
+     */
+    private function parseIuguDispute(mixed $data, ?Dispute $dispute = null): Dispute
+    {
+        $data = (object) $data;
+        $dispute ??= new Dispute();
+
+        $dispute->id = $data->id ?? $dispute->id;
+        $dispute->invoiceId = $data->invoice_id ?? $dispute->invoiceId;
+        $amount = $data->amount_cents ?? $data->total_cents ?? null;
+        $dispute->amount = is_numeric($amount) ? (int) $amount : $dispute->amount;
+        $status = $data->status ?? null;
+        $dispute->status = is_string($status) && $status !== ''
+            ? (self::DISPUTE_STATUSES[$status] ?? DisputeStatus::unknown($status, 'iugu'))
+            : $dispute->status;
+        $dispute->reason = $data->reason ?? $dispute->reason;
+        $dispute->dueBy = !empty($data->expires_at) ? new Carbon($data->expires_at) : $dispute->dueBy;
+        $dispute->openedAt = !empty($data->created_at) ? new Carbon($data->created_at) : $dispute->openedAt;
+        $dispute->gateway = 'iugu';
+        $dispute->original = $data;
+
+        return $dispute;
     }
 
     /**

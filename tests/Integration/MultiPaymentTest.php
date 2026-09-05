@@ -33,6 +33,21 @@ class MultiPaymentTest extends TestCase
     }
 
     /**
+     * Todo o grupo de contestação (listar, buscar, contestar, acatar) é recusado fora de
+     * produção: `GET /v1/chargebacks` na sandbox responde 401 com "Apenas disponível para o
+     * ambiente produção" (observado em 2026-09-05), e a sandbox tampouco produz uma
+     * contestação (`in_protest` ou `chargeback`) para exercitar o ciclo.
+     */
+    #[Group('iugu-sandbox-limitation')]
+    public function testShouldListContestAndAcceptIuguDisputes(): void
+    {
+        $this->markTestSkipped(
+            'Os endpoints de contestação da Iugu só respondem em produção: a sandbox recusa'
+            . ' GET /v1/chargebacks com "Apenas disponível para o ambiente produção".'
+        );
+    }
+
+    /**
      * A consulta depende de uma fatura com Pix Automático criada no próprio
      * teste, mas a sandbox da Iugu ainda rejeita essa criação.
      */

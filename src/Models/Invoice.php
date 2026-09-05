@@ -122,6 +122,17 @@ class Invoice extends Model
     public ?array $refunds = null;
 
     /**
+     * Contestações da cobrança, preenchidas na leitura quando o gateway registra contestação
+     * (a consulta custa um GET a mais: `/v1/disputes` no Stripe, em qualquer leitura de fatura
+     * com charge contestado; `/v1/chargebacks` na Iugu, só em `getInvoice()` de fatura
+     * `DISPUTED` ou `CHARGEBACK`). Nula quando não há contestação registrada, ou quando a
+     * consulta da Iugu falha (com aviso no log).
+     *
+     * @var Dispute[]|null
+     */
+    public ?array $disputes = null;
+
+    /**
      * @var Customer|null
      */
     public ?Customer $customer = null;

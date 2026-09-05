@@ -28,11 +28,13 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [Outras operações de fatura](#outras-operações-de-fatura)
     - [Captura em duas etapas](#captura-em-duas-etapas)
     - [Estorno](#estorno)
+    - [Contestações](#contestações)
     - [charge (alternativa por array)](#charge-alternativa-por-array)
   - [Models](#models)
     - [Customer](#customer)
     - [Invoice](#invoice)
     - [Refund](#refund)
+    - [Dispute](#dispute)
     - [Subscription](#subscription)
     - [Plan](#plan)
 - [Apêndice: chaves do array de `charge()`](#apêndice-chaves-do-array-de-charge)
@@ -205,6 +207,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | sim |  |
 | `GATEWAY_DUNNING` | O gateway conduz a régua de retentativas da cobrança recusada de uma assinatura de forma adaptativa, dispensando régua da aplicação; sem ela, a retentativa do gateway é fixa ou ausente, e retentar além dela é decisão da aplicação. | limitação do gateway | sim |  |
 | `WEBHOOKS` | Leitura de webhooks do gateway: `parseWebhook()` verifica a autenticidade da entrega e a traduz num `WebhookEvent` normalizado. | sim | sim |  |
+| `DISPUTES` | Contestação (chargeback) como entidade: buscar, listar, contestar com evidências e acatar (`getDispute`, `listDisputes`, `contestDispute`, `acceptDispute`). | sim | sim |  |
 
 Sobre as restrições e algumas células:
 
@@ -242,6 +245,9 @@ Sobre as restrições e algumas células:
   outras duas políticas fazem parte de `SUBSCRIPTIONS` (ver [Troca de plano](#troca-de-plano)).
 - **`WEBHOOKS`** guarda `parseWebhook()`: a entrega é verificada e traduzida num
   `WebhookEvent` nos dois gateways (ver [Webhooks](#webhooks)).
+- **`DISPUTES` na Iugu** vale só em produção: a sandbox recusa os endpoints de
+  contestação com "Apenas disponível para o ambiente produção" (ver
+  [Contestações](#contestações)).
 
 ### Status da fatura
 
@@ -511,8 +517,8 @@ aceito: no Stripe é o método da assinatura com mandato (ver
   `getInvoice` posterior.
 - **Contestação custa uma requisição a mais.** O charge da Stripe só traz a flag `disputed`;
   quando ela é verdadeira, o pacote consulta `/v1/disputes` do charge para decidir entre
-  `disputed` e `chargeback` (ver [Status da fatura](#status-da-fatura)). Fatura sem contestação
-  não paga esse GET.
+  `disputed` e `chargeback` e preencher `Invoice::$disputes` (ver
+  [Contestações](#contestações)). Fatura sem contestação não paga esse GET.
 - **Idempotência em toda escrita.** A chave informada em `idempotencyKey` vai no cabeçalho
   `Idempotency-Key` de toda requisição de escrita da operação, inclusive cliente, cartão,
   cancelamento e as requisições secundárias, com chaves derivadas (ver
@@ -1066,8 +1072,10 @@ entregas legítimas iguais) e `occurredAt` é o momento do parse.
 `$event->invoice()` e `$event->subscription()`, que releem o recurso no gateway na primeira
 chamada (pelos mesmos `getInvoice()` e `getSubscription()`) e guardam o resultado no objeto.
 `refund()` devolve o estorno mais recente da fatura relida, compartilhando a mesma leitura, e
-`dispute()` devolve o id da contestação do payload (um model de contestação está planejado para
-uma versão futura). Num evento de falha, `declineCode` vem do payload quando ele o traz e é
+`dispute()` devolve a contestação relida como um `Dispute` (ver
+[Contestações](#contestações)): com `disputeId` no payload (Stripe), por `getDispute()`; sem
+ele (Iugu), num evento de contestação, pela primeira contestação de `Invoice::$disputes` da
+fatura hidratada. Num evento de falha, `declineCode` vem do payload quando ele o traz e é
 completado por `invoice()` a partir de `Invoice::$lastPaymentError`.
 
 **Deduplicação.** Os gateways reenviam entregas, então o mesmo evento pode chegar mais de uma
@@ -2207,6 +2215,73 @@ acontece.
 > lido do gateway já `partially_refunded`, `refund()` sem valor passou a estornar o restante em
 > vez de reenviar o acumulado como novo estorno parcial.
 
+#### Contestações
+
+Uma contestação (chargeback) é o pagador contestando junto ao emissor uma cobrança paga com
+cartão. Ela chega de fora: a fatura contestada lê `DISPUTED` (e `CHARGEBACK` quando a disputa é
+perdida, ver [Status da fatura](#status-da-fatura)), o evento de webhook chega como
+`DISPUTE_OPENED` ou `DISPUTE_CLOSED` (ver [Webhooks](#webhooks)), e as operações de
+`Capability::DISPUTES` respondem a ela: buscar, listar, contestar com evidências e acatar.
+
+```php
+use Potelo\MultiPayment\Enums\DisputeStatus;
+use Potelo\MultiPayment\Facades\MultiPayment;
+
+$invoice = MultiPayment::setGateway('stripe')->getInvoice($invoiceId);   // DISPUTED
+$dispute = $invoice->disputes[0];
+
+if ($dispute->status->isOpen()) {
+    // responder dentro do prazo, com as evidências no formato do gateway
+    $dispute = MultiPayment::setGateway('stripe')->contestDispute($dispute->id, [
+        'uncategorized_text' => 'O cliente acessou o produto após a compra.',
+    ], "contest-{$dispute->id}");
+}
+
+// ou aceitar a devolução sem disputa
+MultiPayment::setGateway('stripe')->acceptDispute($dispute->id, "accept-{$dispute->id}");
+
+MultiPayment::setGateway('stripe')->getDispute($dispute->id);   // Dispute
+MultiPayment::setGateway('stripe')->listDisputes();             // Dispute[] da conta
+```
+
+O model `Dispute` traz `id`, `invoiceId` (aceito por `getInvoice()`; no Stripe, a contestação
+lida por `getDispute()` ou `listDisputes()` aponta o PaymentIntent da cobrança, `pi_`, e a de
+`Invoice::$disputes` aponta a fatura lida, `pi_` ou `in_`),
+`amount` (centavos; nulo quando o gateway não o informa, caso da Iugu), `status`
+(`DisputeStatus`), `reason` (no vocabulário do gateway), `dueBy` (prazo para responder),
+`openedAt`, `closedAt` (nulo enquanto em curso e nos gateways que não informam a data do
+desfecho) e `original`. `contest()` e `accept()` existem também no model, e `invoice()` relê a
+fatura contestada. `Invoice::$disputes` é preenchido na leitura quando o gateway registra
+contestação (a consulta custa um GET a mais; na Iugu ela acontece só em `getInvoice()`), e
+`WebhookEvent::dispute()` hidrata a contestação do evento.
+
+O formato de `$evidence` em `contestDispute()` é o do gateway: no Stripe são os campos do hash
+`evidence` do objeto Dispute (`uncategorized_text`, `customer_communication`, documentos por id
+de arquivo), submetidos na mesma requisição; na Iugu são os arquivos comprobatórios em base64
+(`file_1` a `file_5`, com no máximo 10 páginas e 8 MB somados).
+
+Status por gateway:
+
+| `DisputeStatus` | Significado | Iugu | Stripe |
+|---|---|---|---|
+| `OPEN` | Aguardando resposta (prazo em `dueBy`); `isOpen()` | `pending`, `error` | `needs_response`, `warning_needs_response` |
+| `UNDER_REVIEW` | Respondida, em análise; `isOpen()` | `processing_file`, `contested_by_client`, `waiting_resolution` | `under_review`, `warning_under_review` |
+| `WON` | Encerrada sem devolução: o valor fica com o recebedor | `won`, `reverted` | `won`, `warning_closed`, `prevented` |
+| `LOST` | Disputa perdida: valor devolvido ao pagador; `isLost()` | `lost` | `lost` |
+| `ACCEPTED` | Acatada, pelo recebedor ou por prazo vencido; `isLost()` | `accepted`, `accepted_by_client`, `accepted_automatically` | nunca (o `close` da Stripe encerra como `lost`) |
+| `UNKNOWN` | Status que a lib não reconhece (aviso no log; o original fica em `original`) | possível | possível |
+
+Particularidades:
+
+- **Iugu**: os endpoints de contestação só respondem em produção (a sandbox recusa com "Apenas
+  disponível para o ambiente produção"), e a contestação vale só para cartão (boleto e Pix não
+  geram `in_protest`). A Iugu não tem consulta de contestação por fatura, então
+  `Invoice::$disputes` é filtrado da listagem paginada da conta; quando essa consulta falha, a
+  fatura volta com `disputes` nulo e um aviso no log.
+- **Stripe**: contestar envia e submete as evidências de uma vez (`submit`); acatar usa o
+  `close` da API, que encerra a dispute como `lost`. O desfecho depois da resposta é
+  assíncrono e chega pelo webhook `charge.dispute.closed`.
+
 #### charge (alternativa por array)
 
 `charge(array)` monta a mesma fatura a partir de um array em `snake_case`, para integrações que
@@ -2282,6 +2357,17 @@ $refund = $invoice->refund();          // sem valor: o restante
 $refund->amount;                        // 5000
 $invoice->refundedAmount;               // total já estornado, só de leitura
 $invoice->refunds;                      // Refund[] (ver "Estorno")
+```
+#### Dispute
+```php
+$invoice = $payment->getInvoice($invoiceId);   // DISPUTED
+$dispute = $invoice->disputes[0];              // Dispute (ver "Contestações")
+
+$dispute->status;                       // DisputeStatus; isOpen() enquanto há o que responder
+$dispute->dueBy;                        // prazo para contestar ou acatar
+$dispute->contest(['uncategorized_text' => 'evidência']);   // Dispute atualizado
+$dispute->accept();                     // acata: o valor volta ao pagador
+$dispute->invoice();                    // relê a fatura contestada
 ```
 #### Subscription
 ```php

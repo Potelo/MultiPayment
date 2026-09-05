@@ -26,6 +26,7 @@ use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Model;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
+use Potelo\MultiPayment\Models\Dispute;
 use Potelo\MultiPayment\Models\Address;
 use Potelo\MultiPayment\Models\BankSlip;
 use Potelo\MultiPayment\Models\Customer;
@@ -45,6 +46,7 @@ use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
+use Potelo\MultiPayment\Enums\DisputeStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
@@ -53,6 +55,7 @@ use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Models\WebhookEvent;
 use Potelo\MultiPayment\Enums\WebhookEventType;
 use Potelo\MultiPayment\Contracts\PlanContract;
+use Potelo\MultiPayment\Contracts\DisputeContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\WebhookContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -76,7 +79,7 @@ use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
 use Potelo\MultiPayment\Exceptions\WebhookSignatureException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class StripeGateway implements GatewayContract, SubscriptionContract, PlanContract, WebhookContract
+class StripeGateway implements GatewayContract, SubscriptionContract, PlanContract, WebhookContract, DisputeContract
 {
     use ChecksCapabilities;
     use ReadsWebhookHeaders;
@@ -193,20 +196,23 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     ];
 
     /**
-     * Status de dispute da Stripe que significam contestação em aberto: inquiry ou chargeback
-     * formal aguardando resposta ou em análise. Lista oficial dos oito status em
-     * https://docs.stripe.com/api/disputes/object#dispute_object-status; os demais são `won`,
-     * `lost`, `warning_closed` e `prevented`.
+     * Mapa de status do objeto Dispute da Stripe para os genéricos do pacote. Lista oficial
+     * dos oito status em https://docs.stripe.com/api/disputes/object#dispute_object-status.
+     * `warning_needs_response` e `warning_under_review` são o inquiry antes do chargeback
+     * formal; `warning_closed` (inquiry encerrado sem virar chargeback) e `prevented` leem
+     * como `WON`, porque o valor fica com o recebedor. Acatar pela API (`close`) encerra a
+     * dispute como `lost`, então a Stripe nunca produz `ACCEPTED`.
      */
-    private const OPEN_DISPUTE_STATUSES = [
-        'warning_needs_response',
-        'warning_under_review',
-        'needs_response',
-        'under_review',
+    private const DISPUTE_STATUSES = [
+        'warning_needs_response' => DisputeStatus::OPEN,
+        'needs_response' => DisputeStatus::OPEN,
+        'warning_under_review' => DisputeStatus::UNDER_REVIEW,
+        'under_review' => DisputeStatus::UNDER_REVIEW,
+        'won' => DisputeStatus::WON,
+        'warning_closed' => DisputeStatus::WON,
+        'prevented' => DisputeStatus::WON,
+        'lost' => DisputeStatus::LOST,
     ];
-
-    /** Dispute resolvida a favor do cliente: a Stripe devolveu o valor. */
-    private const LOST_DISPUTE_STATUS = 'lost';
 
     /** Mapa de tipos de PaymentMethod da Stripe para os métodos genéricos do pacote. */
     private const PAYMENT_METHOD_TYPES = [
@@ -283,6 +289,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::AUTOMATIC_PIX,
             Capability::GATEWAY_DUNNING,
             Capability::WEBHOOKS,
+            Capability::DISPUTES,
         ];
     }
 
@@ -1821,7 +1828,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $invoice->id = $stripePaymentIntent->id;
         $invoice->gateway = 'stripe';
         $invoice->originType = InvoiceOriginType::PAYMENT_INTENT;
-        $invoice->status = $this->deriveStatus(null, $stripePaymentIntent, $paidCharge);
+        $invoice->disputes = $this->chargeDisputes($paidCharge, $stripePaymentIntent->id);
+        $invoice->status = $this->deriveStatus(null, $stripePaymentIntent, $paidCharge, $invoice->disputes);
         $invoice->amount = $stripePaymentIntent->amount;
         $invoice->paidAmount = $paidCharge?->amount_captured;
         $invoice->setRefundedAmountFromGateway($paidCharge?->amount_refunded);
@@ -1897,7 +1905,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $invoice->id = $stripeInvoice->id;
         $invoice->gateway = 'stripe';
         $invoice->originType = InvoiceOriginType::INVOICE;
-        $invoice->status = $this->deriveStatus($stripeInvoice, $stripePaymentIntent, $paidCharge);
+        $invoice->disputes = $this->chargeDisputes($paidCharge, $stripeInvoice->id);
+        $invoice->status = $this->deriveStatus($stripeInvoice, $stripePaymentIntent, $paidCharge, $invoice->disputes);
         $invoice->amount = $stripeInvoice->total;
         // sem charge pago, o valor recebido é o que o Invoice registra (pagamento externo,
         // fatura parcialmente paga ou quitada sem cobrança); fatura em aberto sem nada pago fica nula
@@ -2301,36 +2310,167 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
-     * Deriva o status genérico de contestação de um charge pago. Quando a flag `disputed` do
-     * charge é verdadeira, lista as disputes dele em /v1/disputes (um GET a mais).
-     * Contestação em aberto tem precedência sobre perdida; dispute ganha, encerrada sem virar
-     * chargeback (`warning_closed`) ou prevenida não altera o status da fatura.
+     * Contestações de um charge pago, como models `Dispute`. Quando a flag `disputed` do
+     * charge é verdadeira, lista as disputes dele em /v1/disputes (um GET a mais) e as
+     * converte; sem a flag devolve nulo, sem requisição.
      *
-     * @param  object  $stripeCharge
-     * @return InvoiceStatus|null  `DISPUTED`, `CHARGEBACK` ou null
+     * @param  object|null  $paidCharge
+     * @param  string  $invoiceId  id da fatura da lib que as contestações apontam
+     * @return Dispute[]|null
      * @throws GatewayException|GatewayNotAvailableException
      */
-    private function disputeStatus(object $stripeCharge): ?InvoiceStatus
+    private function chargeDisputes(?object $paidCharge, string $invoiceId): ?array
     {
         // isset() passa pelo __isset e não loga "Undefined property" quando a chave falta
-        if (!isset($stripeCharge->disputed) || !$stripeCharge->disputed) {
+        if (!$paidCharge || !isset($paidCharge->disputed) || !$paidCharge->disputed) {
             return null;
         }
 
-        $disputes = $this->stripeRequest(function () use ($stripeCharge) {
+        $disputes = $this->stripeRequest(function () use ($paidCharge) {
             // uma página basta: um charge não acumula dezenas de disputes
-            return $this->client->disputes->all(['charge' => $stripeCharge->id, 'limit' => 100]);
+            return $this->client->disputes->all(['charge' => $paidCharge->id, 'limit' => 100]);
         });
 
-        $statuses = array_map(static fn ($dispute) => $dispute->status, $disputes->data ?? []);
-        if (!empty(array_intersect($statuses, self::OPEN_DISPUTE_STATUSES))) {
-            return InvoiceStatus::DISPUTED;
+        return array_map(
+            fn (object $stripeDispute) => $this->parseStripeDispute($stripeDispute, $invoiceId),
+            $disputes->data ?? []
+        );
+    }
+
+    /**
+     * Deriva o status genérico de contestação da fatura a partir das contestações do charge.
+     * Contestação em curso tem precedência sobre perdida; contestação ganha ou de status
+     * desconhecido não altera o status da fatura.
+     *
+     * @param  Dispute[]|null  $disputes
+     * @return InvoiceStatus|null  `DISPUTED`, `CHARGEBACK` ou null
+     */
+    private static function disputeInvoiceStatus(?array $disputes): ?InvoiceStatus
+    {
+        foreach ($disputes ?? [] as $dispute) {
+            if ($dispute->status?->isOpen()) {
+                return InvoiceStatus::DISPUTED;
+            }
         }
-        if (in_array(self::LOST_DISPUTE_STATUS, $statuses, true)) {
-            return InvoiceStatus::CHARGEBACK;
+        foreach ($disputes ?? [] as $dispute) {
+            if ($dispute->status?->isLost()) {
+                return InvoiceStatus::CHARGEBACK;
+            }
         }
 
         return null;
+    }
+
+    /**
+     * Converte o objeto Dispute da Stripe em um `Dispute` do MultiPayment. Status fora do mapa
+     * vira `UNKNOWN` com aviso no log; `dueBy` vem do prazo de resposta em `evidence_details`;
+     * `closedAt` fica nulo, porque a Stripe não informa a data do desfecho.
+     *
+     * @param  object  $stripeDispute
+     * @param  string|null  $invoiceId  id da fatura da lib; sem ele, o PaymentIntent da dispute
+     * @param  Dispute|null  $dispute
+     * @return Dispute
+     */
+    private function parseStripeDispute(object $stripeDispute, ?string $invoiceId = null, ?Dispute $dispute = null): Dispute
+    {
+        $dispute ??= new Dispute();
+
+        $dispute->id = $stripeDispute->id ?? $dispute->id;
+        // um charge sem PaymentIntent (criado fora da lib) vem sem payment_intent; o valor que
+        // o model reaproveitado já tinha é preservado
+        $dispute->invoiceId = $invoiceId ?? $stripeDispute->payment_intent ?? $dispute->invoiceId;
+        $dispute->amount = $stripeDispute->amount ?? null;
+        $dispute->status = self::DISPUTE_STATUSES[$stripeDispute->status ?? '']
+            ?? DisputeStatus::unknown((string) ($stripeDispute->status ?? ''), 'stripe');
+        $dispute->reason = $stripeDispute->reason ?? null;
+        $dueBy = $stripeDispute->evidence_details->due_by ?? null;
+        $dispute->dueBy = !empty($dueBy) ? Carbon::createFromTimestamp($dueBy) : null;
+        $dispute->openedAt = !empty($stripeDispute->created)
+            ? Carbon::createFromTimestamp($stripeDispute->created)
+            : null;
+        $dispute->closedAt = null;
+        $dispute->gateway = 'stripe';
+        $dispute->original = $stripeDispute;
+
+        return $dispute;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * `invoiceId` do model devolvido é o PaymentIntent da cobrança contestada (`pi_`), aceito
+     * por `getInvoice()`.
+     *
+     * @throws ModelAttributeValidationException  `id` ausente
+     */
+    public function getDispute(Dispute $dispute): Dispute
+    {
+        if (empty($dispute->id)) {
+            throw ModelAttributeValidationException::required('Dispute', 'id');
+        }
+
+        $stripeDispute = $this->stripeRequest(function () use ($dispute) {
+            return $this->client->disputes->retrieve((string) $dispute->id);
+        });
+
+        return $this->parseStripeDispute($stripeDispute, null, $dispute);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listDisputes(int $page = 1, int $limit = 100): array
+    {
+        if ($page < 1) {
+            throw ModelAttributeValidationException::invalid('Dispute', 'page', 'Dispute page must be at least 1');
+        }
+        if ($limit < 1 || $limit > 100) {
+            throw ModelAttributeValidationException::invalid('Dispute', 'limit', 'Dispute limit must be between 1 and 100');
+        }
+
+        $disputes = $this->stripeListPage(
+            fn (array $params) => $this->client->disputes->all($params),
+            ['limit' => $limit],
+            $page
+        );
+
+        return array_map(fn (object $stripeDispute) => $this->parseStripeDispute($stripeDispute), $disputes);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * As evidências vão no hash `evidence` do Dispute e são submetidas na mesma requisição
+     * (`submit: true`); os campos aceitos estão em
+     * https://docs.stripe.com/api/disputes/update. A chave de idempotência vai no cabeçalho
+     * `Idempotency-Key`.
+     */
+    public function contestDispute(string $id, array $evidence, ?string $idempotencyKey = null): Dispute
+    {
+        $stripeDispute = $this->stripeRequest(function () use ($id, $evidence, $idempotencyKey) {
+            return $this->client->disputes->update(
+                $id,
+                ['evidence' => $evidence, 'submit' => true],
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripeDispute($stripeDispute);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * O `close` da Stripe encerra a dispute como perdida, então o model devolvido lê `LOST`.
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key`.
+     */
+    public function acceptDispute(string $id, ?string $idempotencyKey = null): Dispute
+    {
+        $stripeDispute = $this->stripeRequest(function () use ($id, $idempotencyKey) {
+            return $this->client->disputes->close($id, [], self::stripeOptions($idempotencyKey));
+        });
+
+        return $this->parseStripeDispute($stripeDispute);
     }
 
     /**
@@ -2351,17 +2491,18 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * Combinação fora dessa tabela devolve `UNKNOWN` com aviso no log contendo os três status
      * e o id da fatura.
      *
-     * Contestação, quando existe, vence estorno e status de pagamento nas duas origens.
+     * Contestação, quando existe (a lista de `chargeDisputes()`), vence estorno e status de
+     * pagamento nas duas origens.
      *
      * @param  \Stripe\Invoice|null  $stripeInvoice
      * @param  \Stripe\PaymentIntent|null  $stripePaymentIntent
      * @param  object|null  $paidCharge  charge em `succeeded`, expandido
+     * @param  Dispute[]|null  $disputes  contestações do charge (`chargeDisputes()`)
      * @return InvoiceStatus
-     * @throws GatewayException|GatewayNotAvailableException
      */
-    private function deriveStatus(?StripeInvoice $stripeInvoice, ?StripePaymentIntent $stripePaymentIntent, ?object $paidCharge): InvoiceStatus
+    private function deriveStatus(?StripeInvoice $stripeInvoice, ?StripePaymentIntent $stripePaymentIntent, ?object $paidCharge, ?array $disputes = null): InvoiceStatus
     {
-        $disputeStatus = $paidCharge ? $this->disputeStatus($paidCharge) : null;
+        $disputeStatus = self::disputeInvoiceStatus($disputes);
 
         if (is_null($stripeInvoice)) {
             return self::paymentIntentStatus($stripePaymentIntent, $paidCharge, $disputeStatus);

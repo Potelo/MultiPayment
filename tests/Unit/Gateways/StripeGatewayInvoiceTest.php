@@ -1123,6 +1123,14 @@ class StripeGatewayInvoiceTest extends TestCase
         // o dinheiro continua contabilizado no charge até a resolução
         $this->assertSame(12345, $result->paidAmount);
 
+        // a mesma listagem preenche as contestações da fatura
+        $this->assertCount(1, $result->disputes);
+        $this->assertSame('du_fake0', $result->disputes[0]->id);
+        $this->assertSame('pi_fake123', $result->disputes[0]->invoiceId);
+        $this->assertSame(12345, $result->disputes[0]->amount);
+        $this->assertSame('fraudulent', $result->disputes[0]->reason);
+        $this->assertTrue($result->disputes[0]->status->isOpen());
+
         $this->assertCount(2, $httpClient->calls);
         [$method, $url, $params] = $httpClient->calls[1];
         $this->assertSame('get', $method);
@@ -1202,7 +1210,10 @@ class StripeGatewayInvoiceTest extends TestCase
             $this->disputeListResponse([]),
         ]);
 
-        $this->assertSame(InvoiceStatus::PAID, $this->getInvoice()->status);
+        $result = $this->getInvoice();
+
+        $this->assertSame(InvoiceStatus::PAID, $result->status);
+        $this->assertSame([], $result->disputes);
         $this->assertCount(2, $httpClient->calls);
     }
 
@@ -1220,7 +1231,10 @@ class StripeGatewayInvoiceTest extends TestCase
     {
         $httpClient = RecordingStripeHttpClient::withResponses([$this->paidCardPaymentIntentResponse()]);
 
-        $this->assertSame(InvoiceStatus::PAID, $this->getInvoice()->status);
+        $result = $this->getInvoice();
+
+        $this->assertSame(InvoiceStatus::PAID, $result->status);
+        $this->assertNull($result->disputes);
         $this->assertCount(1, $httpClient->calls);
     }
 

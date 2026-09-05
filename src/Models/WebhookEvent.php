@@ -118,6 +118,11 @@ class WebhookEvent extends Model
     private ?Subscription $hydratedSubscription = null;
 
     /**
+     * @var Dispute|null
+     */
+    private ?Dispute $hydratedDispute = null;
+
+    /**
      * Devolve a fatura que o evento referencia, relida no gateway. A primeira chamada custa a
      * leitura de `getInvoice()` e o resultado fica guardado no objeto; quando a fatura relida
      * traz `lastPaymentError`, o `declineCode` do evento é completado a partir dele. Nulo
@@ -204,14 +209,35 @@ class WebhookEvent extends Model
     }
 
     /**
-     * Devolve o id da contestação que o evento referencia, do payload, sem requisição. Um model
-     * de contestação com as operações de contestar e acatar está planejado para uma versão
-     * futura.
+     * Devolve a contestação que o evento referencia, relida no gateway. Com `disputeId` no
+     * payload (Stripe), a primeira chamada custa a leitura de `getDispute()` e o resultado
+     * fica guardado no objeto. Sem `disputeId` (Iugu), num evento de contestação a fatura é
+     * hidratada por `invoice()` e a primeira contestação de `Invoice::$disputes` é devolvida.
+     * Nulo quando o evento não aponta uma contestação.
      *
-     * @return string|null
+     * @return Dispute|null
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
-    public function dispute(): ?string
+    public function dispute(): ?Dispute
     {
-        return $this->disputeId;
+        if (!is_null($this->hydratedDispute)) {
+            return $this->hydratedDispute;
+        }
+
+        if (!empty($this->disputeId)) {
+            $dispute = new Dispute();
+            $dispute->id = $this->disputeId;
+            $dispute->gateway = $this->gateway;
+
+            return $this->hydratedDispute = $dispute->get($this->gateway);
+        }
+
+        if ($this->type === WebhookEventType::DISPUTE_OPENED || $this->type === WebhookEventType::DISPUTE_CLOSED) {
+            return $this->hydratedDispute = $this->invoice()?->disputes[0] ?? null;
+        }
+
+        return null;
     }
 }

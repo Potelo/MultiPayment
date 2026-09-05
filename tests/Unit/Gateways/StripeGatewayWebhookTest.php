@@ -254,7 +254,7 @@ class StripeGatewayWebhookTest extends TestCase
         $this->assertSame('pi_3UC6vrPjx0CusuMr1p8wB8OF', $event->invoiceId);
     }
 
-    public function testADisputeEventPointsTheInvoiceAndReturnsTheDisputeIdWithoutRequest(): void
+    public function testADisputeEventPointsTheInvoiceAndTheDisputeWithoutRequest(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
 
@@ -262,8 +262,26 @@ class StripeGatewayWebhookTest extends TestCase
 
         $this->assertSame('pi_3UC6vvPjx0CusuMr1QDzJkyL', $event->invoiceId);
         $this->assertSame('du_1UC6vvPjx0CusuMrFCR9SiV0', $event->disputeId);
-        $this->assertSame('du_1UC6vvPjx0CusuMrFCR9SiV0', $event->dispute());
         $this->assertSame([], $httpClient->calls);
+    }
+
+    public function testHydratingTheDisputeCostsOneReadAndIsCached(): void
+    {
+        $stripeDispute = self::fixture('disputes/needs_response')['data'][0];
+        $httpClient = RecordingStripeHttpClient::withResponses([$stripeDispute]);
+
+        $event = $this->parse(self::rawFixture('charge.dispute.created'));
+
+        $dispute = $event->dispute();
+
+        $this->assertInstanceOf(\Potelo\MultiPayment\Models\Dispute::class, $dispute);
+        $this->assertSame($stripeDispute['id'], $dispute->id);
+        $this->assertSame(\Potelo\MultiPayment\Enums\DisputeStatus::OPEN, $dispute->status);
+        $this->assertSame($stripeDispute['payment_intent'], $dispute->invoiceId);
+        $this->assertSame(["get /v1/disputes/{$event->disputeId}"], self::calledPaths($httpClient));
+
+        $this->assertSame($dispute, $event->dispute());
+        $this->assertCount(1, $httpClient->calls);
     }
 
     public function testAPaymentIntentEventOfASingleSaleKeepsTheDeclineCodeFromThePayload(): void

@@ -93,18 +93,23 @@ class IuguGatewayWebhookTest extends TestCase
 
     /**
      * `invoice.status_changed` é multiuso: o tipo comum sai do status normalizado da fatura
-     * relida, com um GET no parse.
+     * relida, com um GET no parse. Fatura contestada custa a consulta de contestações a mais.
      */
     #[DataProvider('statusChangedProvider')]
     public function testStatusChangedResolvesTheTypeFromTheRereadInvoice(string $iuguStatus, WebhookEventType $expected): void
     {
         [$body, $headers] = self::fixture('invoice.status_changed.paid');
-        $api = new QueuedIuguApiRequest([self::invoiceResponse(['status' => $iuguStatus])]);
+        $contested = in_array($iuguStatus, ['in_protest', 'chargeback'], true);
+        $responses = [self::invoiceResponse(['status' => $iuguStatus])];
+        if ($contested) {
+            $responses[] = (object) ['totalItems' => 0, 'items' => []];
+        }
+        $api = new QueuedIuguApiRequest($responses);
 
         $event = (new IuguGateway($api))->parseWebhook($body, $headers);
 
         $this->assertSame($expected, $event->type);
-        $this->assertCount(1, $api->calls);
+        $this->assertCount($contested ? 2 : 1, $api->calls);
         $this->assertStringContainsString('/invoices/7DBF6AACBE5643029EBE766E49A8F92F', $api->calls[0]['url']);
     }
 
@@ -122,6 +127,55 @@ class IuguGatewayWebhookTest extends TestCase
             'pending' => ['pending', WebhookEventType::INVOICE_UPDATED],
             'partially_paid' => ['partially_paid', WebhookEventType::INVOICE_UPDATED],
         ];
+    }
+
+    /**
+     * O corpo da Iugu não identifica a contestação, então `dispute()` num evento de
+     * contestação vem da fatura hidratada no parse: a primeira contestação de
+     * `Invoice::$disputes`, sem nova requisição além das do parse.
+     */
+    public function testADisputeEventHydratesTheDisputeFromTheParsedInvoice(): void
+    {
+        [$body, $headers] = self::fixture('invoice.status_changed.paid');
+        $api = new QueuedIuguApiRequest([
+            self::invoiceResponse(['status' => 'in_protest']),
+            (object) ['totalItems' => 1, 'items' => [
+                (object) [
+                    'id' => 'chb_1',
+                    'invoice_id' => '7DBF6AACBE5643029EBE766E49A8F92F',
+                    'status' => 'pending',
+                    'expires_at' => '2026-09-20T23:59:59-03:00',
+                ],
+            ]],
+        ]);
+
+        $event = (new IuguGateway($api))->parseWebhook($body, $headers);
+        $dispute = $event->dispute();
+
+        $this->assertInstanceOf(\Potelo\MultiPayment\Models\Dispute::class, $dispute);
+        $this->assertSame('chb_1', $dispute->id);
+        $this->assertSame(WebhookEventType::DISPUTE_OPENED, $event->type);
+        $this->assertCount(2, $api->calls);
+        $this->assertSame($dispute, $event->dispute());
+        $this->assertCount(2, $api->calls);
+    }
+
+    /**
+     * Quando a consulta de contestações falhou no parse (`disputes` nulo na fatura),
+     * `dispute()` devolve nulo sem lançar.
+     */
+    public function testADisputeEventWithoutTheChargebackListHydratesToNull(): void
+    {
+        [$body, $headers] = self::fixture('invoice.status_changed.paid');
+        $api = new QueuedIuguApiRequest([
+            self::invoiceResponse(['status' => 'in_protest']),
+            (object) ['errors' => 'internal error'],
+        ]);
+
+        $event = (new IuguGateway($api))->parseWebhook($body, $headers);
+
+        $this->assertSame(WebhookEventType::DISPUTE_OPENED, $event->type);
+        $this->assertNull($event->dispute());
     }
 
     public function testStatusChangedSharesTheRereadInvoiceWithTheHydration(): void

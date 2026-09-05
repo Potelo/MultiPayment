@@ -19,6 +19,7 @@ use Potelo\MultiPayment\Enums\CaptureMethod;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\RefundStatus;
+use Potelo\MultiPayment\Enums\DisputeStatus;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 
@@ -687,6 +688,51 @@ class StripeGatewayTest extends TestCase
         $canceled = MultiPayment::setGateway($gateway)->cancelInvoice($invoice->id);
 
         $this->assertSame(InvoiceStatus::CANCELED, $canceled->status);
+    }
+
+    /**
+     * O cartão de teste de contestação (`pm_card_createDispute`) cria a dispute logo após o
+     * pagamento: a fatura relida vem `DISPUTED` com `disputes` preenchido, a contestação é
+     * legível por id e a resposta com a evidência mágica `winning_evidence` a encerra ganha.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldReadContestAndWinADisputedInvoice($gateway)
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer(
+                $customerData['name'],
+                $customerData['email'],
+                $customerData['taxDocument'],
+                $customerData['birthDate'],
+                $customerData['phoneArea'],
+                $customerData['phoneNumber']
+            )
+            ->addItem('Compra contestada', 12345, 1)
+            ->setAvailablePaymentMethods([PaymentMethod::CREDIT_CARD])
+            ->addCreditCardToken('pm_card_createDispute')
+            ->create();
+
+        sleep(3); // a dispute de teste é criada logo após o pagamento
+
+        $fetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
+        $this->assertSame(InvoiceStatus::DISPUTED, $fetched->status);
+        $this->assertNotEmpty($fetched->disputes);
+        $this->assertSame(DisputeStatus::OPEN, $fetched->disputes[0]->status);
+        $this->assertSame(12345, $fetched->disputes[0]->amount);
+        $this->assertSame($invoice->id, $fetched->disputes[0]->invoiceId);
+        $this->assertNotNull($fetched->disputes[0]->dueBy);
+
+        $dispute = MultiPayment::setGateway($gateway)->getDispute($fetched->disputes[0]->id);
+        $this->assertSame($fetched->disputes[0]->id, $dispute->id);
+        $this->assertSame(DisputeStatus::OPEN, $dispute->status);
+
+        // o encerramento da dispute de teste como ganha é assíncrono: logo após o submit a
+        // resposta vem em análise, e o desfecho chega depois pelo webhook charge.dispute.closed
+        $contested = MultiPayment::setGateway($gateway)
+            ->contestDispute($dispute->id, ['uncategorized_text' => 'winning_evidence']);
+        $this->assertContains($contested->status, [DisputeStatus::UNDER_REVIEW, DisputeStatus::WON]);
+        $this->assertFalse($contested->status->isLost());
     }
 
     /**

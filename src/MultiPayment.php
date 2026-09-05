@@ -9,6 +9,7 @@ use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
+use Potelo\MultiPayment\Models\Dispute;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Subscription;
@@ -19,6 +20,7 @@ use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Models\WebhookEvent;
 use Potelo\MultiPayment\Contracts\PlanContract;
+use Potelo\MultiPayment\Contracts\DisputeContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\WebhookContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -468,6 +470,80 @@ class MultiPayment
         }
 
         return $invoice->duplicate($expiresAt, $gatewayOptions, $idempotencyKey);
+    }
+
+    /**
+     * Busca a contestação pelo id no gateway desta instância.
+     *
+     * @param  string  $id
+     *
+     * @return Dispute
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     */
+    public function getDispute(string $id): Dispute
+    {
+        $dispute = new Dispute();
+        $dispute->id = $id;
+
+        return $dispute->get($this->gateway);
+    }
+
+    /**
+     * Lista as contestações da conta no gateway desta instância.
+     *
+     * @param  int  $page
+     * @param  int  $limit
+     *
+     * @return Dispute[]
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     */
+    public function listDisputes(int $page = 1, int $limit = 100): array
+    {
+        /** @var DisputeContract $gateway */
+        $gateway = $this->gatewayImplementing(DisputeContract::class, Capability::DISPUTES);
+
+        return $gateway->listDisputes($page, $limit);
+    }
+
+    /**
+     * Responde à contestação com as evidências informadas, no formato do gateway (ver
+     * `DisputeContract::contestDispute()`), e devolve a contestação atualizada.
+     *
+     * @param  string  $id
+     * @param  array  $evidence  evidências no formato do gateway
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     *
+     * @return Dispute
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     */
+    public function contestDispute(string $id, array $evidence, ?string $idempotencyKey = null): Dispute
+    {
+        /** @var DisputeContract $gateway */
+        $gateway = $this->gatewayImplementing(DisputeContract::class, Capability::DISPUTES);
+
+        return $gateway->contestDispute($id, $evidence, $idempotencyKey);
+    }
+
+    /**
+     * Acata a contestação, devolvendo o valor ao pagador sem disputa, e devolve a contestação
+     * atualizada.
+     *
+     * @param  string  $id
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     *
+     * @return Dispute
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     */
+    public function acceptDispute(string $id, ?string $idempotencyKey = null): Dispute
+    {
+        /** @var DisputeContract $gateway */
+        $gateway = $this->gatewayImplementing(DisputeContract::class, Capability::DISPUTES);
+
+        return $gateway->acceptDispute($id, $idempotencyKey);
     }
 
     /**

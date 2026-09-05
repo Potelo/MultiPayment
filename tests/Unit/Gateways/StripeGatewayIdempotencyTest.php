@@ -370,6 +370,16 @@ class StripeGatewayIdempotencyTest extends TestCase
                 [self::paidCardPaymentIntentResponse()],
                 ['post /v1/payment_intents/pi_fake123/capture' => 'chave-1'],
             ],
+            'contestDispute' => [
+                fn (StripeGateway $g, ?string $key) => $g->contestDispute('du_fake123', ['uncategorized_text' => 'evidencia'], $key),
+                [self::disputeResponse('under_review')],
+                ['post /v1/disputes/du_fake123' => 'chave-1'],
+            ],
+            'acceptDispute' => [
+                fn (StripeGateway $g, ?string $key) => $g->acceptDispute('du_fake123', $key),
+                [self::disputeResponse('lost')],
+                ['post /v1/disputes/du_fake123/close' => 'chave-1'],
+            ],
             'chargeInvoiceWithCreditCard sobre fatura de assinatura' => [
                 function (StripeGateway $g, ?string $key) {
                     $invoice = new Invoice();
@@ -952,6 +962,20 @@ class StripeGatewayIdempotencyTest extends TestCase
             'billing_details' => ['name' => 'Faker Teste'],
             'metadata' => [],
             'card' => ['brand' => 'visa', 'last4' => '4242', 'exp_month' => 8, 'exp_year' => 2027],
+        ];
+    }
+
+    private static function disputeResponse(string $status): array
+    {
+        return [
+            'id' => 'du_fake123',
+            'object' => 'dispute',
+            'amount' => 12345,
+            'charge' => 'ch_fake123',
+            'payment_intent' => 'pi_fake123',
+            'reason' => 'fraudulent',
+            'status' => $status,
+            'created' => 1786700020,
         ];
     }
 

@@ -74,12 +74,17 @@ class IuguGatewayInvoiceStatusTest extends TestCase
 
     /**
      * Caminho público: cada status da Iugu passa por `getInvoice()` e chega no model como o
-     * caso do enum, com o valor cru preservado em `original`.
+     * caso do enum, com o valor cru preservado em `original`. Fatura contestada custa a
+     * consulta de contestações a mais.
      */
     #[DataProvider('statusProvider')]
     public function testGetInvoiceParsesEveryIuguStatusFromTheGatewayResponse(string $iuguStatus, InvoiceStatus $expected): void
     {
-        $api = new QueuedIuguApiRequest([$this->invoiceResponse(['status' => $iuguStatus])]);
+        $responses = [$this->invoiceResponse(['status' => $iuguStatus])];
+        if ($expected->isContested()) {
+            $responses[] = (object) ['totalItems' => 0, 'items' => []];
+        }
+        $api = new QueuedIuguApiRequest($responses);
 
         $invoice = (new IuguGateway($api))->getInvoice($this->invoiceWithId());
 
