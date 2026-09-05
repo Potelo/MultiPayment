@@ -599,6 +599,11 @@ class IuguGatewayIdempotencyTest extends TestCase
             {
                 return false;
             }
+
+            public function forget(string $key): void
+            {
+                throw new \LogicException('a store não pode ser usada sem chave');
+            }
         };
         $gateway = new IuguGateway($api, $store);
 
@@ -655,6 +660,10 @@ class IuguGatewayIdempotencyTest extends TestCase
             public function has(string $key): bool
             {
                 return false;
+            }
+
+            public function forget(string $key): void
+            {
             }
         };
 

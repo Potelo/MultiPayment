@@ -62,10 +62,7 @@ final class InMemoryIdempotencyStore implements IdempotencyStore
     }
 
     /**
-     * Esquece o resultado guardado para a chave.
-     *
-     * @param  string  $key
-     * @return void
+     * @inheritDoc
      */
     public function forget(string $key): void
     {

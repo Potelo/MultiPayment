@@ -5,8 +5,10 @@ namespace Potelo\MultiPayment\Providers;
 use Potelo\MultiPayment\MultiPayment;
 use Illuminate\Support\ServiceProvider;
 use Potelo\MultiPayment\Contracts\IdempotencyStore;
+use Potelo\MultiPayment\Console\WebhookReplayCommand;
 use Potelo\MultiPayment\Console\SyncSubscriptionsCommand;
 use Potelo\MultiPayment\Idempotency\CacheIdempotencyStore;
+use Potelo\MultiPayment\Webhooks\WebhookController;
 
 class MultiPaymentServiceProvider extends ServiceProvider
 {
@@ -31,8 +33,31 @@ class MultiPaymentServiceProvider extends ServiceProvider
         ], 'config');
 
         if ($this->app->runningInConsole()) {
-            $this->commands([SyncSubscriptionsCommand::class]);
+            $this->commands([SyncSubscriptionsCommand::class, WebhookReplayCommand::class]);
         }
+
+        $this->registerWebhookRoute();
+    }
+
+    /**
+     * Registra a rota pronta de webhooks quando `multi-payment.webhooks.route.enabled` é
+     * verdadeiro. A rota nasce fora de qualquer grupo de middleware (webhook não tem sessão
+     * nem CSRF); o que a aplicação precisar entra por `multi-payment.webhooks.route.middleware`.
+     *
+     * @return void
+     */
+    private function registerWebhookRoute(): void
+    {
+        $config = $this->app['config']->get('multi-payment.webhooks.route', []);
+
+        if (empty($config['enabled']) || !$this->app->bound('router')) {
+            return;
+        }
+
+        $this->app['router']
+            ->post($config['path'] ?? '/multipayment/webhooks/{gateway}', WebhookController::class)
+            ->middleware($config['middleware'] ?? [])
+            ->name('multipayment.webhook');
     }
 
     /**

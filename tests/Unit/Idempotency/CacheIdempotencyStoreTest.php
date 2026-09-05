@@ -96,6 +96,21 @@ class CacheIdempotencyStoreTest extends TestCase
         $this->assertSame(2, $store->remember('chave', $operation, 60));
     }
 
+    public function testForgetRemovesTheStoredResultAndTheKeyExecutesAgain(): void
+    {
+        $store = new CacheIdempotencyStore($this->cache);
+        $executions = 0;
+        $operation = function () use (&$executions) {
+            return ++$executions;
+        };
+
+        $store->remember('chave', $operation, 60);
+        $store->forget('chave');
+
+        $this->assertFalse($store->has('chave'));
+        $this->assertSame(2, $store->remember('chave', $operation, 60));
+    }
+
     public function testAnOperationThatThrowsIsNotStoredAndReleasesTheLock(): void
     {
         $store = new CacheIdempotencyStore($this->cache);

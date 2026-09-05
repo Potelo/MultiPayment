@@ -367,6 +367,18 @@ class MultiPayment
     }
 
     /**
+     * Devolve o pipeline de consumo de webhooks (verificar, deduplicar, despachar os eventos
+     * do Laravel e responder), o mesmo da rota pronta do pacote. O gateway desta instância
+     * vale quando a requisição não traz o parâmetro de rota `gateway`.
+     *
+     * @return \Potelo\MultiPayment\Webhooks\WebhookHandler
+     */
+    public function webhooks(): \Potelo\MultiPayment\Webhooks\WebhookHandler
+    {
+        return new \Potelo\MultiPayment\Webhooks\WebhookHandler($this->gateway);
+    }
+
+    /**
      * Return an invoice based on the invoice ID
      *
      * @param  string  $id

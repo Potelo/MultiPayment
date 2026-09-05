@@ -42,6 +42,21 @@ class InMemoryIdempotencyStoreTest extends TestCase
         $this->assertFalse($store->has('outra'));
     }
 
+    public function testForgetMakesTheKeyExecuteAgain(): void
+    {
+        $store = new InMemoryIdempotencyStore();
+        $executions = 0;
+        $operation = function () use (&$executions) {
+            return ++$executions;
+        };
+
+        $store->remember('chave', $operation, 60);
+        $store->forget('chave');
+
+        $this->assertFalse($store->has('chave'));
+        $this->assertSame(2, $store->remember('chave', $operation, 60));
+    }
+
     public function testDistinctKeysExecuteSeparately(): void
     {
         $store = new InMemoryIdempotencyStore();

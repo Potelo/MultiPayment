@@ -58,12 +58,24 @@ return [
     | Webhooks
     |--------------------------------------------------------------------------
     |
-    | Deduplicação de entregas de webhook (WebhookDeduplicator), sobre a IdempotencyStore.
+    | Deduplicação de entregas de webhook (WebhookDeduplicator), sobre a IdempotencyStore,
+    | e a rota pronta do pacote: verifica a autenticidade, descarta replay e despacha os
+    | eventos do Laravel. A rota nasce desligada; quem prefere rota própria usa
+    | MultiPayment::webhooks()->handle($request) com o mesmo pipeline.
     |
     */
     'webhooks' => [
         // prazo, em segundos, em que uma entrega com o mesmo id conta como replay
         'dedup_ttl' => env('MULTIPAYMENT_WEBHOOK_DEDUP_TTL', 259200),
+        'route' => [
+            // liga o registro da rota pelo service provider
+            'enabled' => env('MULTIPAYMENT_WEBHOOK_ROUTE_ENABLED', false),
+            // caminho da rota; o parâmetro {gateway} escolhe o driver (sem ele, vale o default)
+            'path' => '/multipayment/webhooks/{gateway}',
+            // middleware aplicado à rota; ela nasce fora de qualquer grupo (webhook não tem
+            // sessão nem CSRF), acrescente aqui o que a aplicação precisar
+            'middleware' => [],
+        ],
     ],
 
     /*

@@ -62,6 +62,25 @@ class WebhookDeduplicator
     }
 
     /**
+     * Desfaz a marcação da entrega na store; a próxima chegada do mesmo `id` conta como
+     * primeira. Usado quando o processamento falhou depois de `flagReplay()`, para a
+     * retentativa do gateway não ser descartada como replay. Evento sem `id` ou sem `gateway`
+     * é ignorado.
+     *
+     * @param  WebhookEvent  $event
+     * @return void
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException  sem store no container
+     */
+    public function release(WebhookEvent $event): void
+    {
+        if (empty($event->id) || empty($event->gateway)) {
+            return;
+        }
+
+        $this->store()->forget("webhook:{$event->gateway}:{$event->id}");
+    }
+
+    /**
      * Store usada na deduplicação: a do construtor ou a registrada no container.
      *
      * @return IdempotencyStore

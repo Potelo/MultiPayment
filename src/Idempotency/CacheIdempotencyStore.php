@@ -80,6 +80,14 @@ final class CacheIdempotencyStore implements IdempotencyStore
     }
 
     /**
+     * @inheritDoc
+     */
+    public function forget(string $key): void
+    {
+        $this->cache->forget($this->cacheKey($key));
+    }
+
+    /**
      * Chave no cache: prefixo mais a chave da operação.
      *
      * @param  string  $key

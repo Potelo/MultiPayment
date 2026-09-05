@@ -35,4 +35,13 @@ interface IdempotencyStore
      * @return bool
      */
     public function has(string $key): bool;
+
+    /**
+     * Esquece o resultado guardado para a chave; a chamada seguinte com ela executa de novo.
+     * Chave sem resultado guardado é ignorada.
+     *
+     * @param  string  $key
+     * @return void
+     */
+    public function forget(string $key): void;
 }

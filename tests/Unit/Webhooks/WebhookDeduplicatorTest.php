@@ -93,6 +93,10 @@ class WebhookDeduplicatorTest extends TestCase
             {
                 return false;
             }
+
+            public function forget(string $key): void
+            {
+            }
         };
 
         $event = (new WebhookDeduplicator($conflictingStore))->flagReplay(self::event('evt_1'));
@@ -130,6 +134,26 @@ class WebhookDeduplicatorTest extends TestCase
     /**
      * Evento mínimo com o id e o gateway usados na chave de deduplicação.
      */
+    public function testReleaseMakesTheSameIdCountAsFirstAgain(): void
+    {
+        $first = $this->deduplicator->flagReplay(self::event('evt_1'));
+        $this->assertFalse($first->isReplay);
+
+        $this->deduplicator->release($first);
+        $retry = $this->deduplicator->flagReplay(self::event('evt_1'));
+
+        $this->assertFalse($retry->isReplay);
+    }
+
+    public function testReleaseIgnoresAnEventWithoutIdOrGateway(): void
+    {
+        $this->deduplicator->flagReplay(self::event('evt_1'));
+
+        $this->deduplicator->release(self::event(null));
+
+        $this->assertTrue($this->deduplicator->flagReplay(self::event('evt_1'))->isReplay);
+    }
+
     private static function event(?string $id, string $gateway = 'stripe'): WebhookEvent
     {
         $event = new WebhookEvent();

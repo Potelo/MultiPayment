@@ -90,6 +90,7 @@ MULTIPAYMENT_IDEMPOTENCY_CACHE_STORE=
 
 #webhooks (opcional; ver a seção Webhooks)
 MULTIPAYMENT_WEBHOOK_DEDUP_TTL=259200
+MULTIPAYMENT_WEBHOOK_ROUTE_ENABLED=false   # liga a rota pronta do pacote (ver "Rota pronta")
 
 #fill() estrito (opcional, padrão true; ver a seção "fill() estrito")
 MULTIPAYMENT_STRICT_FILL=true
@@ -767,7 +768,10 @@ que lança não é guardada (o retry executa de novo). O service provider regist
 `CacheIdempotencyStore`, sobre o cache do Laravel, que exige um store com suporte a lock
 (`redis`, `memcached`, `database`, `file`, `array` ou `dynamodb`); sem cache configurado, a
 primeira operação com chave num endpoint da store lança `ConfigurationException`. Operações
-sem chave nunca tocam a store, e os quatro endpoints nativos da Iugu tampouco.
+sem chave nunca tocam a store, e os quatro endpoints nativos da Iugu tampouco. A interface tem
+`remember()`, `has()` e `forget()`; o `forget()` desfaz um resultado guardado e é usado pela
+deduplicação de webhooks quando o processamento de uma entrega falha (ver a seção Webhooks),
+então uma store própria precisa implementá-lo.
 
 ```php
 // config/multi-payment.php
@@ -987,9 +991,11 @@ preenchidos.
 
 `parseWebhook()` verifica a autenticidade de uma entrega de webhook e a traduz num
 `WebhookEvent` normalizado (`Potelo\MultiPayment\Models\WebhookEvent`), no vocabulário do
-pacote, nos dois gateways. A operação é guardada pela capability `WEBHOOKS`. A rota pronta do
-pacote e os eventos do Laravel estão planejados para uma versão futura; por enquanto a
-aplicação registra a própria rota e chama o parser:
+pacote, nos dois gateways. A operação é guardada pela capability `WEBHOOKS`. Sobre o parser há
+duas camadas opcionais, descritas mais abaixo: a rota pronta do pacote (seção "Rota pronta"),
+que verifica, deduplica e despacha os eventos do Laravel (seção "Eventos do Laravel") sem
+nenhuma linha na aplicação. Quem prefere tratar tudo por conta própria registra a própria rota
+e chama o parser:
 
 ```php
 use Illuminate\Http\Request;
@@ -1122,6 +1128,121 @@ Três notas sobre o mapa da Iugu:
 - **`invoice.due` fica como `UNKNOWN`** por decisão: é um lembrete de vencimento próximo, sem
   tipo comum correspondente nos dois gateways; o payload segue em `raw` e a fatura em
   `invoiceId` para quem quiser tratá-lo.
+
+### Rota pronta
+
+A rota do pacote recebe a entrega, verifica a autenticidade, descarta replay e despacha os
+eventos do Laravel. Nasce desligada; para ligar, publique a configuração e habilite o bloco
+`webhooks.route` (ou defina `MULTIPAYMENT_WEBHOOK_ROUTE_ENABLED=true`):
+
+```php
+// config/multi-payment.php
+'webhooks' => [
+    'route' => [
+        'enabled' => env('MULTIPAYMENT_WEBHOOK_ROUTE_ENABLED', false),
+        'path' => '/multipayment/webhooks/{gateway}',
+        'middleware' => [],
+    ],
+],
+```
+
+O service provider registra a rota (`POST`, nome `multipayment.webhook`) quando `enabled` é
+verdadeiro, e o parâmetro `{gateway}` escolhe o driver: no gateway, registre
+`https://sua-aplicacao.com/multipayment/webhooks/iugu` e `.../stripe`. A rota fica fora de
+qualquer grupo de middleware, porque webhook não tem sessão nem CSRF; o que a aplicação
+precisar (limitação de taxa, por exemplo) entra em `middleware` na configuração.
+
+As respostas da rota:
+
+- **200 para entrega aceita**, inclusive as de tipo `UNKNOWN` (registradas no log com o
+  recurso apontado; o `WebhookReceived` genérico ainda é despachado).
+- **200 para replay**, sem despachar nada: para o gateway, qualquer resposta fora do 2xx é
+  falha de entrega e provoca nova retentativa (a Iugu chega a desativar um endpoint que segue
+  falhando; o Stripe retenta por dias), e a entrega original já foi processada.
+- **400 para assinatura ou token recusado**, com o corpo vazio: o endpoint é público e a
+  resposta não deve dizer a quem sonda o que faltou; o motivo (`reason` da
+  `WebhookSignatureException`) fica no log da aplicação.
+- **404 para gateway desconhecido ou sem a capability `WEBHOOKS`**, também sem detalhe.
+- **500 para credencial de webhook não configurada** (`webhook_secret` ou `webhook_token`
+  ausente na configuração do gateway): é erro da aplicação, e o 5xx mantém o gateway
+  retentando até a configuração ser corrigida.
+
+Quem quer a própria rota com o mesmo pipeline usa o helper `webhooks()` da fachada:
+
+```php
+use Illuminate\Http\Request;
+use Potelo\MultiPayment\Facades\MultiPayment;
+
+Route::post('/meus-webhooks/{gateway}', function (Request $request) {
+    return MultiPayment::webhooks()->handle($request);
+});
+```
+
+`handle()` lê o gateway do parâmetro de rota `gateway`; numa rota sem o parâmetro, vale o
+gateway da instância da fachada (`MultiPayment::setGateway('stripe')->webhooks()->handle(...)`)
+ou o default da configuração.
+
+### Eventos do Laravel
+
+O pipeline (da rota pronta ou de `webhooks()->handle()`) despacha dois eventos por entrega
+aceita, os dois carregando o `WebhookEvent` na propriedade `$webhook`: primeiro o
+`Potelo\MultiPayment\Events\WebhookReceived` genérico, depois a classe correspondente ao tipo
+comum, uma por caso de `WebhookEventType` (`InvoicePaid`, `InvoicePaymentFailed`,
+`SubscriptionRenewed`, `SubscriptionCanceled`, `RefundCreated`, `PixMandateChanged`, e assim
+por diante, todas em `Potelo\MultiPayment\Events`). Entrega de tipo `UNKNOWN` despacha só o
+genérico; replay descartado não despacha nada.
+
+```php
+use Illuminate\Support\Facades\Event;
+use Potelo\MultiPayment\Events\InvoicePaymentFailed;
+use Potelo\MultiPayment\Events\SubscriptionCanceled;
+
+Event::listen(InvoicePaymentFailed::class, function (InvoicePaymentFailed $event) {
+    Dunning::start($event->webhook->invoice(), $event->webhook->declineCode);
+});
+
+Event::listen(SubscriptionCanceled::class, function (SubscriptionCanceled $event) {
+    Access::revoke($event->webhook->subscription());
+});
+```
+
+O despacho é síncrono: o listener roda dentro da requisição do webhook, e a hidratação
+(`invoice()`, `subscription()`) custa a leitura no gateway ali mesmo. Para responder rápido ao
+gateway e trabalhar depois, implemente `ShouldQueue` no listener, como em qualquer evento do
+Laravel; a hidratação passa a acontecer no worker da fila.
+
+Falha num listener síncrono desfaz a marcação da deduplicação e a requisição responde 500,
+então o gateway reenvia a entrega e ela é processada de novo por inteiro: o `WebhookReceived`
+e o evento tipado são despachados outra vez, inclusive para os listeners que já tinham rodado
+antes da falha. Escreva listeners que toleram reprocessamento, ou enfileire-os (a falha passa
+a seguir a política de retry da fila, e a entrega responde 200 na hora).
+
+### Reproduzindo entregas em desenvolvimento
+
+O comando `multipayment:webhook-replay` reproduz uma entrega gravada em arquivo pelo mesmo
+pipeline da rota, para exercitar os listeners sem depender do gateway:
+
+```
+php artisan multipayment:webhook-replay stripe tests/fixtures/stripe/webhooks/invoice.paid.json
+php artisan multipayment:webhook-replay iugu tests/fixtures/iugu/webhooks/invoice.created.json
+```
+
+O arquivo pode ser o corpo cru da entrega (um evento do Stripe, por exemplo) ou um envelope
+JSON `{headers, body}` com o corpo urlencoded, o formato das capturas da Iugu do pacote. O
+comando reautentica a entrega com a credencial configurada (assinatura nova com
+`webhook_secret`, ou o token no cabeçalho `authorization` com `webhook_token`), porque a
+assinatura gravada não vale para o secret da aplicação nem para o relógio atual, e roda o
+pipeline sem consultar nem gravar a deduplicação, para o mesmo arquivo poder ser reproduzido
+quantas vezes for preciso. Atenção: entrega cujo parse hidrata (o `invoice.status_changed` da
+Iugu) faz a leitura real no gateway configurado.
+
+Para receber entregas reais em desenvolvimento: no Stripe, a CLI encaminha os eventos da conta
+para a aplicação local (`stripe listen --forward-to localhost:8000/multipayment/webhooks/stripe`)
+e imprime o secret `whsec_...` da sessão, que vai em `STRIPE_WEBHOOK_SECRET`. A Iugu não tem
+CLI de encaminhamento: exponha a aplicação por um túnel público (ngrok, Cloudflare Tunnel) e
+registre o webhook na sandbox (`POST /v1/web_hooks`) apontando para
+`https://<túnel>/multipayment/webhooks/iugu`, com o campo `authorization` do registro igual ao
+`IUGU_WEBHOOK_TOKEN` configurado.
 
 ## Utilizando
 
