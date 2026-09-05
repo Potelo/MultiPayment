@@ -4,11 +4,13 @@ namespace Potelo\MultiPayment\Gateways;
 
 use Carbon\Carbon;
 use Stripe\StripeClient;
+use Stripe\Price as StripePrice;
 use Stripe\Invoice as StripeInvoice;
 use Stripe\Customer as StripeCustomer;
 use Stripe\PaymentIntent as StripePaymentIntent;
 use Stripe\PaymentMethod as StripePaymentMethod;
 use Stripe\SetupIntent as StripeSetupIntent;
+use Stripe\Subscription as StripeSubscription;
 use Stripe\Exception\CardException;
 use Stripe\Exception\ApiErrorException;
 use Stripe\Exception\PermissionException;
@@ -20,6 +22,7 @@ use Stripe\Exception\RateLimitException as StripeRateLimitException;
 use Stripe\Exception\AuthenticationException as StripeAuthenticationException;
 use Illuminate\Support\Facades\Config;
 use Potelo\MultiPayment\Models\Pix;
+use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Model;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
@@ -28,20 +31,29 @@ use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
+use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
+use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
+use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
 use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
 use Potelo\MultiPayment\Gateways\Stripe\DeclineCodes as StripeDeclineCodes;
+use Potelo\MultiPayment\Gateways\Stripe\ProrationBehaviors;
+use Potelo\MultiPayment\Gateways\Stripe\SubscriptionStatuses;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\NotFoundException;
@@ -55,7 +67,7 @@ use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class StripeGateway implements GatewayContract
+class StripeGateway implements GatewayContract, SubscriptionContract, PlanContract
 {
     use ChecksCapabilities;
     use ResolvesIdempotencyKey;
@@ -98,6 +110,18 @@ class StripeGateway implements GatewayContract
 
     /** Prefixo do id de um objeto Invoice da Stripe; o de PaymentIntent é `pi_`. */
     private const STRIPE_INVOICE_ID_PREFIX = 'in_';
+
+    /** Prefixo do id de um Price da Stripe, que é o id do plano neste driver. */
+    private const STRIPE_PRICE_ID_PREFIX = 'price_';
+
+    /**
+     * Expand de toda leitura ou escrita de Subscription: o PaymentMethod padrão diz com que
+     * método a assinatura é cobrada, e o Product de cada item dá a descrição dos itens.
+     */
+    private const SUBSCRIPTION_EXPAND = ['default_payment_method', 'items.data.price.product'];
+
+    /** Expand na leitura ou criação de um Price: o Product dá nome e identificador ao plano. */
+    private const PRICE_EXPAND = ['product'];
 
     /** Tipo de InvoicePayment cujo pagamento é um PaymentIntent. */
     private const INVOICE_PAYMENT_TYPE_PAYMENT_INTENT = 'payment_intent';
@@ -171,6 +195,12 @@ class StripeGateway implements GatewayContract
             Capability::INVOICE_CANCELLATION,
             Capability::IDEMPOTENCY,
             Capability::IDEMPOTENCY_ALL_ENDPOINTS,
+            Capability::SUBSCRIPTIONS,
+            Capability::PLANS,
+            Capability::PLAN_DEACTIVATION,
+            Capability::CANCEL_AT_PERIOD_END,
+            Capability::PLAN_CHANGE_PRORATION,
+            Capability::MANAGES_RECURRENCE,
         ];
     }
 
@@ -184,13 +214,7 @@ class StripeGateway implements GatewayContract
             Capability::AUTOMATIC_PIX,
             Capability::MULTIPLE_PAYMENT_METHODS,
             Capability::DELAYED_CAPTURE,
-            Capability::SUBSCRIPTIONS,
-            Capability::PLANS,
-            Capability::PLAN_DEACTIVATION,
-            Capability::CANCEL_AT_PERIOD_END,
             Capability::NATIVE_COUPONS,
-            Capability::PLAN_CHANGE_PRORATION,
-            Capability::MANAGES_RECURRENCE,
         ];
     }
 
@@ -201,6 +225,8 @@ class StripeGateway implements GatewayContract
      * é recusada na cobrança com `DeclineCode::BRAND_NOT_SUPPORTED`. `INVOICE_DUPLICATION`:
      * só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a fatura de assinatura
      * (`in_`) só é anulada depois de finalizada pela Stripe; rascunho é recusado.
+     * `SUBSCRIPTIONS`: a Stripe só aceita `nextBillingAt` na criação da assinatura; na troca de
+     * plano e na atualização a data da próxima cobrança segue o ciclo.
      */
     public function restrictions(): array
     {
@@ -218,6 +244,10 @@ class StripeGateway implements GatewayContract
             Capability::INVOICE_CANCELLATION->value => new CapabilityRestriction(
                 description: 'A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada'
                     . ' pela Stripe; rascunho é recusado.',
+            ),
+            Capability::SUBSCRIPTIONS->value => new CapabilityRestriction(
+                description: 'nextBillingAt vale só na criação da assinatura; na troca de plano e na'
+                    . ' atualização a Stripe não aceita uma data arbitrária de próxima cobrança.',
             ),
         ];
     }
@@ -1083,11 +1113,14 @@ class StripeGateway implements GatewayContract
     private function assertPaymentIntentOrigin(Invoice $invoice, string $operation): void
     {
         if (self::isStripeInvoiceId($invoice->id)) {
-            throw UnsupportedOperationException::forGateway(
-                $this,
-                Capability::SUBSCRIPTIONS,
+            // reason fixado em not_implemented: SUBSCRIPTIONS está em capabilities(), mas a
+            // escrita sobre a fatura de assinatura ainda não foi construída nesta lib
+            throw new UnsupportedOperationException(
                 "A operação {$operation} sobre a fatura de assinatura [{$invoice->id}] (objeto Invoice da Stripe)"
-                . ' ainda não está implementada nesta lib; a leitura por getInvoice() está disponível.'
+                . ' ainda não está implementada nesta lib; a leitura por getInvoice() está disponível.',
+                (string) $this,
+                Capability::SUBSCRIPTIONS,
+                UnsupportedOperationException::REASON_NOT_IMPLEMENTED
             );
         }
     }
@@ -2539,6 +2572,1182 @@ class StripeGateway implements GatewayContract
             ? str_pad((string) $card->exp_month, 2, '0', STR_PAD_LEFT)
             : null;
         $creditCard->year = isset($card->exp_year) ? (string) $card->exp_year : null;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * O plano vira um par Product e Price recorrente: o Product guarda o nome e o
+     * identificador (`metadata.identifier`), o Price guarda o valor e o intervalo, e o id do
+     * Price é o id do plano. O identificador vai também em `lookup_key` do Price, que é como
+     * `getPlan()` o encontra; identificador repetido é recusado pela Stripe. A chave de
+     * idempotência vai no cabeçalho `Idempotency-Key` da criação do Price; o Product usa a
+     * derivada `{chave}:product`.
+     */
+    public function createPlan(Plan $plan, ?string $idempotencyKey = null): Plan
+    {
+        if (is_null($plan->interval)) {
+            throw ModelAttributeValidationException::required('Plan', 'interval');
+        }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $plan);
+        $identifier = $plan->identifier ?? $plan->name;
+
+        $stripeProduct = $this->stripeRequest(function () use ($plan, $identifier, $idempotencyKey) {
+            return $this->client->products->create([
+                'name' => $plan->name,
+                'metadata' => ['identifier' => $identifier],
+            ], self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, 'product')));
+        });
+
+        $stripePriceData = [
+            'product' => $stripeProduct->id,
+            'unit_amount' => $plan->amount,
+            'currency' => strtolower($plan->currency ?? 'brl'),
+            'recurring' => [
+                'interval' => $plan->interval->value,
+                'interval_count' => $plan->intervalCount ?? 1,
+            ],
+            'lookup_key' => $identifier,
+            'nickname' => $plan->name,
+        ];
+        $stripePriceData = $this->mergeGatewayOptions($stripePriceData, $plan);
+
+        $stripePrice = $this->stripeRequest(function () use ($stripePriceData, $idempotencyKey) {
+            return $this->client->prices->create(
+                $this->withExpand($stripePriceData, self::PRICE_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripePlan($stripePrice, $plan);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Busca pelo `id` (id de Price, prefixo `price_`) ou pelo `identifier` (`lookup_key` do
+     * Price). Um `identifier` com o prefixo `price_` é tratado como id, o que poupa a segunda
+     * busca de `MultiPayment::getPlan()`; identificador sem Price correspondente lança
+     * `NotFoundException`.
+     */
+    public function getPlan(Plan $plan): Plan
+    {
+        if (!empty($plan->id)) {
+            $priceId = $plan->id;
+        } elseif (!empty($plan->identifier)) {
+            if (!str_starts_with($plan->identifier, self::STRIPE_PRICE_ID_PREFIX)) {
+                return $this->parseStripePlan($this->findStripePriceByLookupKey($plan->identifier), $plan);
+            }
+            $priceId = $plan->identifier;
+        } else {
+            throw ModelAttributeValidationException::required('Plan', 'id or identifier');
+        }
+
+        $stripePrice = $this->stripeRequest(function () use ($priceId) {
+            return $this->client->prices->retrieve($priceId, ['expand' => self::PRICE_EXPAND]);
+        });
+
+        return $this->parseStripePlan($stripePrice, $plan);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Lista os Prices recorrentes, ativos e arquivados. A paginação da Stripe é por cursor,
+     * então uma página além da primeira custa uma requisição por página anterior; página além
+     * do fim devolve lista vazia.
+     */
+    public function listPlans(int $page = 1, int $limit = 100): array
+    {
+        if ($page < 1) {
+            throw ModelAttributeValidationException::invalid('Plan', 'page', 'Plan page must be at least 1');
+        }
+
+        if ($limit < 1 || $limit > 100) {
+            throw ModelAttributeValidationException::invalid('Plan', 'limit', 'Plan limit must be between 1 and 100');
+        }
+
+        $stripePrices = $this->stripeListPage(
+            fn (array $params) => $this->client->prices->all($params),
+            ['type' => 'recurring', 'limit' => $limit, 'expand' => ['data.product']],
+            $page
+        );
+
+        return array_map(fn ($stripePrice) => $this->parseStripePlan($stripePrice), $stripePrices);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Arquiva o Price (`active` falso): as assinaturas existentes continuam cobrando e uma
+     * assinatura nova com esse plano é recusada pela Stripe; o Product fica ativo. A chave de
+     * idempotência vai no cabeçalho `Idempotency-Key` da atualização.
+     */
+    public function deactivatePlan(Plan $plan, ?string $idempotencyKey = null): Plan
+    {
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $plan);
+
+        if (!empty($plan->id)) {
+            $priceId = $plan->id;
+        } elseif (!empty($plan->identifier)) {
+            $priceId = $this->resolveStripePriceId($plan->identifier);
+        } else {
+            throw ModelAttributeValidationException::required('Plan', 'id or identifier');
+        }
+
+        $stripePrice = $this->stripeRequest(function () use ($priceId, $idempotencyKey) {
+            return $this->client->prices->update(
+                $priceId,
+                ['active' => false, 'expand' => self::PRICE_EXPAND],
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripePlan($stripePrice, $plan);
+    }
+
+    /**
+     * Converte um Price da Stripe (com o Product expandido, quando veio) num plano do
+     * MultiPayment. O id do plano é o do Price; `identifier` vem de `lookup_key`, senão de
+     * `metadata.identifier` do Product; a moeda volta em maiúsculas, como na leitura da Iugu.
+     *
+     * @param  \Stripe\Price  $stripePrice
+     * @param  Plan|null  $plan
+     * @return Plan
+     */
+    private function parseStripePlan(StripePrice $stripePrice, ?Plan $plan = null): Plan
+    {
+        $plan = $plan ?? new Plan();
+        $stripeProduct = is_object($stripePrice->product ?? null) ? $stripePrice->product : null;
+
+        $plan->id = $stripePrice->id;
+        $plan->identifier = $stripePrice->lookup_key
+            ?? $stripeProduct?->metadata['identifier']
+            ?? $plan->identifier;
+        $plan->name = $stripeProduct?->name ?? $stripePrice->nickname ?? $plan->name;
+        $plan->amount = $stripePrice->unit_amount ?? $plan->amount;
+        $plan->interval = PlanInterval::tryFrom($stripePrice->recurring?->interval ?? '') ?? $plan->interval;
+        $plan->intervalCount = $stripePrice->recurring?->interval_count ?? $plan->intervalCount;
+        $plan->currency = isset($stripePrice->currency) ? strtoupper($stripePrice->currency) : $plan->currency;
+        $plan->active = $stripePrice->active ?? $plan->active;
+        $plan->gateway = 'stripe';
+        $plan->original = $stripePrice;
+
+        return $plan;
+    }
+
+    /**
+     * Busca o Price de um `lookup_key`, com o Product expandido. A Stripe responde 200 com a
+     * lista vazia quando o identificador não existe; a lista vazia é traduzida em
+     * `NotFoundException`, como um 404 seria.
+     *
+     * @param  string  $lookupKey
+     * @return \Stripe\Price
+     * @throws NotFoundException|GatewayException|GatewayNotAvailableException
+     */
+    private function findStripePriceByLookupKey(string $lookupKey): StripePrice
+    {
+        $stripePrices = $this->stripeRequest(function () use ($lookupKey) {
+            return $this->client->prices->all([
+                'lookup_keys' => [$lookupKey],
+                'limit' => 1,
+                'expand' => ['data.product'],
+            ]);
+        });
+
+        $stripePrice = $stripePrices->data[0] ?? null;
+        if (is_null($stripePrice)) {
+            throw new NotFoundException("No plan found with identifier [{$lookupKey}] on stripe.");
+        }
+
+        return $stripePrice;
+    }
+
+    /**
+     * Resolve o plano apontado pelo consumidor para um id de Price: um valor com o prefixo
+     * `price_` já é o id; outro valor é procurado como `lookup_key`.
+     *
+     * @param  string  $planId
+     * @return string
+     * @throws NotFoundException|GatewayException|GatewayNotAvailableException
+     */
+    private function resolveStripePriceId(string $planId): string
+    {
+        if (str_starts_with($planId, self::STRIPE_PRICE_ID_PREFIX)) {
+            return $planId;
+        }
+
+        return $this->findStripePriceByLookupKey($planId)->id;
+    }
+
+    /**
+     * Uma página de uma lista da Stripe no modelo página e limite do pacote. A Stripe pagina
+     * por cursor (`starting_after`), então as páginas anteriores à pedida são percorridas, uma
+     * requisição por página. Devolve os objetos da página, vazia quando a lista acabou antes.
+     *
+     * @param  callable  $fetch  recebe os parâmetros da listagem e devolve a `\Stripe\Collection`
+     * @param  array  $params
+     * @param  int  $page
+     * @return array
+     */
+    private function stripeListPage(callable $fetch, array $params, int $page): array
+    {
+        for ($current = 1; ; $current++) {
+            $collection = $this->stripeRequest(fn () => $fetch($params));
+            $data = $collection->data ?? [];
+            if ($current === $page) {
+                return $data;
+            }
+            if (empty($data) || empty($collection->has_more)) {
+                return [];
+            }
+            $params['starting_after'] = end($data)->id;
+        }
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * O plano (`planId`) é o `lookup_key` ou o id de um Price. Itens extras viram subscription
+     * items com Price criado sob demanda no intervalo do plano (um Product e um Price novos
+     * por item); item com `recurring` falso vai como item avulso da primeira fatura. O cartão
+     * de `creditCard` vira o `default_payment_method` da assinatura, sem mudar o cartão
+     * padrão do cliente; cartão sem `id` é salvo antes pelo fluxo de SetupIntent, e um
+     * emissor que exija autenticação interrompe a criação com `ChargingException`
+     * (`AUTHENTICATION_REQUIRED`). Com cartão ou sem método informado, a primeira fatura é
+     * cobrada na criação e a recusa sobe como `ChargingException` (`payment_behavior`
+     * `error_if_incomplete`); com Pix a assinatura nasce com a primeira fatura em aberto até o
+     * pagamento (`default_incomplete`), lida em `latestInvoice`, com a página hospedada em
+     * `url` para o pagador quitar. Boleto em
+     * assinatura ainda não está implementado neste driver, e desconto em `discounts` é
+     * recusado antes da rede (`NATIVE_COUPONS`). Os dias de `trialDays` vão como
+     * `trial_period_days`, que não muda entre tentativas com a mesma chave de idempotência;
+     * o model devolvido traz a data em `trialEndsAt` e `trialDays` zerado. `nextBillingAt`
+     * vira `billing_cycle_anchor`.
+     *
+     * A chave de idempotência vai no cabeçalho `Idempotency-Key` da criação; as requisições
+     * secundárias usam derivadas (`{chave}:card` no cartão salvo antes,
+     * `{chave}:item{N}_product` no Product de cada item extra).
+     *
+     * @throws ChargingException|NotFoundException|UnsupportedOperationException
+     */
+    public function createSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
+    {
+        $this->assertSupportsAll($subscription->requiredCapabilities());
+        if (empty($subscription->customer) || empty($subscription->customer->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'customer');
+        }
+        if (empty($subscription->planId)) {
+            throw ModelAttributeValidationException::required('Subscription', 'planId');
+        }
+        $this->assertSubscriptionHasNoDiscounts($subscription);
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $paymentMethod = $this->subscriptionPaymentMethod($subscription);
+        $priceId = $this->resolveStripePriceId($subscription->planId);
+
+        $stripeSubscriptionData = [
+            'customer' => $subscription->customer->id,
+            'items' => [['price' => $priceId]],
+            'collection_method' => 'charge_automatically',
+            'payment_behavior' => $paymentMethod === PaymentMethod::PIX ? 'default_incomplete' : 'error_if_incomplete',
+        ];
+
+        if (!is_null($paymentMethod)) {
+            $stripeSubscriptionData['payment_settings'] = [
+                'payment_method_types' => [self::paymentMethodToStripeType($paymentMethod)],
+            ];
+        }
+
+        $defaultPaymentMethodId = $this->applyStripeSubscriptionCard($subscription, $idempotencyKey);
+        if (!is_null($defaultPaymentMethodId)) {
+            $stripeSubscriptionData['default_payment_method'] = $defaultPaymentMethodId;
+        }
+
+        $trialDays = null;
+        if (empty($subscription->trialEndsAt) && !empty($subscription->trialDays)) {
+            $trialDays = $subscription->trialDays;
+            $stripeSubscriptionData['trial_period_days'] = $trialDays;
+        } elseif (!empty($subscription->trialEndsAt)) {
+            $stripeSubscriptionData['trial_end'] = $subscription->trialEndsAt->getTimestamp();
+        }
+
+        if (!empty($subscription->nextBillingAt)) {
+            $stripeSubscriptionData['billing_cycle_anchor'] = $subscription->nextBillingAt->getTimestamp();
+        }
+
+        $itemsData = $this->subscriptionItemsData($subscription->items ?? [], $priceId, $idempotencyKey);
+        $stripeSubscriptionData['items'] = array_merge($stripeSubscriptionData['items'], $itemsData['items']);
+        if (!empty($itemsData['add_invoice_items'])) {
+            $stripeSubscriptionData['add_invoice_items'] = $itemsData['add_invoice_items'];
+        }
+
+        if (!empty($subscription->metadata)) {
+            $stripeSubscriptionData['metadata'] = $subscription->metadata;
+        }
+
+        $stripeSubscriptionData = $this->mergeGatewayOptions($stripeSubscriptionData, $subscription);
+
+        $stripeSubscription = $this->stripeRequest(function () use ($stripeSubscriptionData, $idempotencyKey) {
+            return $this->client->subscriptions->create(
+                $this->withExpand($stripeSubscriptionData, self::SUBSCRIPTION_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        if (!is_null($trialDays)) {
+            $subscription->trialDays = null;
+        }
+
+        return $this->parseStripeSubscription($stripeSubscription, $subscription, true);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * `latestInvoice` volta lido por inteiro (`parseFromStripeInvoice()`), o que custa a
+     * leitura da fatura além da assinatura.
+     */
+    public function getSubscription(Subscription $subscription): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $stripeSubscription = $this->stripeRequest(function () use ($subscription) {
+            return $this->client->subscriptions->retrieve(
+                $subscription->id,
+                ['expand' => self::SUBSCRIPTION_EXPAND]
+            );
+        });
+
+        return $this->parseStripeSubscription($stripeSubscription, $subscription, true);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Escreve o cartão (`default_payment_method`), o método de pagamento
+     * (`payment_settings`), o trial (`trial_end`; os dias de `trialDays` viram a data agora),
+     * `metadata` e os itens. `nextBillingAt` diferente do que veio do gateway é recusado: a
+     * Stripe não aceita mudar a data da próxima cobrança fora do ciclo. Nos itens, item novo
+     * cria Price sob demanda, item com `id` tem a quantidade atualizada e mantém o Price, e a
+     * troca não gera pró-rata (`proration_behavior` `none`). Desconto é recusado antes da
+     * rede (`NATIVE_COUPONS`). A chave de idempotência vai no cabeçalho da atualização e,
+     * derivada, nas requisições que a antecedem (`{chave}:card`, `{chave}:item{N}_product`).
+     *
+     * @throws ChargingException|UnsupportedOperationException
+     */
+    public function updateSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+        $this->assertSubscriptionHasNoDiscounts($subscription);
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $data = [];
+
+        // o método é validado antes de o cartão ser salvo, para a recusa (boleto, mais de um
+        // método, cartão fora da lista) não deixar um cartão anexado ao cliente
+        $paymentMethod = $this->subscriptionPaymentMethod($subscription);
+
+        $defaultPaymentMethodId = $this->applyStripeSubscriptionCard($subscription, $idempotencyKey);
+        if (!is_null($defaultPaymentMethodId)) {
+            $data['default_payment_method'] = $defaultPaymentMethodId;
+        }
+
+        if (!is_null($paymentMethod) && !$this->isOriginalStripePaymentMethod($subscription, $paymentMethod)) {
+            $data['payment_settings'] = [
+                'payment_method_types' => [self::paymentMethodToStripeType($paymentMethod)],
+            ];
+        }
+
+        // a atualização só aceita a data do fim do trial, então os dias viram a data agora
+        if (empty($subscription->trialEndsAt) && !empty($subscription->trialDays)) {
+            $subscription->trialEndsAt = Carbon::now()->addDays($subscription->trialDays);
+            $subscription->trialDays = null;
+        }
+        if (!empty($subscription->trialEndsAt) && !$this->isOriginalStripeTrialEnd($subscription)) {
+            $data['trial_end'] = $subscription->trialEndsAt->getTimestamp();
+        }
+
+        $this->assertNextBillingAtIsUnchanged($subscription);
+
+        if (!is_null($subscription->items)) {
+            $declared = $this->declarativeStripeItems($subscription, $idempotencyKey);
+            if (!empty($declared['items'])) {
+                $data['items'] = $declared['items'];
+                $data['proration_behavior'] = 'none';
+            }
+            if (!empty($declared['add_invoice_items'])) {
+                $data['add_invoice_items'] = $declared['add_invoice_items'];
+            }
+        }
+
+        if (!empty($subscription->metadata)) {
+            $data['metadata'] = $subscription->metadata;
+        }
+
+        $data = $this->mergeGatewayOptions($data, $subscription);
+
+        $stripeSubscription = $this->stripeRequest(function () use ($subscription, $data, $idempotencyKey) {
+            return $this->client->subscriptions->update(
+                $subscription->id,
+                $this->withExpand($data, self::SUBSCRIPTION_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripeSubscription($stripeSubscription, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Pausa a cobrança (`pause_collection` com `behavior` `void`): a assinatura continua
+     * existindo na Stripe e lê como `PAUSED` nesta lib, e as faturas dos ciclos pausados são
+     * anuladas. A chave de idempotência vai no cabeçalho `Idempotency-Key` da atualização.
+     */
+    public function suspendSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $stripeSubscription = $this->stripeRequest(function () use ($subscription, $idempotencyKey) {
+            return $this->client->subscriptions->update(
+                $subscription->id,
+                $this->withExpand(['pause_collection' => ['behavior' => 'void']], self::SUBSCRIPTION_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripeSubscription($stripeSubscription, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Desfaz a pausa (`pause_collection`) e o cancelamento agendado (`cancel_at_period_end`)
+     * numa única atualização. Assinatura cancelada de vez (`CANCELED`) não volta na Stripe: a
+     * atualização é recusada pelo gateway e chega como `ValidationException`. A chave de
+     * idempotência vai no cabeçalho `Idempotency-Key` da atualização.
+     */
+    public function resumeSubscription(Subscription $subscription, ?string $idempotencyKey = null): Subscription
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $stripeSubscription = $this->stripeRequest(function () use ($subscription, $idempotencyKey) {
+            return $this->client->subscriptions->update(
+                $subscription->id,
+                $this->withExpand([
+                    'pause_collection' => '',
+                    'cancel_at_period_end' => false,
+                ], self::SUBSCRIPTION_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripeSubscription($stripeSubscription, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Sem `atPeriodEnd`, cancela na hora (a assinatura lê como `CANCELED` e não volta). Com
+     * `atPeriodEnd`, grava `cancel_at_period_end`: a assinatura segue ativa até o fim do
+     * período pago e o model volta com `cancelAtPeriodEnd` e `canceledAt` preenchidos;
+     * `resumeSubscription()` desfaz. A chave de idempotência vai no cabeçalho das duas formas
+     * (no cancelamento imediato, um `DELETE`, a Stripe a ignora).
+     */
+    public function cancelSubscription(
+        Subscription $subscription,
+        bool $atPeriodEnd = false,
+        ?string $idempotencyKey = null
+    ): Subscription {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $stripeSubscription = $this->stripeRequest(function () use ($subscription, $atPeriodEnd, $idempotencyKey) {
+            if ($atPeriodEnd) {
+                return $this->client->subscriptions->update(
+                    $subscription->id,
+                    $this->withExpand(['cancel_at_period_end' => true], self::SUBSCRIPTION_EXPAND),
+                    self::stripeOptions($idempotencyKey)
+                );
+            }
+
+            return $this->client->subscriptions->cancel(
+                $subscription->id,
+                ['expand' => self::SUBSCRIPTION_EXPAND],
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseStripeSubscription($stripeSubscription, $subscription);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * A troca escreve o Price novo no item do plano. `CHARGE_DIFFERENCE` vai como
+     * `always_invoice` (a pró-rata é faturada e cobrada na hora, e a fatura volta em
+     * `latestInvoice`); `NONE` como `none`; `CREDIT` como `create_prorations` (crédito e
+     * cobrança proporcionais ficam para a próxima fatura). `nextBillingAt` diferente do que
+     * veio do gateway é recusado: a Stripe não aceita mudar a data da próxima cobrança na
+     * troca. A chave de idempotência vai no cabeçalho da atualização; a leitura que acha o
+     * item do plano não a usa.
+     *
+     * @throws NotFoundException|UnsupportedOperationException
+     */
+    public function changeSubscriptionPlan(
+        Subscription $subscription,
+        string $planId,
+        ProrationBehavior|bool $proration = ProrationBehavior::CHARGE_DIFFERENCE,
+        ?string $idempotencyKey = null,
+        ?bool $charge = null
+    ): Subscription {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+        $proration = ProrationBehavior::resolve($charge ?? $proration);
+        if (!is_null($proration->requiredCapability())) {
+            $this->assertSupports($proration->requiredCapability());
+        }
+        $this->assertNextBillingAtIsUnchanged($subscription);
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $subscription);
+
+        $priceId = $this->resolveStripePriceId($planId);
+        $planItem = $this->currentStripePlanItem($subscription);
+
+        $stripeSubscription = $this->stripeRequest(function () use ($subscription, $planItem, $priceId, $proration, $idempotencyKey) {
+            return $this->client->subscriptions->update(
+                $subscription->id,
+                $this->withExpand([
+                    'items' => [['id' => $planItem->id, 'price' => $priceId]],
+                    'proration_behavior' => ProrationBehaviors::toStripe($proration),
+                ], self::SUBSCRIPTION_EXPAND),
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        $subscription->planId = $planId;
+
+        return $this->parseStripeSubscription(
+            $stripeSubscription,
+            $subscription,
+            $proration === ProrationBehavior::CHARGE_DIFFERENCE
+        );
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Usa a prévia de fatura da Stripe (`invoices.create_preview`) com o item do plano
+     * apontando o Price novo e `always_invoice`, o mesmo fluxo de
+     * `ProrationBehavior::CHARGE_DIFFERENCE`; as linhas voltam reais em `items`, com o
+     * crédito do período não usado em `price` negativo. `effectiveAt` é o fim de período da
+     * linha mais distante, quando acontece a próxima cobrança normal; `appliesImmediately` é
+     * verdadeiro, porque a Stripe aplica o plano novo na hora, independente do pagamento.
+     * Além da prévia, custa a leitura da assinatura (o item do plano) e, quando `planId` é um
+     * identificador, a busca do Price.
+     */
+    public function previewSubscriptionPlanChange(Subscription $subscription, string $planId): SubscriptionPlanChange
+    {
+        if (empty($subscription->id)) {
+            throw ModelAttributeValidationException::required('Subscription', 'id');
+        }
+
+        $priceId = $this->resolveStripePriceId($planId);
+        $planItem = $this->currentStripePlanItem($subscription);
+
+        $preview = $this->stripeRequest(function () use ($subscription, $planItem, $priceId) {
+            return $this->client->invoices->createPreview([
+                'subscription' => $subscription->id,
+                'subscription_details' => [
+                    'items' => [['id' => $planItem->id, 'price' => $priceId]],
+                    'proration_behavior' => 'always_invoice',
+                ],
+            ]);
+        });
+
+        $planChange = new SubscriptionPlanChange();
+        $planChange->amount = $preview->total ?? null;
+        $items = [];
+        $effectiveAt = null;
+        foreach ($preview->lines->data ?? [] as $line) {
+            $invoiceItem = new InvoiceItem();
+            $invoiceItem->description = $line->description ?? null;
+            $invoiceItem->quantity = isset($line->quantity) ? (int) $line->quantity : 1;
+            // usa o valor total da linha, que carrega o sinal: a linha de crédito vem negativa
+            $amount = isset($line->amount) ? (int) $line->amount : null;
+            $invoiceItem->price = $amount;
+            if (!is_null($amount) && $invoiceItem->quantity > 1) {
+                if ($amount % $invoiceItem->quantity === 0) {
+                    $invoiceItem->price = intdiv($amount, $invoiceItem->quantity);
+                } else {
+                    // valor que não divide pela quantidade vira uma linha de valor total,
+                    // para a soma dos itens continuar igual a amount
+                    $invoiceItem->quantity = 1;
+                }
+            }
+            $items[] = $invoiceItem;
+
+            $periodEnd = $line->period->end ?? null;
+            if (!empty($periodEnd) && (is_null($effectiveAt) || $periodEnd > $effectiveAt)) {
+                $effectiveAt = $periodEnd;
+            }
+        }
+        $planChange->items = $items;
+        if (!is_null($effectiveAt)) {
+            $planChange->effectiveAt = Carbon::createFromTimestamp($effectiveAt);
+        }
+        $planChange->appliesImmediately = true;
+        $planChange->gateway = 'stripe';
+        $planChange->original = $preview;
+
+        return $planChange;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Traz assinaturas em qualquer status (`status` `all`), sem `latestInvoice` (use
+     * `getSubscription()` para a fatura). A paginação da Stripe é por cursor, então uma
+     * página além da primeira custa uma requisição por página anterior.
+     */
+    public function listSubscriptions(Customer $customer, int $page = 1, int $limit = 100): array
+    {
+        if (empty($customer->id)) {
+            throw ModelAttributeValidationException::required('Customer', 'id');
+        }
+
+        if ($page < 1) {
+            throw ModelAttributeValidationException::invalid('Subscription', 'page', 'Subscription page must be at least 1');
+        }
+
+        if ($limit < 1 || $limit > 100) {
+            throw ModelAttributeValidationException::invalid('Subscription', 'limit', 'Subscription limit must be between 1 and 100');
+        }
+
+        $stripeSubscriptions = $this->stripeListPage(
+            fn (array $params) => $this->client->subscriptions->all($params),
+            [
+                'customer' => $customer->id,
+                'status' => 'all',
+                'limit' => $limit,
+                'expand' => ['data.default_payment_method'],
+            ],
+            $page
+        );
+
+        return array_map(
+            fn ($stripeSubscription) => $this->parseStripeSubscription($stripeSubscription),
+            $stripeSubscriptions
+        );
+    }
+
+    /**
+     * Resolve o único método de pagamento da assinatura, como `invoicePaymentMethod()` faz
+     * para a fatura; nulo quando o model não aponta método (a Stripe cobra o método padrão do
+     * cliente). Mais de um método é recusado (`MULTIPLE_PAYMENT_METHODS`), e um método que o
+     * driver ainda não cobre em assinatura (boleto) também (`BANK_SLIP`).
+     *
+     * @param  Subscription  $subscription
+     * @return PaymentMethod|null
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     */
+    private function subscriptionPaymentMethod(Subscription $subscription): ?PaymentMethod
+    {
+        $methods = $subscription->resolvedPaymentMethods();
+
+        if (count($methods) > 1) {
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::MULTIPLE_PAYMENT_METHODS,
+                'Informe exatamente um método em availablePaymentMethods.'
+            );
+        }
+
+        $method = empty($methods) ? null : reset($methods);
+        if (!is_null($method) && $method !== PaymentMethod::CREDIT_CARD && $method !== PaymentMethod::PIX) {
+            throw UnsupportedOperationException::forGateway($this, Capability::forPaymentMethod($method));
+        }
+
+        return $method;
+    }
+
+    /**
+     * Tipo de PaymentMethod da Stripe para um método do pacote (o inverso de
+     * `PAYMENT_METHOD_TYPES`).
+     *
+     * @param  PaymentMethod  $paymentMethod
+     * @return string
+     */
+    private static function paymentMethodToStripeType(PaymentMethod $paymentMethod): string
+    {
+        return (string) array_search($paymentMethod, self::PAYMENT_METHOD_TYPES, true);
+    }
+
+    /**
+     * Recusa antes da rede uma assinatura com descontos: o cupom da Stripe (Coupon) está
+     * planejado para uma versão futura desta lib (`NATIVE_COUPONS`).
+     *
+     * @param  Subscription  $subscription
+     * @return void
+     * @throws UnsupportedOperationException
+     */
+    private function assertSubscriptionHasNoDiscounts(Subscription $subscription): void
+    {
+        if (!empty($subscription->discounts)) {
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::NATIVE_COUPONS,
+                'Desconto de assinatura no Stripe está planejado para uma versão futura desta lib.'
+            );
+        }
+    }
+
+    /**
+     * Cartão que a assinatura cobra: devolve o id do PaymentMethod para
+     * `default_payment_method`. Cartão sem `id` é salvo antes por `createCreditCard()` (chave
+     * derivada `{chave}:card`); um emissor que exija autenticação do pagador interrompe a
+     * operação com `ChargingException` (`AUTHENTICATION_REQUIRED`), com o SetupIntent em
+     * `chargeResponse`; conclua com `confirmCreditCardSetup()` e use o id do cartão salvo. O
+     * cartão padrão do cliente não muda (na Iugu muda, porque lá a assinatura não tem cartão
+     * próprio). Sem cartão no model devolve nulo.
+     *
+     * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey
+     * @return string|null
+     * @throws ChargingException|ModelAttributeValidationException
+     */
+    private function applyStripeSubscriptionCard(Subscription $subscription, ?string $idempotencyKey): ?string
+    {
+        $creditCard = $subscription->creditCard;
+        if (empty($creditCard)) {
+            return null;
+        }
+        if (!empty($creditCard->id)) {
+            return $creditCard->id;
+        }
+
+        if (empty($creditCard->customer)) {
+            $creditCard->customer = $subscription->customer;
+        }
+        $subscription->creditCard = $this->createCreditCard(
+            $creditCard,
+            self::derivedIdempotencyKey($idempotencyKey, 'card')
+        );
+        if ($subscription->creditCard->requiresAction) {
+            $exception = ChargingException::declined(
+                'stripe',
+                DeclineCode::AUTHENTICATION_REQUIRED,
+                'authentication_required',
+                'O emissor exige autenticação do pagador para este cartão; salve-o com createCreditCard(),'
+                . ' conclua a autenticação com confirmCreditCardSetup() e use o id do cartão salvo na assinatura.'
+            );
+            $exception->chargeResponse = $subscription->creditCard->original?->toArray();
+
+            throw $exception;
+        }
+
+        return $subscription->creditCard->id;
+    }
+
+    /**
+     * Payload dos itens extras da assinatura: item com `recurring` verdadeiro vira um
+     * subscription item com Price recorrente criado sob demanda no intervalo do plano; item
+     * com `recurring` falso vira um item avulso da primeira fatura (`add_invoice_items`).
+     * Cada item cria um Product no Stripe (`price_data` exige um Product existente), com a
+     * chave derivada `{chave}:item{N}_product`.
+     *
+     * @param  SubscriptionItem[]  $items
+     * @param  string  $planPriceId
+     * @param  string|null  $idempotencyKey
+     * @return array{items: array, add_invoice_items: array}
+     * @throws ModelAttributeValidationException
+     */
+    private function subscriptionItemsData(array $items, string $planPriceId, ?string $idempotencyKey): array
+    {
+        $data = ['items' => [], 'add_invoice_items' => []];
+        $recurring = null;
+
+        foreach (array_values($items) as $index => $item) {
+            if (empty($item->description)) {
+                throw ModelAttributeValidationException::required('SubscriptionItem', 'description');
+            }
+            if (is_null($item->amount)) {
+                throw ModelAttributeValidationException::required('SubscriptionItem', 'amount');
+            }
+
+            $stripeProduct = $this->stripeRequest(function () use ($item, $index, $idempotencyKey) {
+                return $this->client->products->create(
+                    ['name' => $item->description],
+                    self::stripeOptions(self::derivedIdempotencyKey($idempotencyKey, "item{$index}_product"))
+                );
+            });
+
+            $priceData = [
+                'currency' => 'brl',
+                'product' => $stripeProduct->id,
+                'unit_amount' => $item->amount,
+            ];
+
+            if ($item->recurring) {
+                // todo item recorrente precisa do mesmo intervalo de cobrança do plano
+                $recurring = $recurring ?? $this->stripePriceRecurring($planPriceId);
+                $priceData['recurring'] = $recurring;
+                $data['items'][] = ['price_data' => $priceData, 'quantity' => $item->quantity ?? 1];
+            } else {
+                $data['add_invoice_items'][] = ['price_data' => $priceData, 'quantity' => $item->quantity ?? 1];
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Intervalo de cobrança de um Price, no formato de `price_data.recurring`.
+     *
+     * @param  string  $priceId
+     * @return array{interval: string, interval_count: int}
+     */
+    private function stripePriceRecurring(string $priceId): array
+    {
+        $stripePrice = $this->stripeRequest(function () use ($priceId) {
+            return $this->client->prices->retrieve($priceId);
+        });
+
+        return [
+            'interval' => $stripePrice->recurring->interval ?? 'month',
+            'interval_count' => $stripePrice->recurring->interval_count ?? 1,
+        ];
+    }
+
+    /**
+     * Itens da atualização declarativa: os subscription items atuais fora da lista desejada
+     * são removidos (o item do plano fica), item com `id` tem a quantidade atualizada e item
+     * novo cria Price sob demanda no intervalo do plano; item com `recurring` falso vai como
+     * item avulso da próxima fatura. Faz um GET na assinatura para conhecer o estado atual.
+     *
+     * @param  Subscription  $subscription
+     * @param  string|null  $idempotencyKey
+     * @return array{items: array, add_invoice_items: array}
+     */
+    private function declarativeStripeItems(Subscription $subscription, ?string $idempotencyKey): array
+    {
+        $current = $this->stripeRequest(function () use ($subscription) {
+            return $this->client->subscriptions->retrieve($subscription->id);
+        });
+        $currentItems = $current->items->data ?? [];
+        $planItem = self::stripePlanItem($currentItems, $subscription->planId);
+        if (is_null($planItem) || empty($planItem->price->id ?? null)) {
+            throw new NotFoundException("No plan item found on subscription [{$subscription->id}] on stripe.");
+        }
+
+        $keptIds = [];
+        foreach ($subscription->items as $item) {
+            if (!empty($item->id)) {
+                $keptIds[] = (string) $item->id;
+            }
+        }
+
+        $entries = [];
+        foreach ($currentItems as $stripeItem) {
+            $id = $stripeItem->id ?? null;
+            if (empty($id) || $id === ($planItem->id ?? null) || in_array((string) $id, $keptIds, true)) {
+                continue;
+            }
+            $entries[] = ['id' => $id, 'deleted' => true];
+        }
+
+        $newItems = [];
+        foreach ($subscription->items as $item) {
+            if (!empty($item->id)) {
+                if (!is_null($item->quantity)) {
+                    $entries[] = ['id' => $item->id, 'quantity' => $item->quantity];
+                }
+                continue;
+            }
+            $newItems[] = $item;
+        }
+
+        $created = $this->subscriptionItemsData($newItems, $planItem->price->id, $idempotencyKey);
+
+        return [
+            'items' => array_merge($entries, $created['items']),
+            'add_invoice_items' => $created['add_invoice_items'],
+        ];
+    }
+
+    /**
+     * Item do plano da assinatura, lido do gateway.
+     *
+     * @param  Subscription  $subscription
+     * @return object
+     * @throws NotFoundException|GatewayException|GatewayNotAvailableException
+     */
+    private function currentStripePlanItem(Subscription $subscription): object
+    {
+        $current = $this->stripeRequest(function () use ($subscription) {
+            return $this->client->subscriptions->retrieve($subscription->id);
+        });
+
+        $planItem = self::stripePlanItem($current->items->data ?? [], $subscription->planId);
+        if (is_null($planItem) || empty($planItem->id)) {
+            throw new NotFoundException("No plan item found on subscription [{$subscription->id}] on stripe.");
+        }
+
+        return $planItem;
+    }
+
+    /**
+     * Item do plano entre os subscription items: o que aponta o Price cujo `lookup_key` ou id
+     * é o `planId` conhecido. Sem correspondência, o único item cujo Price tem `lookup_key`
+     * (os Prices criados sob demanda para itens extras não têm um); em último caso, o item
+     * mais antigo, porque o do plano nasce com a assinatura e os extras entram depois.
+     *
+     * @param  array  $stripeItems
+     * @param  string|null  $planId
+     * @return object|null
+     */
+    private static function stripePlanItem(array $stripeItems, ?string $planId): ?object
+    {
+        if (!is_null($planId)) {
+            foreach ($stripeItems as $stripeItem) {
+                $price = $stripeItem->price ?? null;
+                if (($price->lookup_key ?? null) === $planId || ($price->id ?? null) === $planId) {
+                    return $stripeItem;
+                }
+            }
+        }
+
+        $withLookupKey = array_values(array_filter(
+            $stripeItems,
+            static fn ($stripeItem) => !empty($stripeItem->price->lookup_key ?? null)
+        ));
+        if (count($withLookupKey) === 1) {
+            return $withLookupKey[0];
+        }
+
+        $oldest = null;
+        foreach ($stripeItems as $stripeItem) {
+            if (is_null($oldest) || ($stripeItem->created ?? PHP_INT_MAX) < ($oldest->created ?? PHP_INT_MAX)) {
+                $oldest = $stripeItem;
+            }
+        }
+
+        return $oldest;
+    }
+
+    /**
+     * Recusa `nextBillingAt` diferente do que veio do gateway: fora da criação, a Stripe não
+     * aceita uma data arbitrária de próxima cobrança (a restrição consultável de
+     * `SUBSCRIPTIONS`). Um model lido do gateway, com a data que ele mesmo devolveu, passa.
+     *
+     * @param  Subscription  $subscription
+     * @return void
+     * @throws UnsupportedOperationException
+     */
+    private function assertNextBillingAtIsUnchanged(Subscription $subscription): void
+    {
+        if (empty($subscription->nextBillingAt)) {
+            return;
+        }
+
+        $original = $subscription->original->items->data ?? [];
+        $planItem = self::stripePlanItem(is_array($original) ? $original : [], $subscription->planId);
+        $originalPeriodEnd = $planItem->current_period_end ?? null;
+        // igualdade exata: a leitura preenche nextBillingAt com este mesmo timestamp, então
+        // qualquer diferença é uma mudança pedida pelo consumidor
+        if (!empty($originalPeriodEnd) && (int) $originalPeriodEnd === $subscription->nextBillingAt->getTimestamp()) {
+            return;
+        }
+
+        throw UnsupportedOperationException::restricted(
+            (string) $this,
+            Capability::SUBSCRIPTIONS,
+            'A Stripe não aceita definir a data da próxima cobrança de uma assinatura existente;'
+            . ' nextBillingAt vale só na criação (billing_cycle_anchor).'
+        );
+    }
+
+    /**
+     * Diz se o método informado é o mesmo que veio do gateway na leitura
+     * (`payment_settings.payment_method_types`).
+     *
+     * @param  Subscription  $subscription
+     * @param  PaymentMethod  $paymentMethod
+     * @return bool
+     */
+    private function isOriginalStripePaymentMethod(Subscription $subscription, PaymentMethod $paymentMethod): bool
+    {
+        $original = $subscription->original->payment_settings->payment_method_types ?? null;
+
+        return is_array($original) && $original === [self::paymentMethodToStripeType($paymentMethod)];
+    }
+
+    /**
+     * Diz se o fim do trial informado é o mesmo que veio do gateway na leitura (`trial_end`).
+     *
+     * @param  Subscription  $subscription
+     * @return bool
+     */
+    private function isOriginalStripeTrialEnd(Subscription $subscription): bool
+    {
+        $original = $subscription->original->trial_end ?? null;
+
+        return !empty($original) && (int) $original === $subscription->trialEndsAt->getTimestamp();
+    }
+
+    /**
+     * Converte a Subscription da Stripe numa assinatura do MultiPayment.
+     *
+     * O item cujo Price é o plano (`stripePlanItem()`) dá o `planId` (`lookup_key`, senão o
+     * id do Price) e a próxima cobrança (`current_period_end`); os demais itens viram
+     * `items`, e `amount` é a soma dos itens por ciclo. `paymentMethod` vem do PaymentMethod
+     * padrão expandido, senão do único tipo em `payment_settings`. Com $withLatestInvoice, a
+     * fatura mais recente é lida por inteiro (`parseFromStripeInvoice()`), uma leitura a
+     * mais.
+     *
+     * @param  \Stripe\Subscription  $stripeSubscription
+     * @param  Subscription|null  $subscription
+     * @param  bool  $withLatestInvoice
+     * @return Subscription
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function parseStripeSubscription(
+        StripeSubscription $stripeSubscription,
+        ?Subscription $subscription = null,
+        bool $withLatestInvoice = false
+    ): Subscription {
+        $subscription = $subscription ?? new Subscription();
+
+        $subscription->id = $stripeSubscription->id ?? $subscription->id;
+        $subscription->status = SubscriptionStatuses::toSubscriptionStatus($stripeSubscription);
+
+        $stripeItems = $stripeSubscription->items->data ?? [];
+        $planItem = self::stripePlanItem($stripeItems, $subscription->planId);
+        $planPrice = $planItem->price ?? null;
+        $subscription->planId = $planPrice->lookup_key ?? $planPrice->id ?? $subscription->planId;
+
+        $amount = 0;
+        $hasAmount = false;
+        $items = [];
+        foreach ($stripeItems as $stripeItem) {
+            $unitAmount = $stripeItem->price->unit_amount ?? null;
+            $quantity = (int) ($stripeItem->quantity ?? 1);
+            if (!is_null($unitAmount)) {
+                $amount += $unitAmount * $quantity;
+                $hasAmount = true;
+            }
+            if (($stripeItem->id ?? null) === ($planItem->id ?? null)) {
+                continue;
+            }
+            $items[] = $this->parseStripeSubscriptionItem($stripeItem);
+        }
+        if ($hasAmount) {
+            $subscription->amount = $amount;
+        }
+        if (!empty($stripeItems)) {
+            $subscription->items = $items;
+        }
+
+        $customerId = is_object($stripeSubscription->customer ?? null)
+            ? $stripeSubscription->customer->id
+            : ($stripeSubscription->customer ?? null);
+        if (!empty($customerId)) {
+            // com um id diferente, manter os atributos antigos produziria um Customer com id
+            // de um e documento de outro
+            if (is_null($subscription->customer) || $subscription->customer->id !== $customerId) {
+                $subscription->customer = new Customer();
+            }
+            $subscription->customer->id = $customerId;
+        }
+
+        if (!empty($planItem->current_period_end ?? null)) {
+            $subscription->nextBillingAt = Carbon::createFromTimestamp($planItem->current_period_end);
+        }
+        if (!empty($stripeSubscription->trial_end ?? null)) {
+            $subscription->trialEndsAt = Carbon::createFromTimestamp($stripeSubscription->trial_end);
+        }
+        $subscription->cancelAtPeriodEnd = (bool) ($stripeSubscription->cancel_at_period_end ?? false);
+        $subscription->canceledAt = !empty($stripeSubscription->canceled_at ?? null)
+            ? Carbon::createFromTimestamp($stripeSubscription->canceled_at)
+            : null;
+        if (!empty($stripeSubscription->created ?? null)) {
+            $subscription->createdAt = Carbon::createFromTimestamp($stripeSubscription->created);
+        }
+
+        if (isset($stripeSubscription->metadata)) {
+            $metadata = $stripeSubscription->metadata;
+            $subscription->metadata = is_object($metadata) && method_exists($metadata, 'toArray')
+                ? $metadata->toArray()
+                : (array) $metadata;
+        }
+
+        $defaultPaymentMethod = $stripeSubscription->default_payment_method ?? null;
+        $method = is_object($defaultPaymentMethod)
+            ? (self::PAYMENT_METHOD_TYPES[$defaultPaymentMethod->type ?? ''] ?? null)
+            : null;
+        $types = $stripeSubscription->payment_settings->payment_method_types ?? null;
+        if (is_array($types)) {
+            $methods = array_values(array_filter(array_map(
+                static fn ($type) => self::PAYMENT_METHOD_TYPES[$type] ?? null,
+                $types
+            )));
+            if (!empty($methods)) {
+                $subscription->availablePaymentMethods = $methods;
+                $method = $method ?? (count($methods) === 1 ? $methods[0] : null);
+            }
+        }
+        if (!is_null($method)) {
+            $subscription->paymentMethod = $method;
+        }
+
+        if ($withLatestInvoice) {
+            $latestInvoiceId = is_object($stripeSubscription->latest_invoice ?? null)
+                ? $stripeSubscription->latest_invoice->id
+                : ($stripeSubscription->latest_invoice ?? null);
+            if (!empty($latestInvoiceId)) {
+                $subscription->latestInvoice = $this->parseInvoice($this->retrieveStripeInvoice($latestInvoiceId));
+            }
+        }
+
+        $subscription->gateway = 'stripe';
+        $subscription->original = $stripeSubscription;
+
+        return $subscription;
+    }
+
+    /**
+     * Converte um subscription item da Stripe (fora o do plano) num item de assinatura. A
+     * descrição vem do Product expandido, senão do apelido do Price.
+     *
+     * @param  object  $stripeItem
+     * @return SubscriptionItem
+     */
+    private function parseStripeSubscriptionItem(object $stripeItem): SubscriptionItem
+    {
+        $price = $stripeItem->price ?? null;
+        $product = is_object($price->product ?? null) ? $price->product : null;
+
+        $item = new SubscriptionItem();
+        $item->id = $stripeItem->id ?? null;
+        $item->description = $product?->name ?? $price->nickname ?? null;
+        $item->amount = $price->unit_amount ?? null;
+        $item->quantity = isset($stripeItem->quantity) ? (int) $stripeItem->quantity : null;
+        $item->recurring = true;
+
+        return $item;
     }
 
     /**

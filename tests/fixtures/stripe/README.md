@@ -60,11 +60,33 @@ O `client_secret` de todas foi substituído por um placeholder.
 
 ## `subscriptions/`
 
-Montadas a partir do objeto Subscription documentado para a API `2026-07-29.dahlia` (a
-sessão de sandbox não criou assinaturas): `active.json` é a base, com um item de preço
-recorrente mensal, e as demais trocam `status` e os campos que acompanham cada estado
-(`trial_start`/`trial_end` em `trialing` e `paused`, `canceled_at`/`ended_at` em `canceled`,
-`ended_at` em `incomplete_expired`). `active_pause_collection.json` é a base com
-`pause_collection` preenchido. Servem ao mapa de status
-(`Gateways\Stripe\SubscriptionStatuses`); quando o driver ler assinatura, regravar a partir da
-sandbox.
+Gravadas na sandbox em 2026-09-04, pelo próprio driver e com o `expand` que ele usa
+(`default_payment_method` e `items.data.price.product`); ids, `lookup_key`, nomes de plano e
+e-mail foram renomeados para os valores estáveis das fixtures (`sub_1UBJmk...`,
+`plano_mensal`...), sem tocar no restante do payload:
+
+| Arquivo | Como foi produzida |
+|---|---|
+| `active.json` | assinatura criada com cartão salvo (`pm_card_visa`) e plano mensal |
+| `active_pause_collection.json` | a mesma assinatura depois de `suspendSubscription()` |
+| `active_cancel_at_period_end.json` | a mesma depois de `cancelSubscription(atPeriodEnd: true)` |
+| `canceled.json` | a mesma depois do cancelamento imediato (já no plano anual, pela troca) |
+| `trialing.json` | assinatura criada com `trialDays` 7 no cartão salvo |
+
+Montadas sobre `active.json` (ou `trialing.json`), porque a sandbox não produz o estado:
+
+| Arquivo | Diferença |
+|---|---|
+| `incomplete.json` | status |
+| `incomplete_expired.json` | status e `ended_at` |
+| `past_due.json` | status |
+| `unpaid.json` | status |
+| `paused.json` | status, sobre `trialing.json` (trial que terminou sem método de pagamento) |
+
+## `webhooks/`
+
+Eventos entregues por `stripe listen` (CLI 1.50.10) numa sessão de sandbox em 2026-09-04, um
+arquivo por tipo, com o corpo cru byte a byte como recebido (o `Stripe-Signature` de cada
+entrega e o signing secret do listener ficam em arquivo fora do git, para o teste de
+verificação de assinatura de uma versão futura validar o corpo exato). `mandate.updated` não
+foi gravado: exige Pix Automático, que a conta ainda não tem liberado.

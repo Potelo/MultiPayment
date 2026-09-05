@@ -8,14 +8,12 @@ use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\MultiPayment;
-use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Enums\Capability;
-use Potelo\MultiPayment\Enums\PlanInterval;
-use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Gateways\IuguGateway;
 use Potelo\MultiPayment\Gateways\StripeGateway;
@@ -61,7 +59,7 @@ class CapabilityGuardsTest extends TestCase
         parent::tearDown();
     }
 
-    public function testSubscriptionCreationOnStripeFailsBeforeCreatingTheCustomer(): void
+    public function testPercentDiscountSubscriptionOnStripeFailsBeforeCreatingTheCustomer(): void
     {
         $customer = new Customer();
         $customer->name = 'Fulano';
@@ -69,72 +67,88 @@ class CapabilityGuardsTest extends TestCase
 
         $builder = (new MultiPayment('stripe'))->newSubscription()
             ->setPlanId('plano_mensal')
-            ->setCustomer($customer);
+            ->setCustomer($customer)
+            ->addPercentDiscount('Promo', 10.0);
 
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $builder->create());
+        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $builder->create());
     }
 
-    public function testSubscriptionDomainMethodsOnStripeFailBeforeTheNetwork(): void
+    public function testBankSlipSubscriptionOnStripeFailsBeforeCreatingTheCustomer(): void
     {
-        $subscription = new Subscription();
-        $subscription->id = 'sub_1';
+        $customer = new Customer();
+        $customer->name = 'Fulano';
+        $customer->email = 'fulano@exemplo.com';
 
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->get('stripe'));
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->suspend('stripe'));
-        foreach (ProrationBehavior::cases() as $proration) {
-            $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->changePlan('plano_anual', $proration, 'stripe'));
-        }
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->previewPlanChange('plano_anual', 'stripe'));
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => (new MultiPayment('stripe'))->getSubscription('sub_1'));
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->resume('stripe'));
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->cancel(false, 'stripe'));
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => (new MultiPayment('stripe'))->listSubscriptions('cus_1'));
+        $builder = (new MultiPayment('stripe'))->newSubscription()
+            ->setPlanId('plano_mensal')
+            ->setCustomer($customer)
+            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP]);
 
-        $existing = new Subscription();
-        $existing->id = 'sub_1';
-        $existing->metadata = ['origem' => 'teste'];
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $existing->save('stripe'));
+        $this->assertNotImplemented(Capability::BANK_SLIP, fn () => $builder->create());
     }
 
     /**
-     * No update, o gateway gravado no model prevalece sobre o informado, como em `Model::save()`.
+     * Desconto simples (`amountOff`) passa pela capability do model (a Iugu o entrega sem
+     * cupom), então o driver Stripe o recusa por conta própria, antes de qualquer requisição.
+     */
+    public function testSubscriptionDiscountsOnStripeAreRefusedBeforeTheNetwork(): void
+    {
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->amountOff = 500;
+
+        $gateway = new StripeGateway();
+
+        $creating = new Subscription();
+        $creating->customer = new Customer();
+        $creating->customer->id = 'cus_1';
+        $creating->planId = 'plano_mensal';
+        $creating->discounts = [$discount];
+        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $gateway->createSubscription($creating));
+
+        $updating = new Subscription();
+        $updating->id = 'sub_1';
+        $updating->discounts = [$discount];
+        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $gateway->updateSubscription($updating));
+    }
+
+    /**
+     * No update, o gateway gravado no model prevalece sobre o informado, como em `Model::save()`:
+     * a recusa vem do stripe gravado no model, com o motivo dele, e a instância da Iugu não é
+     * tocada.
      */
     public function testUpdateUsesTheGatewayStoredInTheModel(): void
     {
         $api = new QueuedIuguApiRequest([]);
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->percentOff = 10.0;
+
         $subscription = new Subscription();
         $subscription->id = 'sub_1';
         $subscription->gateway = 'stripe';
+        $subscription->discounts = [$discount];
 
-        $this->assertNotImplemented(Capability::SUBSCRIPTIONS, fn () => $subscription->save(new IuguGateway($api)));
+        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $subscription->save(new IuguGateway($api)));
         $this->assertCount(0, $api->calls);
     }
 
     /**
-     * `Model::delete()` confere a capability antes de procurar o método de despacho.
+     * `Model::delete()` confere a capability antes de procurar o método de despacho: sem a
+     * guarda, o despacho falharia com `ConfigurationException` por não existir
+     * `deleteSubscription` no driver.
      */
     public function testDeleteChecksTheCapabilityBeforeTheDispatchMethod(): void
     {
-        $plan = new Plan();
-        $plan->id = 'plan_1';
+        $discount = new SubscriptionDiscount();
+        $discount->description = 'Promo';
+        $discount->percentOff = 10.0;
 
-        $this->assertNotImplemented(Capability::PLANS, fn () => $plan->delete('stripe'));
-    }
+        $subscription = new Subscription();
+        $subscription->id = 'sub_1';
+        $subscription->discounts = [$discount];
 
-    public function testPlanOperationsOnStripeFailBeforeTheNetwork(): void
-    {
-        $plan = new Plan();
-        $plan->name = 'Mensal';
-        $plan->amount = 10000;
-        $plan->interval = PlanInterval::MONTH;
-
-        $this->assertNotImplemented(Capability::PLANS, fn () => $plan->save('stripe'));
-
-        $existing = new Plan();
-        $existing->id = 'plan_1';
-        $this->assertNotImplemented(Capability::PLANS, fn () => $existing->get('stripe'));
-        $this->assertNotImplemented(Capability::PLANS, fn () => (new MultiPayment('stripe'))->listPlans());
-        $this->assertNotImplemented(Capability::PLANS, fn () => (new MultiPayment('stripe'))->getPlan('plano_mensal'));
+        $this->assertNotImplemented(Capability::NATIVE_COUPONS, fn () => $subscription->delete('stripe'));
     }
 
     public function testBankSlipChargeOnStripeFailsBeforeCreatingTheCustomer(): void

@@ -1,0 +1,55 @@
+{
+  "id": "evt_1UC6umPjx0CusuMrGf4gkinv",
+  "object": "event",
+  "api_version": "2026-06-24.dahlia",
+  "created": 1788565980,
+  "data": {
+    "object": {
+      "id": "seti_1UC6ulPjx0CusuMrIz23i4LU",
+      "object": "setup_intent",
+      "allowed_payment_method_types": null,
+      "application": null,
+      "automatic_payment_methods": null,
+      "cancellation_reason": null,
+      "client_secret": "seti_1UC6ulPjx0CusuMrIz23i4LU_secret_VCVw5uZoL7ik5vbkWno6DUaVZSQ6PyC",
+      "created": 1788565979,
+      "customer": "cus_VCVwy3d2PYIJXM",
+      "customer_account": null,
+      "description": null,
+      "excluded_payment_method_types": null,
+      "flow_directions": null,
+      "last_setup_error": null,
+      "latest_attempt": "setatt_1UC6umPjx0CusuMrr3p7NAqf",
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "mandate": null,
+      "metadata": {},
+      "next_action": null,
+      "on_behalf_of": null,
+      "payment_method": "pm_1UC6ulPjx0CusuMrE28WKacN",
+      "payment_method_configuration_details": null,
+      "payment_method_options": {
+        "card": {
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "single_use_mandate": null,
+      "status": "succeeded",
+      "usage": "off_session"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_hZLvxAEjK0tthv",
+    "idempotency_key": "3916aebd-c1f6-4804-b691-d04b0db2d6cf"
+  },
+  "type": "setup_intent.succeeded"
+}

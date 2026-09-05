@@ -1,0 +1,137 @@
+{
+  "id": "evt_3UC6vrPjx0CusuMr1Dl0qeMF",
+  "object": "event",
+  "api_version": "2026-06-24.dahlia",
+  "created": 1788566048,
+  "data": {
+    "object": {
+      "id": "ch_3UC6vrPjx0CusuMr1kgZJyoO",
+      "object": "charge",
+      "amount": 5000,
+      "amount_captured": 5000,
+      "amount_refunded": 5000,
+      "application": null,
+      "application_fee": null,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_3UC6vrPjx0CusuMr1NBdNIDz",
+      "billing_details": {
+        "address": {
+          "city": null,
+          "country": null,
+          "line1": null,
+          "line2": null,
+          "postal_code": null,
+          "state": null
+        },
+        "email": null,
+        "name": null,
+        "phone": null,
+        "tax_id": null
+      },
+      "calculated_statement_descriptor": "ESCAVADOR",
+      "captured": true,
+      "created": 1788566047,
+      "currency": "brl",
+      "customer": "cus_VCVxAZQMCHXOt8",
+      "description": null,
+      "destination": null,
+      "dispute": null,
+      "disputed": false,
+      "failure_balance_transaction": null,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "livemode": false,
+      "metadata": {
+        "item_0_description": "Cobranca para estorno",
+        "item_0_price": "5000",
+        "item_0_quantity": "1"
+      },
+      "on_behalf_of": null,
+      "order": null,
+      "outcome": {
+        "advice_code": null,
+        "network_advice_code": null,
+        "network_decline_code": null,
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "risk_score": 25,
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_3UC6vrPjx0CusuMr1p8wB8OF",
+      "payment_method": "pm_1UC6vpPjx0CusuMr1aZb0Cwt",
+      "payment_method_details": {
+        "card": {
+          "amount_authorized": 5000,
+          "authorization_code": "951116",
+          "brand": "visa",
+          "checks": {
+            "address_line1_check": null,
+            "address_postal_code_check": null,
+            "cvc_check": "pass"
+          },
+          "country": "US",
+          "exp_month": 9,
+          "exp_year": 2027,
+          "extended_authorization": {
+            "status": "disabled"
+          },
+          "fingerprint": "BBrG8ENEZUZi7U6k",
+          "funding": "credit",
+          "incremental_authorization": {
+            "status": "unavailable"
+          },
+          "installments": null,
+          "last4": "4242",
+          "mandate": null,
+          "multicapture": {
+            "status": "unavailable"
+          },
+          "network": "visa",
+          "network_token": {
+            "used": false
+          },
+          "network_transaction_id": "666611471566978",
+          "overcapture": {
+            "maximum_amount_capturable": 5000,
+            "status": "unavailable"
+          },
+          "regulated_status": "unregulated",
+          "three_d_secure": null,
+          "transaction_link_id": null,
+          "wallet": null
+        },
+        "type": "card"
+      },
+      "radar_options": {},
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVHpLa1RQangwQ3VzdU1yKKG07dQGMgbSlvgGNGY6LBbYyqpucoFdj3ANQs4FnFI50cTWK_HL1akSX2iD4p7LzjlGrK7Ltqtsf66e",
+      "refunded": true,
+      "review": null,
+      "shipping": null,
+      "source": null,
+      "source_transfer": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    },
+    "previous_attributes": {
+      "amount_refunded": 0,
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVHpLa1RQangwQ3VzdU1yKKC07dQGMgYW4HfsvuQ6LBad9Q3eqcxuoRv3D8BRcW43HwPhLRwQbZQ3DmMX_OdkvrrSUsROV5yD362l",
+      "refunded": false
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_F2cFBYuedq08e7",
+    "idempotency_key": "cd0bd68c-622a-409d-9906-1966de360394"
+  },
+  "type": "charge.refunded"
+}

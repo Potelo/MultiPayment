@@ -1,0 +1,172 @@
+{
+  "id": "evt_1UC6upPjx0CusuMr7t76P2p5",
+  "object": "event",
+  "api_version": "2026-06-24.dahlia",
+  "created": 1788565983,
+  "data": {
+    "object": {
+      "id": "in_1UC6unPjx0CusuMr2Jkqq5Fb",
+      "object": "invoice",
+      "account_country": "BR",
+      "account_name": "Escavador",
+      "account_tax_ids": null,
+      "amount_due": 10000,
+      "amount_overpaid": 0,
+      "amount_paid": 10000,
+      "amount_remaining": 0,
+      "amount_shipping": 0,
+      "application": null,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "disabled_reason": null,
+        "enabled": false,
+        "liability": null,
+        "provider": null,
+        "status": null
+      },
+      "automatically_finalizes_at": null,
+      "billing_reason": "subscription_create",
+      "collection_method": "charge_automatically",
+      "created": 1788565981,
+      "currency": "brl",
+      "custom_fields": null,
+      "customer": "cus_VCVwy3d2PYIJXM",
+      "customer_account": null,
+      "customer_address": null,
+      "customer_email": "mp-p06-607a71f6@exemplo.com",
+      "customer_name": "MP Teste Prompt06",
+      "customer_phone": null,
+      "customer_shipping": null,
+      "customer_tax_exempt": "none",
+      "customer_tax_ids": [
+        {
+          "type": "br_cpf",
+          "value": "201.769.969-15"
+        }
+      ],
+      "default_payment_method": null,
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discounts": [],
+      "due_date": null,
+      "effective_at": 1788565981,
+      "ending_balance": 0,
+      "footer": null,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.com/i/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQ1Z3aVdHUTY5N2REVXcySFU0WnNMeld4dU55aGRsLDE3OTEwNjc4Mw0200EdI3V4M5?s=ap",
+      "invoice_pdf": "https://pay.stripe.com/invoice/acct_1TzKkTPjx0CusuMr/test_YWNjdF8xVHpLa1RQangwQ3VzdU1yLF9WQ1Z3aVdHUTY5N2REVXcySFU0WnNMeld4dU55aGRsLDE3OTEwNjc4Mw0200EdI3V4M5/pdf?s=ap",
+      "issuer": {
+        "type": "self"
+      },
+      "last_finalization_error": null,
+      "latest_revision": null,
+      "lines": {
+        "object": "list",
+        "data": [
+          {
+            "id": "il_1UC6unPjx0CusuMrxYHjaaU6",
+            "object": "line_item",
+            "amount": 10000,
+            "currency": "brl",
+            "description": "1 × MP P06 Mensal 607a71f6 (a R$ 100.00 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "invoice": "in_1UC6unPjx0CusuMr2Jkqq5Fb",
+            "livemode": false,
+            "metadata": {},
+            "parent": {
+              "invoice_item_details": null,
+              "subscription_item_details": {
+                "invoice_item": null,
+                "proration": false,
+                "proration_details": {
+                  "credited_items": null
+                },
+                "subscription": "sub_1UC6unPjx0CusuMrH0YMAWK6",
+                "subscription_item": "si_VCVwoG3IX26J0b"
+              },
+              "type": "subscription_item_details"
+            },
+            "period": {
+              "end": 1791157981,
+              "start": 1788565981
+            },
+            "pretax_credit_amounts": [],
+            "pricing": {
+              "price_details": {
+                "price": "price_1UC6ukPjx0CusuMrh0XqmZZd",
+                "product": "prod_VCVwrMO5ms21iL"
+              },
+              "type": "price_details",
+              "unit_amount_decimal": "10000"
+            },
+            "quantity": 1,
+            "quantity_decimal": "1",
+            "subtotal": 10000,
+            "taxes": []
+          }
+        ],
+        "has_more": false,
+        "total_count": 1,
+        "url": "/v1/invoices/in_1UC6unPjx0CusuMr2Jkqq5Fb/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "next_payment_attempt": null,
+      "number": "QO3ETNSL-0001",
+      "on_behalf_of": null,
+      "parent": {
+        "quote_details": null,
+        "subscription_details": {
+          "metadata": {},
+          "subscription": "sub_1UC6unPjx0CusuMrH0YMAWK6"
+        },
+        "type": "subscription_details"
+      },
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": [
+          "card"
+        ]
+      },
+      "period_end": 1788565981,
+      "period_start": 1788565981,
+      "post_payment_credit_notes_amount": 0,
+      "pre_payment_credit_notes_amount": 0,
+      "receipt_number": null,
+      "rendering": null,
+      "shipping_cost": null,
+      "shipping_details": null,
+      "starting_balance": 0,
+      "statement_descriptor": null,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1788565981,
+        "marked_uncollectible_at": null,
+        "paid_at": 1788565981,
+        "voided_at": null
+      },
+      "subtotal": 10000,
+      "subtotal_excluding_tax": 10000,
+      "test_clock": null,
+      "total": 10000,
+      "total_discount_amounts": [],
+      "total_excluding_tax": 10000,
+      "total_pretax_credit_amounts": [],
+      "total_taxes": [],
+      "webhooks_delivered_at": null
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_3E7Ws12zN5HMSB",
+    "idempotency_key": "p06-607a71f6-card"
+  },
+  "type": "invoice.paid"
+}

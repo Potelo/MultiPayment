@@ -1,0 +1,79 @@
+{
+  "id": "evt_3UC6unPjx0CusuMr1YVY85MW",
+  "object": "event",
+  "api_version": "2026-06-24.dahlia",
+  "created": 1788565982,
+  "data": {
+    "object": {
+      "id": "pi_3UC6unPjx0CusuMr1L8mQPNj",
+      "object": "payment_intent",
+      "allowed_payment_method_types": null,
+      "amount": 10000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 10000,
+      "application": null,
+      "application_fee_amount": null,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_3UC6unPjx0CusuMr1L8mQPNj_secret_YmueIkpVbYHfn98l1A5mlOGTX",
+      "confirmation_method": "automatic",
+      "created": 1788565981,
+      "currency": "brl",
+      "customer": "cus_VCVwy3d2PYIJXM",
+      "customer_account": null,
+      "description": "Subscription creation",
+      "excluded_payment_method_types": null,
+      "last_payment_error": null,
+      "latest_charge": "ch_3UC6unPjx0CusuMr12E30a16",
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {},
+      "next_action": null,
+      "on_behalf_of": null,
+      "payment_details": {
+        "customer_reference": null,
+        "order_reference": "in_1UC6unPjx0CusuMr2Jkqq5Fb"
+      },
+      "payment_method": "pm_1UC6ulPjx0CusuMrE28WKacN",
+      "payment_method_configuration_details": null,
+      "payment_method_options": {
+        "card": {
+          "installments": null,
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "payment_record": null,
+      "processing": null,
+      "receipt_email": null,
+      "review": null,
+      "setup_future_usage": "off_session",
+      "shared_payment_granted_token": null,
+      "shipping": null,
+      "source": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_3E7Ws12zN5HMSB",
+    "idempotency_key": "p06-607a71f6-card"
+  },
+  "type": "payment_intent.succeeded"
+}

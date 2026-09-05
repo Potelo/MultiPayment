@@ -81,14 +81,14 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::INVOICE_CANCELLATION->name =>     [self::SUPPORTED,      self::SUPPORTED],
             Capability::IDEMPOTENCY->name =>              [self::SUPPORTED,      self::SUPPORTED],
             Capability::IDEMPOTENCY_ALL_ENDPOINTS->name => [self::LIMITATION,    self::SUPPORTED],
-            Capability::SUBSCRIPTIONS->name =>            [self::SUPPORTED,      self::NOT_IMPLEMENTED],
-            Capability::PLANS->name =>                    [self::SUPPORTED,      self::NOT_IMPLEMENTED],
-            Capability::PLAN_DEACTIVATION->name =>        [self::LIMITATION,     self::NOT_IMPLEMENTED],
-            Capability::CANCEL_AT_PERIOD_END->name =>     [self::LIMITATION,     self::NOT_IMPLEMENTED],
+            Capability::SUBSCRIPTIONS->name =>            [self::SUPPORTED,      self::SUPPORTED],
+            Capability::PLANS->name =>                    [self::SUPPORTED,      self::SUPPORTED],
+            Capability::PLAN_DEACTIVATION->name =>        [self::LIMITATION,     self::SUPPORTED],
+            Capability::CANCEL_AT_PERIOD_END->name =>     [self::LIMITATION,     self::SUPPORTED],
             Capability::NATIVE_COUPONS->name =>           [self::LIMITATION,     self::NOT_IMPLEMENTED],
-            Capability::PLAN_CHANGE_PRORATION->name =>    [self::LIMITATION,     self::NOT_IMPLEMENTED],
+            Capability::PLAN_CHANGE_PRORATION->name =>    [self::LIMITATION,     self::SUPPORTED],
             Capability::SUBSCRIPTION_CREDITS->name =>     [self::NOT_IMPLEMENTED, self::LIMITATION],
-            Capability::MANAGES_RECURRENCE->name =>       [self::LIMITATION,     self::NOT_IMPLEMENTED],
+            Capability::MANAGES_RECURRENCE->name =>       [self::LIMITATION,     self::SUPPORTED],
         ];
 
         $cases = [];
@@ -202,6 +202,7 @@ class GatewayCapabilitiesTest extends TestCase
             'stripe bandeiras' => ['stripe', Capability::CREDIT_CARD, ['brands' => ['visa', 'mastercard']]],
             'stripe duplicação só pix' => ['stripe', Capability::INVOICE_DUPLICATION, ['payment_methods' => [PaymentMethod::PIX]]],
             'stripe cancelamento de rascunho' => ['stripe', Capability::INVOICE_CANCELLATION, []],
+            'stripe nextBillingAt só na criação' => ['stripe', Capability::SUBSCRIPTIONS, []],
             'stripe pix sem restrição' => ['stripe', Capability::PIX, null],
         ];
     }

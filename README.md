@@ -176,14 +176,14 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `INVOICE_CANCELLATION` | Cancelamento de uma fatura ainda não paga (`cancelInvoice`). | sim | sim | Stripe: A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada pela Stripe; rascunho é recusado. |
 | `IDEMPOTENCY` | Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo gateway ou pela deduplicação da lib (`IdempotencyStore`). | sim | sim |  |
 | `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem depender da deduplicação da lib. | limitação do gateway | sim |  |
-| `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | não implementado |  |
-| `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | não implementado |  |
-| `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | não implementado |  |
-| `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | limitação do gateway | não implementado |  |
+| `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | sim | Stripe: nextBillingAt vale só na criação da assinatura; na troca de plano e na atualização a Stripe não aceita uma data arbitrária de próxima cobrança. |
+| `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | sim |  |
+| `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | sim |  |
+| `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | limitação do gateway | sim |  |
 | `NATIVE_COUPONS` | Cupom de primeira classe na assinatura: desconto percentual e desconto limitado a vários ciclos. | limitação do gateway | não implementado |  |
-| `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | não implementado |  |
+| `PLAN_CHANGE_PRORATION` | Crédito proporcional do período não usado, calculado pelo gateway, ao trocar de plano (`changePlan()` com `ProrationBehavior::CREDIT`). | limitação do gateway | sim |  |
 | `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |  |
-| `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | não implementado |  |
+| `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | sim |  |
 
 Sobre as restrições e algumas células:
 
@@ -312,8 +312,7 @@ Os nove estados:
 A precedência na Iugu é a ordem em que o driver testa as flags: `suspended` (com ou sem a
 marca) vence `in_trial`, que vence a derivação de `past_due`, que vence `active`. A regra de
 `EXPIRED` na Iugu segue o painel do gateway (assinatura "Expirada") e o webhook
-`subscription.expired`. O driver Stripe ainda não lê
-assinatura (planejado para uma versão futura); o mapa acima é o que ele vai aplicar. Um status
+`subscription.expired`. Um status
 fora do mapa vira `UNKNOWN`, com um aviso no log da aplicação (nível `warning`) contendo o valor
 original e o gateway.
 
@@ -509,8 +508,7 @@ O que muda na fatura de origem `INVOICE`:
   se resolve com nova tentativa de pagamento da mesma fatura.
 - **`refundInvoice()`, `refundableAmount()` e `chargeInvoiceWithCreditCard()`** sobre a fatura de
   assinatura ainda não estão disponíveis (`UnsupportedOperationException`, `SUBSCRIPTIONS`,
-  `not_implemented`, antes de qualquer requisição); entram em uma versão futura junto com a
-  assinatura no Stripe.
+  `not_implemented`, antes de qualquer requisição); estão planejados para uma versão futura.
 
 **Precedência de status.** O status do Invoice da Stripe manda no ciclo de vida da fatura; o
 PaymentIntent e o charge só refinam o detalhe de pagamento. Um PaymentIntent `succeeded` não
@@ -675,13 +673,14 @@ deduplica por conta própria com a `IdempotencyStore` (abaixo):
 | Criar fatura (`create()`, `charge()`), com Pix, boleto ou cartão | gateway (`POST /invoices` ou `POST /charge`) | gateway |
 | Cobrar fatura com cartão (`chargeInvoiceWithCreditCard`) | gateway (`POST /charge`) | gateway |
 | Criar cliente | gateway | gateway |
-| Criar assinatura | gateway | (não implementado) |
+| Criar assinatura | gateway | gateway |
 | Atualizar cliente, definir cartão padrão | store da lib | gateway |
 | Salvar cartão, excluir cartão | store da lib | gateway |
 | Concluir o setup do cartão (`confirmCreditCardSetup`) | (limitação do gateway) | gateway, nas escritas secundárias (`{chave}:attach`, `{chave}:metadata`, `{chave}:default`); a leitura do setup não leva chave |
 | Estornar, cancelar, duplicar fatura | store da lib | gateway |
-| Suspender, retomar, cancelar, atualizar assinatura, trocar de plano | store da lib | (não implementado) |
-| Criar plano | store da lib | (não implementado) |
+| Suspender, retomar, cancelar, atualizar assinatura, trocar de plano | store da lib | gateway |
+| Criar plano | store da lib | gateway |
+| Desativar plano (`deactivatePlan`) | (limitação do gateway) | gateway |
 | Reagendar e cancelar Pix Automático | store da lib | (não implementado) |
 
 Quando uma operação faz mais de uma requisição de escrita (salvar o cartão antes de cobrar,
@@ -1034,9 +1033,9 @@ $multiPayment->listAutomaticPixCancellations($recurrenceId, page: 1, limit: 100)
 
 #### Pix Automático: quem agenda a cobrança
 
-Os dois gateways dividem a responsabilidade pela recorrência de forma oposta, e a lib ainda não
-expõe essa diferença em código (uma capability declarada pelo gateway está planejada para uma
-versão futura). Até lá, a regra é esta:
+Os dois gateways dividem a responsabilidade pela recorrência de forma oposta, e
+`supports(Capability::MANAGES_RECURRENCE)` diz de que lado cada um fica: falso na Iugu (a
+aplicação agenda), verdadeiro no Stripe (o gateway agenda). A regra é esta:
 
 - **Na Iugu, a aplicação é o motor de recorrência.** A API cria a recorrência junto com a
   fatura e devolve o identificador, mas não controla a periodicidade das cobranças. É a
@@ -1077,12 +1076,15 @@ que possam ser reativados quando o ambiente passar a suportar o fluxo.
 
 #### Assinaturas e planos
 
-Assinatura recorrente está disponível no gateway Iugu. No Stripe ela ainda **não está
-implementada nesta lib** (planejada para uma versão futura; o Stripe Billing oferece o
-recurso). O `StripeGateway` lista `SUBSCRIPTIONS` e `PLANS` em `notYetImplemented()`, então
-`save()`, `get()`, os métodos de domínio (`suspend()`, `resume()`, `cancel()`, `changePlan()`,
-`previewPlanChange()`) e `listSubscriptions()`/`listPlans()` lançam
-`UnsupportedOperationException` com `reason` `not_implemented`, antes de qualquer requisição.
+Assinatura recorrente e plano estão disponíveis nos dois gateways. Na Iugu o plano é o
+recurso de plano nativo; no Stripe ele vira um par Product e Price recorrente (o id do plano
+é o id do Price, com prefixo `price_`), e a assinatura é a Subscription do Stripe Billing. O
+desconto de assinatura no Stripe (Coupon) está planejado para uma versão futura: um
+`SubscriptionDiscount` no Stripe lança `UnsupportedOperationException` (`NATIVE_COUPONS`,
+`not_implemented`) antes de criar a assinatura. Desconto percentual e desconto com `cycles`
+maior que 1 são recusados antes de qualquer requisição; o desconto simples de valor
+(`amountOff`) passa pela capability do model (a Iugu o entrega sem cupom), então a recusa vem
+do driver, depois de o cliente novo que acompanha a assinatura ter sido criado.
 
 ```php
 use Potelo\MultiPayment\Models\Plan;
@@ -1094,7 +1096,7 @@ $plan->identifier = 'plano_mensal';
 $plan->amount = 10000; // centavos
 $plan->interval = PlanInterval::MONTH; // DAY, WEEK, MONTH ou YEAR (a Iugu recusa DAY)
 $plan->intervalCount = 1;
-$plan->save('iugu');
+$plan->save('iugu');                   // ou save('stripe'): cria o Product e o Price
 
 $subscription = (new \Potelo\MultiPayment\MultiPayment('iugu'))
     ->newSubscription()
@@ -1170,9 +1172,9 @@ e cada gateway a traduz para o próprio parâmetro:
 
 | `ProrationBehavior` | O que acontece | Iugu | Stripe |
 |---|---|---|---|
-| `CHARGE_DIFFERENCE` (padrão) | O plano novo é cobrado agora; o gateway decide o que abater do período já pago | `POST change_plan`: fatura emitida na hora, sem crédito do período anterior (a Iugu acrescenta ciclos no downgrade) | `proration_behavior: always_invoice` (planejado para uma versão futura) |
-| `NONE` | Nada é cobrado nem creditado agora; o plano novo vale a partir da próxima cobrança do ciclo | `PUT` com `skip_charge`, mantendo a data de cobrança (`nextBillingAt` preenchido vai junto) | `proration_behavior: none` (planejado para uma versão futura) |
-| `CREDIT` | O gateway calcula o crédito do período não usado e o aplica na próxima fatura | `UnsupportedOperationException` (`PLAN_CHANGE_PRORATION`, `gateway_limitation`), antes de qualquer requisição | `proration_behavior: create_prorations` (planejado para uma versão futura) |
+| `CHARGE_DIFFERENCE` (padrão) | O plano novo é cobrado agora; o gateway decide o que abater do período já pago | `POST change_plan`: fatura emitida na hora, sem crédito do período anterior (a Iugu acrescenta ciclos no downgrade) | `proration_behavior: always_invoice`: as linhas de pró-rata (crédito do período não usado e cobrança do plano novo) são faturadas e cobradas na hora, e a fatura volta em `latestInvoice` |
+| `NONE` | Nada é cobrado nem creditado agora; o plano novo vale a partir da próxima cobrança do ciclo | `PUT` com `skip_charge`, mantendo a data de cobrança (`nextBillingAt` preenchido vai junto) | `proration_behavior: none`; `nextBillingAt` diferente do lido é recusado (a Stripe não aceita mudar a data da próxima cobrança na troca) |
+| `CREDIT` | O gateway calcula o crédito do período não usado e o aplica na próxima fatura | `UnsupportedOperationException` (`PLAN_CHANGE_PRORATION`, `gateway_limitation`), antes de qualquer requisição | `proration_behavior: create_prorations`: crédito e cobrança proporcionais entram na próxima fatura |
 
 Como a política que o gateway não oferece é recusada antes da rede, consulte
 `supports(Capability::PLAN_CHANGE_PRORATION)` antes de oferecer a opção de crédito no
@@ -1188,13 +1190,18 @@ $subscription->changePlan('plano_anual', ProrationBehavior::CREDIT);   // Iugu: 
 
 - **`amount`**: o que a troca cobraria agora, em centavos; quando há linhas, é a soma de `items`.
 - **`items`**: as linhas da fatura que a troca geraria, como `InvoiceItem` (crédito com `price`
-  negativo). A lista nunca é nula: a Iugu não devolve linhas em `change_plan_simulation`, então
+  negativo). A lista nunca é nula. No Stripe as linhas vêm reais, da prévia de fatura
+  (`invoices.create_preview`) com `always_invoice`, o mesmo fluxo de `CHARGE_DIFFERENCE`. A
+  Iugu não devolve linhas em `change_plan_simulation`, então
   a lib monta uma linha de cobrança do plano novo (`Plano <novo>`, valendo `cost` mais
   `discount`) e, quando `discount` é maior que zero, uma linha negativa de crédito do plano
-  antigo. O payload cru (`cost`, `discount`, `cycles`, `expires_at`, `old_plan`, `new_plan`)
-  segue em `original`.
-- **`effectiveAt`**: a data em que a próxima cobrança acontece após a troca.
-- **`appliesImmediately`**: se o plano novo passa a valer assim que a troca for aplicada. Na
+  antigo. O payload cru (o Invoice da prévia no Stripe; `cost`, `discount`, `cycles`,
+  `expires_at`, `old_plan` e `new_plan` na Iugu) segue em `original`.
+- **`effectiveAt`**: a data em que a próxima cobrança acontece após a troca. No Stripe é o fim
+  de período da linha mais distante da prévia.
+- **`appliesImmediately`**: se o plano novo passa a valer assim que a troca for aplicada. No
+  Stripe é sempre verdadeiro (a Stripe aplica o plano novo na hora, independente do
+  pagamento). Na
   Iugu é verdadeiro quando a assinatura é paga só com cartão (o cartão padrão é cobrado na
   hora) e falso quando ela aceita boleto ou Pix, porque a Iugu só efetiva a troca depois do
   pagamento da fatura gerada; uma assinatura aberta a mais de um método também lê como falso.
@@ -1317,6 +1324,61 @@ ao que veio na leitura — um `save()` que mexeu só nos itens não altera a dat
 > `expires_at`, e com cartão padrão a Iugu cobrava o primeiro ciclo na criação; agora o trial vai
 > com `only_charge_on_due_date`. `Subscription::$paymentMethod` passou a ser escrito
 > (`payable_with`) e lido; até a 4.1.0 era ignorado nas duas direções.
+
+Particularidades do Stripe:
+
+- **O plano é um Product mais um Price recorrente.** `createPlan()` cria os dois: o Product
+  guarda o nome e o identificador (`metadata.identifier`), o Price guarda o valor e o
+  intervalo, e o id do plano é o id do Price (`price_...`). O identificador vai também em
+  `lookup_key` do Price, que é como `getPlan()` o encontra (um identificador com o prefixo
+  `price_` é lido direto como id); identificador repetido é recusado pela Stripe. Todos os
+  intervalos de `PlanInterval` valem, inclusive `DAY`. `deactivatePlan()` arquiva o Price:
+  as assinaturas existentes continuam cobrando e assinatura nova com o plano é recusada pela
+  Stripe; o plano segue legível, com `active` falso, e aparece em `listPlans()`.
+- **O cartão fica na assinatura.** `setCreditCard()` vira o `default_payment_method` da
+  Subscription; o cartão padrão do cliente não muda (na Iugu muda, porque lá a assinatura não
+  tem cartão próprio). Cartão sem id é salvo antes pelo fluxo de SetupIntent: se o emissor
+  exigir autenticação do pagador, a assinatura não é criada e sobe `ChargingException` com
+  `DeclineCode::AUTHENTICATION_REQUIRED` e o SetupIntent em `chargeResponse`; conclua com
+  `confirmCreditCardSetup()` e crie a assinatura com o id do cartão salvo.
+- **Com cartão, a primeira fatura é cobrada na criação** (`payment_behavior`
+  `error_if_incomplete`): a recusa do cartão sobe como `ChargingException` e a assinatura não
+  é criada. Com trial não há cobrança e a assinatura nasce `TRIALING` (a fatura de valor zero
+  do trial volta em `latestInvoice`). Os dias de `setTrialDays()` vão como
+  `trial_period_days`, que não muda entre tentativas com a mesma chave de idempotência.
+- **Com Pix, a assinatura nasce com a primeira fatura em aberto** (`payment_behavior`
+  `default_incomplete`, status `PENDING`): `latestInvoice` traz a fatura para o pagador
+  quitar (`url` é a página hospedada). O método `pix` em assinatura depende de habilitação na
+  conta Stripe; sem ela, a criação é recusada pelo gateway com `ValidationException`
+  ("The payment method type `pix` is invalid"). Boleto em assinatura ainda não está
+  implementado nesta lib.
+- **Itens extras criam Prices no Stripe.** Cada `SubscriptionItem` vira um subscription item
+  com um Product e um Price próprios, criados na hora (o item precisa de `description` e
+  `amount`); item com `recurring` falso vai como item avulso da primeira fatura. No update
+  declarativo, item novo cria Price, item com `id` tem a quantidade atualizada e mantém o
+  Price, item que saiu da lista é removido, e a troca não gera pró-rata.
+- **`suspend()` pausa a cobrança** (`pause_collection` com `behavior` `void`) e a assinatura
+  lê como `PAUSED` (na Iugu, `SUSPENDED`); as faturas dos ciclos pausados são anuladas.
+  `resume()` desfaz a pausa e também o cancelamento agendado por `cancel(atPeriodEnd: true)`.
+  Assinatura cancelada de vez (`CANCELED`) não volta na Stripe: `resume()` é recusado pelo
+  gateway com `ValidationException` (na Iugu, `resume()` reativa a cancelada).
+- **`cancel(atPeriodEnd: true)` é nativo**: a assinatura segue ativa até o fim do período
+  pago, com `cancelAtPeriodEnd` e `canceledAt` preenchidos no model. `cancel()` sem o
+  argumento cancela na hora, sem estorno nem fatura final.
+- **`nextBillingAt` vale só na criação** (`billing_cycle_anchor`). Na troca de plano e na
+  atualização, um `nextBillingAt` diferente do que veio do gateway é recusado com
+  `UnsupportedOperationException` (restrição consultável de `SUBSCRIPTIONS`): a Stripe não
+  aceita uma data arbitrária de próxima cobrança fora do ciclo. Na leitura, `nextBillingAt` é
+  o fim do período corrente do item do plano.
+- **Leituras custam requisições a mais.** `getSubscription()` (e a criação e a troca com
+  cobrança) relê a fatura mais recente para preencher `latestInvoice` por inteiro;
+  `listSubscriptions()` e `listPlans()` paginam por cursor, então uma página além da primeira
+  custa uma requisição por página anterior; `listSubscriptions()` traz assinaturas em
+  qualquer status, sem `latestInvoice`.
+- **A escrita sobre a fatura de assinatura (`in_`) ainda não existe nesta lib**: estorno e
+  cobrança manual de uma fatura de assinatura lançam `UnsupportedOperationException`
+  (`SUBSCRIPTIONS`, `not_implemented`); a leitura por `getInvoice()` e o cancelamento por
+  `cancelInvoice()` (`void`) estão disponíveis.
 
 Confira `src/Builders/SubscriptionBuilder.php` para saber quais métodos estão disponíveis.
 

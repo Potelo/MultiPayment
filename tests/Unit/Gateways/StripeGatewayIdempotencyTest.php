@@ -10,11 +10,15 @@ use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\IgnoreDeprecations;
+use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
+use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Gateways\StripeGateway;
+use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
@@ -463,6 +467,127 @@ class StripeGatewayIdempotencyTest extends TestCase
                     'post /v1/payment_methods/pm_fake123/detach' => 'chave-1',
                 ],
             ],
+            'createPlan' => [
+                fn (StripeGateway $g, ?string $key) => $g->createPlan(self::planModel(), $key),
+                [self::productResponse(), self::priceResponse()],
+                [
+                    'post /v1/products' => 'chave-1:product',
+                    'post /v1/prices' => 'chave-1',
+                ],
+            ],
+            'deactivatePlan' => [
+                function (StripeGateway $g, ?string $key) {
+                    $plan = new Plan();
+                    $plan->id = 'price_fake1';
+
+                    return $g->deactivatePlan($plan, $key);
+                },
+                [self::priceResponse()],
+                ['post /v1/prices/price_fake1' => 'chave-1'],
+            ],
+            'createSubscription com cartão salvo' => [
+                fn (StripeGateway $g, ?string $key) => $g->createSubscription(self::subscriptionModel('pm_fake123'), $key),
+                [
+                    self::subscriptionFixture(),
+                    self::stripeInvoiceFixture(),
+                    self::fixture('payment_intents/paid'),
+                ],
+                [
+                    'post /v1/subscriptions' => 'chave-1',
+                    'get /v1/invoices/in_1UBJmkPjx0CusuMrN6Yc2Ha1' => null,
+                    'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
+                ],
+            ],
+            'createSubscription salvando o cartão antes' => [
+                function (StripeGateway $g, ?string $key) {
+                    $subscription = self::subscriptionModel();
+                    $subscription->creditCard = new CreditCard();
+                    $subscription->creditCard->token = 'pm_fake123';
+
+                    return $g->createSubscription($subscription, $key);
+                },
+                [
+                    self::setupIntentResponse(),
+                    self::subscriptionFixture(),
+                    self::stripeInvoiceFixture(),
+                    self::fixture('payment_intents/paid'),
+                ],
+                [
+                    'post /v1/setup_intents' => 'chave-1:card',
+                    'post /v1/subscriptions' => 'chave-1',
+                    'get /v1/invoices/in_1UBJmkPjx0CusuMrN6Yc2Ha1' => null,
+                    'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
+                ],
+            ],
+            'createSubscription com item extra' => [
+                function (StripeGateway $g, ?string $key) {
+                    $subscription = self::subscriptionModel('pm_fake123');
+                    $item = new SubscriptionItem();
+                    $item->description = 'Consultas extras';
+                    $item->amount = 2500;
+                    $subscription->items = [$item];
+
+                    return $g->createSubscription($subscription, $key);
+                },
+                [
+                    self::productResponse(),
+                    self::priceResponse(),
+                    self::subscriptionFixture(),
+                    self::stripeInvoiceFixture(),
+                    self::fixture('payment_intents/paid'),
+                ],
+                [
+                    'post /v1/products' => 'chave-1:item0_product',
+                    'get /v1/prices/price_fake1' => null,
+                    'post /v1/subscriptions' => 'chave-1',
+                    'get /v1/invoices/in_1UBJmkPjx0CusuMrN6Yc2Ha1' => null,
+                    'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
+                ],
+            ],
+            'updateSubscription' => [
+                function (StripeGateway $g, ?string $key) {
+                    $subscription = new Subscription();
+                    $subscription->id = 'sub_fake1';
+                    $subscription->metadata = ['origem' => 'teste'];
+
+                    return $g->updateSubscription($subscription, $key);
+                },
+                [self::subscriptionFixture()],
+                ['post /v1/subscriptions/sub_fake1' => 'chave-1'],
+            ],
+            'suspendSubscription' => [
+                fn (StripeGateway $g, ?string $key) => $g->suspendSubscription(self::subscriptionWithId(), $key),
+                [self::subscriptionFixture()],
+                ['post /v1/subscriptions/sub_fake1' => 'chave-1'],
+            ],
+            'resumeSubscription' => [
+                fn (StripeGateway $g, ?string $key) => $g->resumeSubscription(self::subscriptionWithId(), $key),
+                [self::subscriptionFixture()],
+                ['post /v1/subscriptions/sub_fake1' => 'chave-1'],
+            ],
+            'cancelSubscription imediato' => [
+                fn (StripeGateway $g, ?string $key) => $g->cancelSubscription(self::subscriptionWithId(), false, $key),
+                [self::subscriptionFixture()],
+                ['delete /v1/subscriptions/sub_fake1' => 'chave-1'],
+            ],
+            'cancelSubscription ao fim do período' => [
+                fn (StripeGateway $g, ?string $key) => $g->cancelSubscription(self::subscriptionWithId(), true, $key),
+                [self::subscriptionFixture()],
+                ['post /v1/subscriptions/sub_fake1' => 'chave-1'],
+            ],
+            'changeSubscriptionPlan sem cobrança' => [
+                fn (StripeGateway $g, ?string $key) => $g->changeSubscriptionPlan(
+                    self::subscriptionWithId(),
+                    'price_fake2',
+                    \Potelo\MultiPayment\Enums\ProrationBehavior::NONE,
+                    $key
+                ),
+                [self::subscriptionFixture(), self::subscriptionFixture()],
+                [
+                    'get /v1/subscriptions/sub_fake1' => null,
+                    'post /v1/subscriptions/sub_fake1' => 'chave-1',
+                ],
+            ],
         ];
     }
 
@@ -509,6 +634,81 @@ class StripeGatewayIdempotencyTest extends TestCase
         $invoice->id = 'pi_fake123';
 
         return $invoice;
+    }
+
+    private static function planModel(): Plan
+    {
+        $plan = new Plan();
+        $plan->name = 'Mensal';
+        $plan->identifier = 'plano_mensal';
+        $plan->amount = 10000;
+        $plan->interval = PlanInterval::MONTH;
+
+        return $plan;
+    }
+
+    /**
+     * Assinatura pronta para criação, com o plano pelo id de Price (a busca por `lookup_key`
+     * é leitura e ficaria fora das asserções de cabeçalho).
+     */
+    private static function subscriptionModel(?string $cardId = null): Subscription
+    {
+        $subscription = new Subscription();
+        $subscription->customer = new Customer();
+        $subscription->customer->id = 'cus_fake123';
+        $subscription->planId = 'price_fake1';
+        if (!is_null($cardId)) {
+            $subscription->creditCard = new CreditCard();
+            $subscription->creditCard->id = $cardId;
+        }
+
+        return $subscription;
+    }
+
+    private static function subscriptionWithId(): Subscription
+    {
+        $subscription = new Subscription();
+        $subscription->id = 'sub_fake1';
+
+        return $subscription;
+    }
+
+    private static function productResponse(): array
+    {
+        return ['id' => 'prod_fake1', 'object' => 'product', 'name' => 'Mensal', 'active' => true, 'created' => 1786700000, 'metadata' => []];
+    }
+
+    private static function priceResponse(): array
+    {
+        return [
+            'id' => 'price_fake1',
+            'object' => 'price',
+            'active' => true,
+            'currency' => 'brl',
+            'lookup_key' => 'plano_mensal',
+            'nickname' => 'Mensal',
+            'created' => 1786700000,
+            'product' => self::productResponse(),
+            'recurring' => ['interval' => 'month', 'interval_count' => 1, 'usage_type' => 'licensed'],
+            'type' => 'recurring',
+            'unit_amount' => 10000,
+            'unit_amount_decimal' => '10000',
+        ];
+    }
+
+    private static function subscriptionFixture(): array
+    {
+        return self::fixture('subscriptions/active');
+    }
+
+    private static function stripeInvoiceFixture(): array
+    {
+        return self::fixture('invoices/paid');
+    }
+
+    private static function fixture(string $path): array
+    {
+        return json_decode(file_get_contents(__DIR__ . "/../../fixtures/stripe/{$path}.json"), true);
     }
 
     private static function customerModel(): Customer
