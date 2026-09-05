@@ -12,6 +12,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
@@ -174,6 +175,33 @@ class SubscriptionTest extends TestCase
         $this->expectExceptionMessageMatches('/availablePaymentMethods must be one of/');
 
         $subscription->validate();
+    }
+
+    /**
+     * `fill()` com `automatic_pix` cria o model aninhado (com as datas do mandato) e
+     * `toArray()` o devolve como array.
+     */
+    public function testFillAndToArrayCarryAutomaticPix(): void
+    {
+        $subscription = new Subscription();
+        $subscription->fill([
+            'plan_id' => 'plano_mensal',
+            'automatic_pix' => [
+                'frequency' => AutomaticPix::FREQUENCY_MONTHLY,
+                'starts_at' => '2026-10-01',
+                'next_debit_at' => '2026-10-04',
+                'pre_debit_notification_at' => '2026-10-01',
+            ],
+        ]);
+
+        $this->assertInstanceOf(AutomaticPix::class, $subscription->automaticPix);
+        $this->assertSame(AutomaticPix::FREQUENCY_MONTHLY, $subscription->automaticPix->frequency);
+        $this->assertSame('2026-10-04', $subscription->automaticPix->nextDebitAt->format('Y-m-d'));
+        $this->assertSame('2026-10-01', $subscription->automaticPix->preDebitNotificationAt->format('Y-m-d'));
+
+        $array = $subscription->toArray();
+        $this->assertIsArray($array['automatic_pix']);
+        $this->assertSame(AutomaticPix::FREQUENCY_MONTHLY, $array['automatic_pix']['frequency']);
     }
 
     public function testSubscriptionPropagatesItemValidation(): void
@@ -939,9 +967,13 @@ class SubscriptionTest extends TestCase
                 },
                 '/paymentMethod \[credit_card\] must be one of availablePaymentMethods/',
             ],
-            'metodo nao selecionavel' => [
-                fn (Subscription $s) => $s->paymentMethod = PaymentMethod::AUTOMATIC_PIX,
-                '/paymentMethod must be one of: credit_card, bank_slip, pix/',
+            'automatic pix na lista de metodos' => [
+                fn (Subscription $s) => $s->availablePaymentMethods = [PaymentMethod::AUTOMATIC_PIX],
+                '/availablePaymentMethods must be one of: credit_card, bank_slip, pix/',
+            ],
+            'automatic pix sem o metodo' => [
+                fn (Subscription $s) => $s->automaticPix = new AutomaticPix(),
+                '/automaticPix was given but automatic_pix is not the payment method/',
             ],
             'cartao invalido' => [
                 function (Subscription $s) {

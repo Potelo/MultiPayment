@@ -30,13 +30,53 @@ class AutomaticPix extends Model
     public ?Carbon $endsAt = null;
     public string $retryPolicy = self::RETRY_POLICY_NOT_ALLOWED;
     public ?string $status = null;
+
+    /**
+     * Id do mandato no gateway, quando a recorrência é registrada como mandato (Stripe). No
+     * Stripe coincide com `id`; a leitura da assinatura não o traz, então ele chega pelo
+     * webhook `mandate.updated` ou preenchido pela consulta de cancelamentos.
+     *
+     * @var string|null
+     */
+    public ?string $mandateId = null;
+
+    /**
+     * Status do mandato no gateway (`active`, `inactive`, `pending`), preenchido quando o
+     * mandato é lido.
+     *
+     * @var string|null
+     */
+    public ?string $mandateStatus = null;
+
+    /**
+     * Data prevista do próximo débito na conta do pagador. No Stripe o débito acontece três
+     * dias depois do início do ciclo de cobrança.
+     *
+     * @var Carbon|null
+     */
+    public ?Carbon $nextDebitAt = null;
+
+    /**
+     * Data em que o pagador recebe a notificação de pré-débito, três dias antes do débito.
+     *
+     * @var Carbon|null
+     */
+    public ?Carbon $preDebitNotificationAt = null;
+
     public ?string $gateway = null;
     public $original = null;
 
     /** @inheritDoc */
     public function fill(array $data): void
     {
-        foreach (['starts_at' => 'startsAt', 'ends_at' => 'endsAt'] as $key => $attribute) {
+        foreach (
+            [
+                'starts_at' => 'startsAt',
+                'ends_at' => 'endsAt',
+                'next_debit_at' => 'nextDebitAt',
+                'pre_debit_notification_at' => 'preDebitNotificationAt',
+            ] as $key => $attribute
+        ) {
             if (!empty($data[$key])) {
                 $this->{$attribute} = $data[$key] instanceof Carbon
                     ? $data[$key]

@@ -864,14 +864,17 @@ class StripeGatewaySubscriptionTest extends TestCase
             $this->assertSame(Capability::MULTIPLE_PAYMENT_METHODS, $e->capability);
         }
 
+        // o mandato de Pix Automático nasce com a assinatura: a troca para o método num
+        // model sem o mandato lido do gateway é recusada antes da rede
         $automaticPix = new Subscription();
         $automaticPix->id = 'sub_1UBJmkPjx0CusuMr3KQ2wXyZ';
         $automaticPix->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
         try {
             $gateway->updateSubscription($automaticPix);
-            $this->fail('Esperava ModelAttributeValidationException');
-        } catch (ModelAttributeValidationException $e) {
-            $this->assertStringContainsString('paymentMethod must be one of', $e->getMessage());
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::AUTOMATIC_PIX, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
         }
 
         $this->assertSame([], $httpClient->calls);

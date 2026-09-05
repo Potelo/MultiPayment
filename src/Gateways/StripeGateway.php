@@ -141,6 +141,30 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      */
     private const BOLETO_DAYS_UNTIL_DUE = 3;
 
+    /**
+     * Prazo, em dias, entre o início do ciclo de cobrança e o débito de um mandato de Pix
+     * Automático: a Stripe notifica o pagador no início do ciclo e debita três dias depois. O
+     * mesmo prazo é o mínimo entre hoje e o `start_date` do mandato.
+     */
+    private const PIX_MANDATE_DEBIT_OFFSET_DAYS = 3;
+
+    /**
+     * Agenda do mandato de Pix Automático (`payment_schedule`) por intervalo de plano, no
+     * formato `interval:interval_count`. Intervalo sem agenda correspondente é recusado antes
+     * da requisição. Os valores seguem as periodicidades do Pix Automático.
+     */
+    private const PIX_MANDATE_SCHEDULES = [
+        'week:1' => AutomaticPix::FREQUENCY_WEEKLY,
+        'month:1' => AutomaticPix::FREQUENCY_MONTHLY,
+        'month:3' => AutomaticPix::FREQUENCY_QUARTERLY,
+        'month:6' => AutomaticPix::FREQUENCY_SEMIANNUAL,
+        'month:12' => AutomaticPix::FREQUENCY_ANNUAL,
+        'year:1' => AutomaticPix::FREQUENCY_ANNUAL,
+    ];
+
+    /** Status do Mandate da Stripe que encerra a recorrência. */
+    private const MANDATE_STATUS_INACTIVE = 'inactive';
+
     /** Tipo de InvoicePayment cujo pagamento é um PaymentIntent. */
     private const INVOICE_PAYMENT_TYPE_PAYMENT_INTENT = 'payment_intent';
 
@@ -222,6 +246,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::PERCENT_DISCOUNT,
             Capability::PLAN_CHANGE_PRORATION,
             Capability::MANAGES_RECURRENCE,
+            Capability::AUTOMATIC_PIX,
         ];
     }
 
@@ -231,7 +256,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     public function notYetImplemented(): array
     {
         return [
-            Capability::AUTOMATIC_PIX,
             Capability::MULTIPLE_PAYMENT_METHODS,
             Capability::DELAYED_CAPTURE,
         ];
@@ -250,7 +274,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * plano e na atualização a data da próxima cobrança segue o ciclo. `COUPONS`: o cupom da
      * Stripe dura meses inteiros (`duration_in_months`), então `cycles` maior que 1 exige plano
      * com intervalo mensal ou anual, e `validUntil` vira meses inteiros contados da aplicação,
-     * arredondados para cima.
+     * arredondados para cima. `AUTOMATIC_PIX`: a recorrência é o mandato da assinatura,
+     * agendado pelo gateway; fatura avulsa com `automaticPix` e as operações de agendamento da
+     * lib não se aplicam.
      */
     public function restrictions(): array
     {
@@ -282,6 +308,12 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::SUBSCRIPTIONS->value => new CapabilityRestriction(
                 description: 'nextBillingAt vale só na criação da assinatura; na troca de plano e na'
                     . ' atualização a Stripe não aceita uma data arbitrária de próxima cobrança.',
+            ),
+            Capability::AUTOMATIC_PIX->value => new CapabilityRestriction(
+                description: 'A recorrência é o mandato de uma assinatura (paymentMethod automatic_pix'
+                    . ' na criação) e o gateway agenda as cobranças; fatura avulsa com automaticPix não'
+                    . ' é aceita, e as operações de agendamento e de cancelamento de cobrança da lib'
+                    . ' respondem managed_by_gateway.',
             ),
         ];
     }
@@ -827,6 +859,16 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     public function createInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
         $this->assertSupportsAll($invoice->requiredCapabilities());
+        // sem a recusa, a fatura seria criada em silêncio sem a recorrência pedida
+        if (!empty($invoice->automaticPix) || !empty($invoice->automaticPixCharge)) {
+            throw UnsupportedOperationException::notImplemented(
+                (string) $this,
+                Capability::AUTOMATIC_PIX,
+                'Nesse gateway a recorrência de Pix Automático vive na assinatura: crie uma'
+                . ' Subscription com paymentMethod automatic_pix. A fatura avulsa com automaticPix'
+                . ' ainda não é suportada pela lib.'
+            );
+        }
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         $paymentMethod = $this->invoicePaymentMethod($invoice);
@@ -3020,7 +3062,12 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * cobrada na criação e a recusa sobe como `ChargingException` (`payment_behavior`
      * `error_if_incomplete`); com Pix a assinatura nasce com a primeira fatura em aberto até o
      * pagamento (`default_incomplete`), lida em `latestInvoice`, com a página hospedada em
-     * `url` para o pagador quitar. Com boleto a assinatura nasce ativa em modo de fatura
+     * `url` para o pagador quitar. Com Pix Automático (`paymentMethod` `AUTOMATIC_PIX`) a
+     * assinatura também nasce com a primeira fatura em aberto e registra o mandato em
+     * `payment_method_options.pix.mandate_options`, derivado do plano e de
+     * `Subscription::$automaticPix` (ver `pixMandateOptions()`); o pagador autoriza o mandato
+     * ao pagar a primeira fatura e a Stripe agenda as cobranças seguintes
+     * (`MANAGES_RECURRENCE`). Com boleto a assinatura nasce ativa em modo de fatura
      * enviada (`send_invoice`, com `days_until_due` de 3 dias, sobrescritível por
      * `gatewayOptions['days_until_due']`): a primeira fatura é finalizada na hora e volta em
      * `latestInvoice` aberta, com a página hospedada em `url`, onde o pagador gera o voucher;
@@ -3065,12 +3112,22 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $stripeSubscriptionData['days_until_due'] = self::BOLETO_DAYS_UNTIL_DUE;
         } else {
             $stripeSubscriptionData['collection_method'] = 'charge_automatically';
-            $stripeSubscriptionData['payment_behavior'] = $paymentMethod === PaymentMethod::PIX
-                ? 'default_incomplete'
-                : 'error_if_incomplete';
+            // no Pix (avulso ou com mandato) o pagador precisa agir para a primeira fatura
+            $stripeSubscriptionData['payment_behavior'] = in_array(
+                $paymentMethod,
+                [PaymentMethod::PIX, PaymentMethod::AUTOMATIC_PIX],
+                true
+            ) ? 'default_incomplete' : 'error_if_incomplete';
         }
 
-        if (!is_null($paymentMethod)) {
+        if ($paymentMethod === PaymentMethod::AUTOMATIC_PIX) {
+            $stripeSubscriptionData['payment_settings'] = [
+                'payment_method_types' => ['pix'],
+                'payment_method_options' => [
+                    'pix' => ['mandate_options' => $this->pixMandateOptions($subscription, $priceId)],
+                ],
+            ];
+        } elseif (!is_null($paymentMethod)) {
             $stripeSubscriptionData['payment_settings'] = [
                 'payment_method_types' => [self::paymentMethodToStripeType($paymentMethod)],
             ];
@@ -3218,7 +3275,30 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $data['default_payment_method'] = $defaultPaymentMethodId;
         }
 
-        if (!is_null($paymentMethod) && !$this->isOriginalStripePaymentMethod($subscription, $paymentMethod)) {
+        // o mandato de Pix Automático é registrado na criação: numa assinatura que já o tem,
+        // o método lido do gateway não é uma troca (e sair dele exige encerrar o mandato);
+        // sem ele, a troca para o método ainda não é suportada
+        $originalHasPixMandate = is_object(
+            $subscription->original->payment_settings->payment_method_options->pix->mandate_options ?? null
+        );
+        if ($paymentMethod === PaymentMethod::AUTOMATIC_PIX) {
+            if (!$originalHasPixMandate) {
+                throw UnsupportedOperationException::notImplemented(
+                    (string) $this,
+                    Capability::AUTOMATIC_PIX,
+                    'A lib só registra o mandato de Pix Automático na criação da assinatura.'
+                );
+            }
+        } elseif (!is_null($paymentMethod) && $originalHasPixMandate) {
+            // sem a recusa, a comparação com os types originais (['pix']) engoliria a troca
+            // em silêncio e o mandato continuaria valendo
+            throw UnsupportedOperationException::notImplemented(
+                (string) $this,
+                Capability::AUTOMATIC_PIX,
+                'A lib não implementa trocar o método de uma assinatura com mandato de Pix'
+                . ' Automático; cancele a assinatura e crie outra com o método desejado.'
+            );
+        } elseif (!is_null($paymentMethod) && !$this->isOriginalStripePaymentMethod($subscription, $paymentMethod)) {
             $data['payment_settings'] = [
                 'payment_method_types' => [self::paymentMethodToStripeType($paymentMethod)],
             ];
@@ -3540,8 +3620,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     /**
      * Resolve o único método de pagamento da assinatura, como `invoicePaymentMethod()` faz
      * para a fatura; nulo quando o model não aponta método (a Stripe cobra o método padrão do
-     * cliente). Mais de um método é recusado (`MULTIPLE_PAYMENT_METHODS`), e um método fora
-     * do mapa do driver é recusado pela capability dele.
+     * cliente). Pix Automático é aceito (o mandato da assinatura); mais de um método é
+     * recusado (`MULTIPLE_PAYMENT_METHODS`), e um método fora do mapa do driver é recusado
+     * pela capability dele.
      *
      * @param  Subscription  $subscription
      * @return PaymentMethod|null
@@ -3560,7 +3641,11 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
 
         $method = empty($methods) ? null : reset($methods);
-        if (!is_null($method) && !in_array($method, self::PAYMENT_METHOD_TYPES, true)) {
+        if (
+            !is_null($method)
+            && $method !== PaymentMethod::AUTOMATIC_PIX
+            && !in_array($method, self::PAYMENT_METHOD_TYPES, true)
+        ) {
             throw UnsupportedOperationException::forGateway($this, Capability::forPaymentMethod($method));
         }
 
@@ -3893,6 +3978,100 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
+     * Monta o `mandate_options` do Pix Automático de uma assinatura, a partir do plano e de
+     * `Subscription::$automaticPix`. A agenda (`payment_schedule`) vem da frequência informada
+     * em `automaticPix` ou do intervalo do plano (`PIX_MANDATE_SCHEDULES`); intervalo sem
+     * agenda é recusado antes da requisição. O valor é a soma do plano com os itens
+     * recorrentes; com desconto na assinatura o débito varia entre ciclos e o valor vira um
+     * teto (`amount_type` `maximum`). O `start_date` vem de `automaticPix->startsAt`, senão do
+     * fim do trial ou de `nextBillingAt`, com o mínimo de três dias a partir de hoje (data
+     * derivada anterior ao mínimo é elevada a ele; data informada anterior é recusada). O
+     * `end_date` vem de `automaticPix->endsAt` e o `reference` (nome exibido no aplicativo do
+     * banco) da configuração `multi-payment.gateways.stripe.pix_mandate_reference`.
+     *
+     * @param  Subscription  $subscription
+     * @param  string  $priceId
+     * @return array
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function pixMandateOptions(Subscription $subscription, string $priceId): array
+    {
+        $automaticPix = $subscription->automaticPix;
+        $stripePrice = $this->stripeRequest(function () use ($priceId) {
+            return $this->client->prices->retrieve($priceId);
+        });
+
+        $schedule = $automaticPix?->frequency;
+        if (is_null($schedule)) {
+            $interval = ($stripePrice->recurring->interval ?? 'month')
+                . ':' . ($stripePrice->recurring->interval_count ?? 1);
+            $schedule = self::PIX_MANDATE_SCHEDULES[$interval] ?? null;
+            if (is_null($schedule)) {
+                throw UnsupportedOperationException::restricted(
+                    (string) $this,
+                    Capability::AUTOMATIC_PIX,
+                    'O Pix Automático aceita agenda semanal, mensal, trimestral, semestral ou anual,'
+                    . " e o intervalo do plano [{$interval}] não corresponde a nenhuma delas;"
+                    . ' informe a frequência em automaticPix.'
+                );
+            }
+        }
+
+        if (is_null($stripePrice->unit_amount ?? null)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::AUTOMATIC_PIX,
+                'O mandato de Pix Automático precisa do valor por ciclo, e o Price do plano'
+                . " [{$priceId}] não tem unit_amount fixo (preço por camadas ou por uso);"
+                . ' use um plano de valor fixo.'
+            );
+        }
+        $amount = (int) $stripePrice->unit_amount;
+        foreach ($subscription->items ?? [] as $item) {
+            if ($item instanceof SubscriptionItem && $item->recurring && !is_null($item->amount)) {
+                $amount += (int) $item->amount * (int) ($item->quantity ?? 1);
+            }
+        }
+
+        $minimumStart = Carbon::now()->addDays(self::PIX_MANDATE_DEBIT_OFFSET_DAYS)->startOfDay();
+        // as datas derivadas usam o início do dia: dentro do mesmo dia, o retry com a mesma
+        // chave de idempotência reproduz o payload
+        $startsAt = $automaticPix?->startsAt
+            ?? $subscription->trialEndsAt
+            ?? (!empty($subscription->trialDays) ? Carbon::now()->addDays($subscription->trialDays)->startOfDay() : null)
+            ?? $subscription->nextBillingAt;
+        if (!is_null($automaticPix?->startsAt) && $automaticPix->startsAt->lt($minimumStart)) {
+            throw ModelAttributeValidationException::invalid(
+                'AutomaticPix',
+                'startsAt',
+                'startsAt must be at least ' . self::PIX_MANDATE_DEBIT_OFFSET_DAYS
+                . ' days from now for automatic pix on the stripe gateway'
+            );
+        }
+        if (is_null($startsAt) || $startsAt->lt($minimumStart)) {
+            $startsAt = $minimumStart;
+        }
+
+        $mandateOptions = [
+            'amount' => $amount,
+            'amount_type' => empty($subscription->discounts) ? 'fixed' : 'maximum',
+            'payment_schedule' => $schedule,
+            'start_date' => $startsAt->getTimestamp(),
+        ];
+
+        $reference = Config::get('multi-payment.gateways.stripe.pix_mandate_reference');
+        if (!empty($reference)) {
+            $mandateOptions['reference'] = $reference;
+        }
+        if (!is_null($automaticPix?->endsAt)) {
+            $mandateOptions['end_date'] = $automaticPix->endsAt->getTimestamp();
+        }
+
+        return $mandateOptions;
+    }
+
+    /**
      * Itens da atualização declarativa: os subscription items atuais fora da lista desejada
      * são removidos (o item do plano fica), item com `id` tem a quantidade atualizada e item
      * novo cria Price sob demanda no intervalo do plano; item com `recurring` falso vai como
@@ -4174,23 +4353,35 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
                 : (array) $metadata;
         }
 
-        $defaultPaymentMethod = $stripeSubscription->default_payment_method ?? null;
-        $method = is_object($defaultPaymentMethod)
-            ? (self::PAYMENT_METHOD_TYPES[$defaultPaymentMethod->type ?? ''] ?? null)
-            : null;
-        $types = $stripeSubscription->payment_settings->payment_method_types ?? null;
-        if (is_array($types)) {
-            $methods = array_values(array_filter(array_map(
-                static fn ($type) => self::PAYMENT_METHOD_TYPES[$type] ?? null,
-                $types
-            )));
-            if (!empty($methods)) {
-                $subscription->availablePaymentMethods = $methods;
-                $method = $method ?? (count($methods) === 1 ? $methods[0] : null);
+        $pixMandateOptions = $stripeSubscription->payment_settings->payment_method_options->pix->mandate_options ?? null;
+        if (is_object($pixMandateOptions)) {
+            // o mandato faz do Pix Automático o método da assinatura; a lista fica de fora
+            // para um save() posterior não recusar o método como ausente dela
+            $subscription->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
+            $subscription->automaticPix = $this->parsePixMandateOptions(
+                $pixMandateOptions,
+                $subscription->automaticPix,
+                $planItem->current_period_end ?? null
+            );
+        } else {
+            $defaultPaymentMethod = $stripeSubscription->default_payment_method ?? null;
+            $method = is_object($defaultPaymentMethod)
+                ? (self::PAYMENT_METHOD_TYPES[$defaultPaymentMethod->type ?? ''] ?? null)
+                : null;
+            $types = $stripeSubscription->payment_settings->payment_method_types ?? null;
+            if (is_array($types)) {
+                $methods = array_values(array_filter(array_map(
+                    static fn ($type) => self::PAYMENT_METHOD_TYPES[$type] ?? null,
+                    $types
+                )));
+                if (!empty($methods)) {
+                    $subscription->availablePaymentMethods = $methods;
+                    $method = $method ?? (count($methods) === 1 ? $methods[0] : null);
+                }
             }
-        }
-        if (!is_null($method)) {
-            $subscription->paymentMethod = $method;
+            if (!is_null($method)) {
+                $subscription->paymentMethod = $method;
+            }
         }
 
         if ($withLatestInvoice) {
@@ -4206,6 +4397,44 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $subscription->original = $stripeSubscription;
 
         return $subscription;
+    }
+
+    /**
+     * Converte o `mandate_options` do Pix Automático de uma assinatura no model genérico. A
+     * frequência é a agenda (`payment_schedule`), as datas vêm de `start_date` e `end_date` e
+     * as duas datas derivadas seguem o ciclo: a notificação de pré-débito sai no início do
+     * ciclo (`current_period_end` da leitura) e o débito acontece três dias depois. O id e o
+     * status do mandato não vêm na assinatura; chegam pelo webhook `mandate.updated` ou pela
+     * consulta de cancelamentos.
+     *
+     * @param  object  $mandateOptions
+     * @param  AutomaticPix|null  $automaticPix
+     * @param  int|null  $currentPeriodEnd
+     * @return AutomaticPix
+     */
+    private function parsePixMandateOptions(
+        object $mandateOptions,
+        ?AutomaticPix $automaticPix,
+        ?int $currentPeriodEnd
+    ): AutomaticPix {
+        $automaticPix ??= new AutomaticPix();
+
+        $automaticPix->frequency = $mandateOptions->payment_schedule ?? $automaticPix->frequency;
+        if (!empty($mandateOptions->start_date)) {
+            $automaticPix->startsAt = Carbon::createFromTimestamp($mandateOptions->start_date);
+        }
+        if (!empty($mandateOptions->end_date)) {
+            $automaticPix->endsAt = Carbon::createFromTimestamp($mandateOptions->end_date);
+        }
+        if (!empty($currentPeriodEnd)) {
+            $automaticPix->preDebitNotificationAt = Carbon::createFromTimestamp($currentPeriodEnd);
+            $automaticPix->nextDebitAt = Carbon::createFromTimestamp($currentPeriodEnd)
+                ->addDays(self::PIX_MANDATE_DEBIT_OFFSET_DAYS);
+        }
+        $automaticPix->gateway = 'stripe';
+        $automaticPix->original = $mandateOptions;
+
+        return $automaticPix;
     }
 
     /**
@@ -4232,46 +4461,140 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
     /**
      * @inheritDoc
+     *
+     * No Stripe a Stripe agenda e retenta cada débito do mandato; a operação lança
+     * `UnsupportedOperationException` com `reason` `managed_by_gateway` sem nenhuma
+     * requisição.
      */
     public function rescheduleAutomaticPixPayment(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
-        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
+        throw UnsupportedOperationException::managedByGateway(
+            (string) $this,
+            Capability::AUTOMATIC_PIX,
+            'A Stripe agenda e retenta as cobranças do mandato; não há reagendamento pela lib.'
+        );
     }
 
     /**
      * @inheritDoc
+     *
+     * No Stripe cada débito do mandato é conduzido pela Stripe; a operação lança
+     * `UnsupportedOperationException` com `reason` `managed_by_gateway` sem nenhuma
+     * requisição.
      */
     public function cancelAutomaticPixScheduledPayment(
         AutomaticPixCharge $charge,
         ?string $idempotencyKey = null
     ): AutomaticPixCancellation {
-        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
+        throw UnsupportedOperationException::managedByGateway(
+            (string) $this,
+            Capability::AUTOMATIC_PIX,
+            'A Stripe conduz cada débito do mandato; não há cancelamento de um agendamento pela lib.'
+        );
     }
 
     /**
      * @inheritDoc
+     *
+     * No Stripe o mandato vive na assinatura e é encerrado com ela; a operação lança
+     * `UnsupportedOperationException` com `reason` `managed_by_gateway` orientando o
+     * cancelamento da assinatura.
      */
     public function cancelAutomaticPixRecurrence(
         AutomaticPix $automaticPix,
         ?string $idempotencyKey = null
     ): AutomaticPixCancellation {
-        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
+        throw UnsupportedOperationException::managedByGateway(
+            (string) $this,
+            Capability::AUTOMATIC_PIX,
+            'O mandato vive na assinatura: cancele a assinatura (cancelSubscription) e a Stripe o encerra.'
+        );
     }
 
     /**
      * @inheritDoc
+     *
+     * No Stripe não existe um objeto de cancelamento: a consulta lê o Mandate
+     * (`recurrenceId`, id `mandate_`) e responde pelo status dele. Mandato `inactive` devolve
+     * o cancelamento como `completed`; mandato ainda ativo lança `NotFoundException`.
      */
     public function getAutomaticPixCancellation(AutomaticPixCancellation $cancellation): AutomaticPixCancellation
     {
-        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
+        if (empty($cancellation->recurrenceId)) {
+            throw ModelAttributeValidationException::required('AutomaticPixCancellation', 'recurrenceId');
+        }
+
+        $stripeMandate = $this->retrieveStripeMandate($cancellation->recurrenceId);
+        if (($stripeMandate->status ?? null) !== self::MANDATE_STATUS_INACTIVE) {
+            throw new NotFoundException(
+                "The automatic pix recurrence [{$cancellation->recurrenceId}] has no cancellation on stripe:"
+                . ' the mandate is still active.'
+            );
+        }
+
+        return $this->parseMandateCancellation($stripeMandate, $cancellation);
     }
 
     /**
      * @inheritDoc
+     *
+     * No Stripe não existe um objeto de cancelamento: a consulta lê o Mandate (`id` do model,
+     * `mandate_`) e devolve no máximo um item, `completed`, quando o mandato está `inactive`
+     * (lista vazia com o mandato ativo ou fora da primeira página). A leitura também preenche
+     * `mandateId` e `mandateStatus` no model informado.
      */
     public function listAutomaticPixCancellations(AutomaticPix $automaticPix, int $page = 1, int $limit = 100): array
     {
-        throw UnsupportedOperationException::forGateway($this, Capability::AUTOMATIC_PIX);
+        if (empty($automaticPix->id)) {
+            throw ModelAttributeValidationException::required('AutomaticPix', 'id');
+        }
+
+        $stripeMandate = $this->retrieveStripeMandate($automaticPix->id);
+        $automaticPix->mandateId = $stripeMandate->id ?? $automaticPix->id;
+        $automaticPix->mandateStatus = $stripeMandate->status ?? null;
+
+        if ($page > 1 || ($stripeMandate->status ?? null) !== self::MANDATE_STATUS_INACTIVE) {
+            return [];
+        }
+
+        return [$this->parseMandateCancellation($stripeMandate)];
+    }
+
+    /**
+     * Lê um Mandate da Stripe pelo id.
+     *
+     * @param  string  $mandateId
+     * @return \Stripe\Mandate
+     * @throws GatewayException|GatewayNotAvailableException
+     */
+    private function retrieveStripeMandate(string $mandateId)
+    {
+        return $this->stripeRequest(function () use ($mandateId) {
+            return $this->client->mandates->retrieve($mandateId);
+        });
+    }
+
+    /**
+     * Converte um Mandate `inactive` no cancelamento genérico: `completed`, com o id do
+     * mandato como recorrência. A Stripe não informa a data do encerramento.
+     *
+     * @param  object  $stripeMandate
+     * @param  AutomaticPixCancellation|null  $cancellation
+     * @return AutomaticPixCancellation
+     */
+    private function parseMandateCancellation(
+        object $stripeMandate,
+        ?AutomaticPixCancellation $cancellation = null
+    ): AutomaticPixCancellation {
+        $cancellation ??= new AutomaticPixCancellation();
+
+        $cancellation->id ??= $stripeMandate->id ?? null;
+        $cancellation->recurrenceId ??= $stripeMandate->id ?? null;
+        $cancellation->status = AutomaticPixCancellation::STATUS_COMPLETED;
+        $cancellation->gateway = 'stripe';
+        $cancellation->original = $stripeMandate;
+
+        return $cancellation;
     }
 
     /**

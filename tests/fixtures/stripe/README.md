@@ -92,6 +92,20 @@ Montadas sobre `active.json` (ou `trialing.json`), porque a sandbox não produz 
 | `unpaid.json` | status |
 | `paused.json` | status, sobre `trialing.json` (trial que terminou sem método de pagamento) |
 
+Montadas a partir da documentação do Pix Automático (a conta ainda não tem o recurso
+liberado; regravar na sandbox quando a Stripe o liberar):
+
+| Arquivo | Diferença |
+|---|---|
+| `incomplete_automatic_pix.json` | sobre `incomplete.json`: `payment_settings` com `payment_method_types: ['pix']` e `payment_method_options.pix.mandate_options`, sem método padrão |
+| `active_automatic_pix.json` | sobre `active.json`: o mesmo `payment_settings` e um PaymentMethod `pix` como método padrão |
+
+## `mandates/`
+
+Montadas a partir da documentação do objeto Mandate (a conta ainda não tem Pix Automático
+liberado): `active.json` e `inactive.json` diferem só no `status`. Regravar na sandbox quando
+o recurso for liberado.
+
 ## `webhooks/`
 
 Eventos entregues por `stripe listen` (CLI 1.50.10) numa sessão de sandbox em 2026-09-04, um

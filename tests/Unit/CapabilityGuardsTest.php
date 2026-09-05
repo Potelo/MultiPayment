@@ -131,6 +131,21 @@ class CapabilityGuardsTest extends TestCase
         $this->assertNotImplemented(Capability::AUTOMATIC_PIX, fn () => $builder->create());
     }
 
+    /**
+     * A cobrança sobre uma recorrência existente (`automaticPixCharge` sem `automaticPix`)
+     * recebe a mesma recusa da recorrência nova, antes de criar o cliente.
+     */
+    public function testAutomaticPixChargeInvoiceOnStripeFailsBeforeCreatingTheCustomer(): void
+    {
+        $builder = (new MultiPayment('stripe'))->newInvoice()
+            ->addCustomer('Fulano', 'fulano@exemplo.com', '20176996915')
+            ->addItem('Mensalidade', 10000, 1)
+            ->addAvailablePaymentMethod(PaymentMethod::PIX)
+            ->addAutomaticPixCharge('Mensalidade do plano');
+
+        $this->assertNotImplemented(Capability::AUTOMATIC_PIX, fn () => $builder->create());
+    }
+
     public function testRawCardInvoiceOnStripeFailsBeforeCreatingTheCustomer(): void
     {
         $builder = (new MultiPayment('stripe'))->newInvoice()
@@ -146,6 +161,31 @@ class CapabilityGuardsTest extends TestCase
             fn () => $builder->create()
         );
         $this->assertSame([], $this->stripeHttp->calls);
+    }
+
+    /**
+     * A assinatura com Pix Automático exige `MANAGES_RECURRENCE`, então na Iugu (onde a
+     * aplicação é o motor de recorrência) ela é recusada antes de criar o cliente.
+     */
+    public function testAutomaticPixSubscriptionOnIuguFailsBeforeCreatingTheCustomer(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+        $customer = new Customer();
+        $customer->name = 'Fulano';
+        $customer->email = 'fulano@exemplo.com';
+
+        $builder = (new MultiPayment(new IuguGateway($api)))->newSubscription()
+            ->setPlanId('plano_mensal')
+            ->setCustomer($customer)
+            ->setPaymentMethod(PaymentMethod::AUTOMATIC_PIX);
+
+        $this->assertUnsupported(
+            Capability::MANAGES_RECURRENCE,
+            UnsupportedOperationException::REASON_GATEWAY_LIMITATION,
+            'iugu',
+            fn () => $builder->create()
+        );
+        $this->assertCount(0, $api->calls);
     }
 
     public function testPercentDiscountSubscriptionOnIuguFailsBeforeCreatingTheCustomer(): void
@@ -384,7 +424,8 @@ class CapabilityGuardsTest extends TestCase
         $this->assertSame($iugu, $multiPayment->gateway($iugu));
         $this->assertTrue($multiPayment->supports(Capability::PIX));
         $this->assertTrue($multiPayment->supports(Capability::BANK_SLIP));
-        $this->assertFalse($multiPayment->supports(Capability::AUTOMATIC_PIX));
+        $this->assertTrue($multiPayment->supports(Capability::AUTOMATIC_PIX));
+        $this->assertFalse($multiPayment->supports(Capability::DELAYED_CAPTURE));
         $this->assertTrue($multiPayment->supports(Capability::AUTOMATIC_PIX, 'iugu'));
         $this->assertTrue($multiPayment->gateway('iugu')->supports(Capability::INSTALLMENTS));
         $this->assertSame((new StripeGateway())->capabilities(), $multiPayment->capabilities());
@@ -407,7 +448,7 @@ class CapabilityGuardsTest extends TestCase
         Facade::getFacadeApplication()->bind('multiPayment', fn () => new MultiPayment('stripe'));
 
         $this->assertTrue(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::PIX));
-        $this->assertFalse(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::AUTOMATIC_PIX));
+        $this->assertFalse(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::DELAYED_CAPTURE));
         $this->assertContains(Capability::SUBSCRIPTIONS, \Potelo\MultiPayment\Facades\MultiPayment::capabilities('iugu'));
         $this->assertInstanceOf(StripeGateway::class, \Potelo\MultiPayment\Facades\MultiPayment::gateway());
     }

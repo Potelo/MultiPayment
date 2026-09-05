@@ -22,7 +22,7 @@ enum Capability: string
     /** Fatura paga com boleto bancário. */
     case BANK_SLIP = 'bank_slip';
 
-    /** Recorrência de Pix Automático criada junto com a fatura, com reagendamento e cancelamento pela lib. */
+    /** Recorrência de Pix Automático autorizada pelo pagador; quem agenda cada cobrança depende de `MANAGES_RECURRENCE`. */
     case AUTOMATIC_PIX = 'automatic_pix';
 
     /** Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. */

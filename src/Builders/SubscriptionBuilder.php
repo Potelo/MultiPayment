@@ -5,6 +5,7 @@ namespace Potelo\MultiPayment\Builders;
 use Carbon\Carbon;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
@@ -141,6 +142,22 @@ class SubscriptionBuilder extends Builder
     public function setPaymentMethod(PaymentMethod|string $paymentMethod): SubscriptionBuilder
     {
         $this->model->paymentMethod = $paymentMethod;
+
+        return $this;
+    }
+
+    /**
+     * Define o estado do mandato de Pix Automático (`startsAt`, `endsAt`, `frequency`) e o
+     * método de pagamento como Pix Automático (ver `Subscription::$automaticPix`).
+     *
+     * @param  AutomaticPix  $automaticPix
+     *
+     * @return $this
+     */
+    public function setAutomaticPix(AutomaticPix $automaticPix): SubscriptionBuilder
+    {
+        $this->model->automaticPix = $automaticPix;
+        $this->model->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
 
         return $this;
     }

@@ -7,8 +7,9 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 
 /**
  * Operação recusada pela lib antes de qualquer requisição, porque o gateway não oferece a
- * capability (`gateway_limitation`) ou porque o gateway oferece e a lib ainda não a implementou
- * para ele (`not_implemented`).
+ * capability (`gateway_limitation`), porque o gateway oferece e a lib ainda não a implementou
+ * para ele (`not_implemented`) ou porque a operação é conduzida pelo próprio gateway e a
+ * chamada pela lib não se aplica (`managed_by_gateway`).
  */
 class UnsupportedOperationException extends MultiPaymentException
 {
@@ -17,6 +18,9 @@ class UnsupportedOperationException extends MultiPaymentException
 
     /** O gateway oferece o recurso e a lib ainda não o implementou para ele. */
     public const REASON_NOT_IMPLEMENTED = 'not_implemented';
+
+    /** O próprio gateway conduz a operação; a chamada pela lib não se aplica. */
+    public const REASON_MANAGED_BY_GATEWAY = 'managed_by_gateway';
 
     /**
      * Capability recusada, ou nulo quando a recusa vem de uma regra que nenhuma capability
@@ -34,7 +38,7 @@ class UnsupportedOperationException extends MultiPaymentException
     public string $gateway;
 
     /**
-     * Motivo da recusa: `gateway_limitation` ou `not_implemented`.
+     * Motivo da recusa: `gateway_limitation`, `not_implemented` ou `managed_by_gateway`.
      *
      * @var string
      */
@@ -108,6 +112,23 @@ class UnsupportedOperationException extends MultiPaymentException
     public static function restricted(string $gateway, Capability $capability, string $message): static
     {
         return new static($message, $gateway, $capability, self::REASON_GATEWAY_LIMITATION);
+    }
+
+    /**
+     * O próprio gateway conduz a operação, então a chamada pela lib não se aplica; a mensagem
+     * orienta o caminho que vale nesse gateway.
+     *
+     * @param  string  $gateway
+     * @param  Capability  $capability
+     * @param  string  $detail  orientação acrescentada ao fim da mensagem
+     * @return static
+     */
+    public static function managedByGateway(string $gateway, Capability $capability, string $detail = ''): static
+    {
+        $message = "No gateway {$gateway} a operação de [{$capability->value}] é conduzida pelo próprio gateway"
+            . ' e não se aplica pela lib.';
+
+        return new static(self::appendDetail($message, $detail), $gateway, $capability, self::REASON_MANAGED_BY_GATEWAY);
     }
 
     /**

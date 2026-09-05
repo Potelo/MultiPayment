@@ -10,6 +10,7 @@ use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
 use Potelo\MultiPayment\Idempotency\IdempotencyKey;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
 /**
@@ -435,6 +436,7 @@ class Invoice extends Model
         // gravado no model prevalece)
         $gateway = ConfigurationHelper::resolveGateway($this->gatewayForSave($gateway));
         $this->assertGatewaySupports($gateway);
+        $this->assertAutomaticPixBelongsToTheInvoice($gateway);
         if (empty($this->customer->id)) {
             $this->customer->save($gateway, $validate, IdempotencyKey::derive($idempotencyKey, 'customer'));
         }
@@ -525,9 +527,9 @@ class Invoice extends Model
     /**
      * Na criação, além do que o `Model` exige, a fatura precisa da capability de cada método
      * de `resolvedPaymentMethods()`, de `MULTIPLE_PAYMENT_METHODS` quando há mais de um, de
-     * `AUTOMATIC_PIX` quando `automaticPix` está preenchido e de `RAW_CARD_DATA` quando o
-     * cartão vem com os dados crus (sem `id` nem `token`). Com `id` preenchido, só o que o
-     * `Model` exige.
+     * `AUTOMATIC_PIX` quando `automaticPix` ou `automaticPixCharge` está preenchido e de
+     * `RAW_CARD_DATA` quando o cartão vem com os dados crus (sem `id` nem `token`). Com `id`
+     * preenchido, só o que o `Model` exige.
      *
      * @return Capability[]
      * @throws ModelAttributeValidationException  método de pagamento fora de `PaymentMethod::selectable()`
@@ -547,7 +549,7 @@ class Invoice extends Model
         if (count($methods) > 1) {
             $capabilities[] = Capability::MULTIPLE_PAYMENT_METHODS;
         }
-        if (!empty($this->automaticPix)) {
+        if (!empty($this->automaticPix) || !empty($this->automaticPixCharge)) {
             $capabilities[] = Capability::AUTOMATIC_PIX;
         }
         if (!empty($this->creditCard) && empty($this->creditCard->id) && empty($this->creditCard->token)) {
@@ -555,6 +557,34 @@ class Invoice extends Model
         }
 
         return array_values(array_unique($capabilities, SORT_REGULAR));
+    }
+
+    /**
+     * Recusa `automaticPix` e `automaticPixCharge` num gateway que gerencia a recorrência
+     * (`MANAGES_RECURRENCE`): nele o mandato vive na assinatura, e a fatura avulsa com
+     * recorrência ainda não é suportada pela lib. A recusa acontece antes de qualquer
+     * requisição, inclusive antes de criar o cliente.
+     *
+     * @param  GatewayContract  $gateway
+     * @return void
+     * @throws UnsupportedOperationException
+     */
+    private function assertAutomaticPixBelongsToTheInvoice(GatewayContract $gateway): void
+    {
+        if (
+            (empty($this->automaticPix) && empty($this->automaticPixCharge))
+            || !$gateway->supports(Capability::MANAGES_RECURRENCE)
+        ) {
+            return;
+        }
+
+        throw UnsupportedOperationException::notImplemented(
+            (string) $gateway,
+            Capability::AUTOMATIC_PIX,
+            'Nesse gateway a recorrência de Pix Automático vive na assinatura: crie uma'
+            . ' Subscription com paymentMethod automatic_pix. A fatura avulsa com automaticPix'
+            . ' ainda não é suportada pela lib.'
+        );
     }
 
     /**

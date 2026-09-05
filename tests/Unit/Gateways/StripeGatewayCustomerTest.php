@@ -277,21 +277,22 @@ class StripeGatewayCustomerTest extends TestCase
         $this->assertSame('123', $result->address->number);
     }
 
-    public function testUnimplementedOperationThrowsUnsupportedOperationExceptionWithoutHittingTheApi(): void
+    public function testManagedByGatewayOperationThrowsUnsupportedOperationExceptionWithoutHittingTheApi(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
 
         try {
             (new StripeGateway())->rescheduleAutomaticPixPayment(new Invoice());
-            $this->fail('Pix Automático no Stripe deveria lançar UnsupportedOperationException');
+            $this->fail('Reagendamento de Pix Automático no Stripe deveria lançar UnsupportedOperationException');
         } catch (UnsupportedOperationException $e) {
             $this->assertSame(Capability::AUTOMATIC_PIX, $e->capability);
             $this->assertSame('stripe', $e->gateway);
-            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
-            $this->assertTrue($e->isNotImplemented());
+            $this->assertSame(UnsupportedOperationException::REASON_MANAGED_BY_GATEWAY, $e->reason);
+            $this->assertFalse($e->isNotImplemented());
             $this->assertSame(
-                'A capability [automatic_pix] ainda não está implementada nesta lib para o gateway stripe;'
-                . ' o gateway oferece o recurso.',
+                'No gateway stripe a operação de [automatic_pix] é conduzida pelo próprio gateway'
+                . ' e não se aplica pela lib.'
+                . ' A Stripe agenda e retenta as cobranças do mandato; não há reagendamento pela lib.',
                 $e->getMessage()
             );
         }

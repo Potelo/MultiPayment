@@ -36,5 +36,7 @@
         <env name="IUGU_ID" value="" />
         <env name="IUGU_APIKEY" value="" />
         <env name="STRIPE_APIKEY" value="" />
+        <env name="STRIPE_PIX_MANDATE_REFERENCE" value="MultiPayment Teste" />
+        <env name="STRIPE_PIX_AUTOMATICO_ENABLED" value="" />
     </php>
 </phpunit>

@@ -60,12 +60,14 @@ class Subscription extends Model
     /**
      * Além de `SUBSCRIPTIONS`, a assinatura precisa da capability de cada método de
      * `resolvedPaymentMethods()` (e de `MULTIPLE_PAYMENT_METHODS` quando há mais de um), de
-     * `RAW_CARD_DATA` quando o cartão vem com os dados crus (sem `id` nem `token`), de
-     * `PERCENT_DISCOUNT` quando algum desconto é percentual e de `COUPONS` quando algum
-     * desconto é limitado a mais de um ciclo ou tem data de validade.
+     * `MANAGES_RECURRENCE` quando o método é Pix Automático (a assinatura com mandato só
+     * existe onde o gateway agenda as cobranças), de `RAW_CARD_DATA` quando o cartão vem com
+     * os dados crus (sem `id` nem `token`), de `PERCENT_DISCOUNT` quando algum desconto é
+     * percentual e de `COUPONS` quando algum desconto é limitado a mais de um ciclo ou tem
+     * data de validade.
      *
      * @return Capability[]
-     * @throws ModelAttributeValidationException  método de pagamento fora de `PaymentMethod::selectable()`
+     * @throws ModelAttributeValidationException  método de pagamento que a assinatura não aceita
      */
     public function requiredCapabilities(): array
     {
@@ -74,6 +76,9 @@ class Subscription extends Model
         $methods = $this->resolvedPaymentMethods();
         foreach ($methods as $method) {
             $capabilities[] = Capability::forPaymentMethod($method);
+        }
+        if (in_array(PaymentMethod::AUTOMATIC_PIX, $methods, true)) {
+            $capabilities[] = Capability::MANAGES_RECURRENCE;
         }
         if (count($methods) > 1) {
             $capabilities[] = Capability::MULTIPLE_PAYMENT_METHODS;
@@ -159,6 +164,16 @@ class Subscription extends Model
      * @var CreditCard|null
      */
     public ?CreditCard $creditCard = null;
+
+    /**
+     * Estado da recorrência de Pix Automático da assinatura, preenchido na leitura quando ela
+     * é cobrada por mandato (Stripe). Na escrita é opcional e refina o mandato: `startsAt`
+     * (primeiro débito, no mínimo três dias à frente), `endsAt` (fim do mandato) e `frequency`
+     * (agenda, derivada do intervalo do plano quando ausente).
+     *
+     * @var AutomaticPix|null
+     */
+    public ?AutomaticPix $automaticPix = null;
 
     /**
      * Duração do período de teste em dias, contada do momento da requisição. O driver a
@@ -270,6 +285,12 @@ class Subscription extends Model
             $data['latest_invoice'] = $invoice;
         }
 
+        if (!empty($data['automatic_pix']) && is_array($data['automatic_pix'])) {
+            $automaticPix = new AutomaticPix();
+            $automaticPix->fill($data['automatic_pix']);
+            $data['automatic_pix'] = $automaticPix;
+        }
+
         $data['items'] = $this->fillCollection($data['items'] ?? null, SubscriptionItem::class);
         $data['discounts'] = $this->fillCollection($data['discounts'] ?? null, SubscriptionDiscount::class);
 
@@ -323,7 +344,7 @@ class Subscription extends Model
             }
         }
 
-        foreach (['customer', 'credit_card', 'latest_invoice'] as $key) {
+        foreach (['customer', 'credit_card', 'latest_invoice', 'automatic_pix'] as $key) {
             if (!empty($array[$key])) {
                 $array[$key] = $array[$key]->toArray();
             }
@@ -354,8 +375,10 @@ class Subscription extends Model
      * string apensada por `[]=` entra no array sem conversão); senão o método de
      * `resolvedPaymentMethod()`; senão lista vazia. Lança `ModelAttributeValidationException`
      * para valor fora de `PaymentMethod::selectable()`, para `paymentMethod` fora da lista
-     * informada e para `creditCard` sem cartão entre os métodos resultantes (num model lido do
-     * gateway a lista vem preenchida: para trocar o método, troque a lista ou a zere).
+     * informada, para `creditCard` sem cartão entre os métodos resultantes (num model lido do
+     * gateway a lista vem preenchida: para trocar o método, troque a lista ou a zere) e para
+     * `automaticPix` sem Pix Automático como método (o estado do mandato só existe nesse
+     * método; sem a recusa, ele seria descartado em silêncio).
      *
      * @return PaymentMethod[]
      * @throws ModelAttributeValidationException
@@ -379,6 +402,15 @@ class Subscription extends Model
 
         Invoice::assertCreditCardIsPayable($this->getClassName(), $this->creditCard, $methods);
 
+        if (!empty($this->automaticPix) && !in_array(PaymentMethod::AUTOMATIC_PIX, $methods, true)) {
+            throw ModelAttributeValidationException::invalid(
+                $this->getClassName(),
+                'automaticPix',
+                'automaticPix was given but automatic_pix is not the payment method;'
+                . ' set paymentMethod to automatic_pix or remove it'
+            );
+        }
+
         return $methods;
     }
 
@@ -393,21 +425,32 @@ class Subscription extends Model
 
     /**
      * Na escrita, `paymentMethod` precisa ser um método selecionável
-     * (`PaymentMethod::selectable()`).
+     * (`PaymentMethod::selectable()`) ou Pix Automático, que na assinatura é um método de
+     * primeira classe (mandato).
      *
      * @return void
      * @throws ModelAttributeValidationException
      */
     protected function validatePaymentMethodAttribute(): void
     {
-        if (!in_array($this->paymentMethod, PaymentMethod::selectable(), true)) {
-            $accepted = implode(', ', array_column(PaymentMethod::selectable(), 'value'));
+        $accepted = [...PaymentMethod::selectable(), PaymentMethod::AUTOMATIC_PIX];
+        if (!in_array($this->paymentMethod, $accepted, true)) {
+            $acceptedValues = implode(', ', array_column($accepted, 'value'));
             throw ModelAttributeValidationException::invalid(
                 $this->getClassName(),
                 'paymentMethod',
-                "paymentMethod must be one of: {$accepted}"
+                "paymentMethod must be one of: {$acceptedValues}"
             );
         }
+    }
+
+    /**
+     * @return void
+     * @throws ModelAttributeValidationException
+     */
+    protected function validateAutomaticPixAttribute(): void
+    {
+        $this->automaticPix->validate();
     }
 
     /**
@@ -499,7 +542,10 @@ class Subscription extends Model
             );
         }
 
-        if (in_array('paymentMethod', $attributes) && in_array('creditCard', $attributes)) {
+        if (
+            in_array('automaticPix', $attributes)
+            || (in_array('paymentMethod', $attributes) && in_array('creditCard', $attributes))
+        ) {
             $this->resolvedPaymentMethods();
         }
 

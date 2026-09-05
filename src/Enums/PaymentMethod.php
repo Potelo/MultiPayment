@@ -20,9 +20,10 @@ enum PaymentMethod: string
     case PIX = 'pix';
 
     /**
-     * Pix Automático, recorrência autorizada pelo pagador. Nenhum driver o emite ainda em
-     * `Invoice::$paymentMethod`: a fatura com Pix Automático é criada com `PIX` em
-     * `availablePaymentMethods` e `automaticPix` preenchido.
+     * Pix Automático, recorrência autorizada pelo pagador. No Stripe é o método de uma
+     * assinatura com mandato (`Subscription::$paymentMethod`); na Iugu a recorrência nasce na
+     * fatura, criada com `PIX` em `availablePaymentMethods` e `automaticPix` preenchido, e
+     * nenhum driver o emite em `Invoice::$paymentMethod`.
      */
     case AUTOMATIC_PIX = 'automatic_pix';
 

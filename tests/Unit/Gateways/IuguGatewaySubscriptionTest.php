@@ -108,6 +108,32 @@ class IuguGatewaySubscriptionTest extends TestCase
         ], $call['data']);
     }
 
+    /**
+     * Na Iugu a recorrência de Pix Automático nasce na fatura: a assinatura com o método é
+     * recusada pela falta de `MANAGES_RECURRENCE`, a mesma capability do guard do model, sem
+     * nenhuma requisição.
+     */
+    public function testCreateSubscriptionRejectsAutomaticPixAsThePaymentMethod(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+        $gateway = new IuguGateway($api);
+
+        $subscription = new Subscription();
+        $subscription->fill(['plan_id' => 'plano_mensal', 'customer' => ['id' => 'cus_1']]);
+        $subscription->paymentMethod = PaymentMethod::AUTOMATIC_PIX;
+
+        try {
+            $gateway->createSubscription($subscription);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::MANAGES_RECURRENCE, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+            $this->assertStringContainsString('nasce na fatura', $e->getMessage());
+        }
+
+        $this->assertCount(0, $api->calls);
+    }
+
     public function testGatewayOptionsOverrideTheGeneratedPayload(): void
     {
         $api = new QueuedIuguApiRequest([$this->subscriptionResponse()]);

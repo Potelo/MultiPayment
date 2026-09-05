@@ -78,6 +78,7 @@ IUGU_MAX_INSTALLMENTS=12   # opcional; máximo de parcelas habilitado na conta (
 
 #stripe
 STRIPE_APIKEY=
+STRIPE_PIX_MANDATE_REFERENCE=   # opcional; nome exibido no aplicativo do banco no mandato de Pix Automático (ver Pix Automático)
 
 #idempotência (opcional; ver a seção Idempotência)
 MULTIPAYMENT_IDEMPOTENCY_TTL=86400
@@ -158,7 +159,9 @@ Toda operação fora das capabilities do gateway lança `UnsupportedOperationExc
 qualquer requisição**, inclusive antes de criar o cliente que acompanha a fatura ou a
 assinatura. A exceção traz `capability`, `gateway` e `reason` (`not_implemented` quando o
 gateway oferece e a lib ainda não implementou; `gateway_limitation` quando o gateway não
-oferece). Ver [Tratamento de erros](#tratamento-de-erros).
+oferece; `managed_by_gateway` quando o próprio gateway conduz a operação e a chamada pela lib
+não se aplica, como o agendamento de Pix Automático no Stripe). Ver
+[Tratamento de erros](#tratamento-de-erros).
 
 A matriz abaixo é gerada a partir das declarações dos drivers com `composer capabilities:table`;
 o teste `GatewayCapabilitiesTest` falha quando o README fica defasado em relação ao código. A
@@ -169,7 +172,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `CREDIT_CARD` | Fatura paga com cartão de crédito. | sim | sim | Stripe: Na conta brasileira só cartão de crédito Visa e Mastercard; outra bandeira é recusada na cobrança com DeclineCode::BRAND_NOT_SUPPORTED. |
 | `PIX` | Fatura paga com Pix avulso, com QR Code de pagamento único. | sim | sim |  |
 | `BANK_SLIP` | Fatura paga com boleto bancário. | sim | sim | Stripe: A Stripe aceita boleto de R$ 5,00 a R$ 49.999,99, com vencimento de hoje a 60 dias; fora dessas janelas a criação é recusada antes da requisição. |
-| `AUTOMATIC_PIX` | Recorrência de Pix Automático criada junto com a fatura, com reagendamento e cancelamento pela lib. | sim | não implementado |  |
+| `AUTOMATIC_PIX` | Recorrência de Pix Automático autorizada pelo pagador; quem agenda cada cobrança depende de `MANAGES_RECURRENCE`. | sim | sim | Iugu: A recorrência nasce na fatura (Invoice com automaticPix e método pix) e a aplicação é o motor de recorrência; a assinatura não aceita paymentMethod automatic_pix.<br>Stripe: A recorrência é o mandato de uma assinatura (paymentMethod automatic_pix na criação) e o gateway agenda as cobranças; fatura avulsa com automaticPix não é aceita, e as operações de agendamento e de cancelamento de cobrança da lib respondem managed_by_gateway. |
 | `MULTIPLE_PAYMENT_METHODS` | Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. | sim | não implementado |  |
 | `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |  |
 | `CARD_SETUP_AUTHENTICATION` | Autenticação do portador com o emissor (3DS) ao salvar o cartão: cartão que exige ação do pagador volta com `CreditCard::$requiresAction` verdadeiro e `id` nulo, e `confirmCreditCardSetup()` conclui o salvamento depois da autenticação. | limitação do gateway | sim |  |
@@ -400,8 +403,10 @@ ou `SubscriptionStatus::UNKNOWN` com aviso no log; em `paymentMethod`,
 `availablePaymentMethods` e `interval`, lança
 `ModelAttributeValidationException` na escrita, com a lista de valores aceitos. Em
 `availablePaymentMethods` só entram `CREDIT_CARD`, `BANK_SLIP` e `PIX`; `AUTOMATIC_PIX` é
-recusado na validação, porque a fatura com Pix Automático é criada com `PIX` e o objeto
-`automaticPix` preenchido. Nenhum driver emite `AUTOMATIC_PIX` em `paymentMethod` hoje.
+recusado na lista e em `Invoice::$paymentMethod`, porque a fatura com Pix Automático é criada
+com `PIX` e o objeto `automaticPix` preenchido. Em `Subscription::$paymentMethod` ele é
+aceito: no Stripe é o método da assinatura com mandato (ver
+[Pix Automático](#pix-automático)).
 
 > **Mudança de comportamento (versão 5.0.0).** `$invoice->status === Invoice::STATUS_PAID` e
 > comparações equivalentes com `paymentMethod` e `interval` passam a ser **falsas**, porque a
@@ -708,7 +713,7 @@ deduplica por conta própria com a `IdempotencyStore` (abaixo):
 | Suspender, retomar, cancelar, atualizar assinatura, trocar de plano | store da lib | gateway |
 | Criar plano | store da lib | gateway |
 | Desativar plano (`deactivatePlan`) | (limitação do gateway) | gateway |
-| Reagendar e cancelar Pix Automático | store da lib | (não implementado) |
+| Reagendar e cancelar Pix Automático | store da lib | (não se aplica: o gateway agenda, `managed_by_gateway`) |
 
 Quando uma operação faz mais de uma requisição de escrita (salvar o cartão antes de cobrar,
 criar o tax id ao atualizar o cliente, remover subitens antes de atualizar a assinatura), a
@@ -805,7 +810,7 @@ MultiPaymentException
 | `IdempotencyConflictException` | Chave de idempotência reutilizada (409 na Iugu em cliente e assinatura; `idempotency_error` na Stripe quando o payload mudou), a primeira requisição com a chave ainda em andamento, ou lock ocupado na `IdempotencyStore` da lib. `resourceId` traz o id do recurso original quando o gateway o informa | Consultar o resultado da primeira requisição (`resourceId` ou o registro da aplicação) ou usar chave nova; nunca repetir com a mesma chave e outro conteúdo |
 | `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
 | `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
-| `UnsupportedOperationException` | Operação fora das capabilities do gateway, ou fora da restrição de uma capability suportada (`restriction()`), antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented` ou `gateway_limitation`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` e `restriction()` antes (ver [Capabilities](#capabilities)) |
+| `UnsupportedOperationException` | Operação fora das capabilities do gateway, ou fora da restrição de uma capability suportada (`restriction()`), antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented`, `gateway_limitation` ou `managed_by_gateway`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` e `restriction()` antes (ver [Capabilities](#capabilities)). Em `managed_by_gateway`, seguir a orientação da mensagem: a operação é conduzida pelo próprio gateway |
 | `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway: limitação do gateway (boleto, Pix parcial; `isCapabilityLimitation()` verdadeiro e `capability` preenchida) ou estado da fatura (já estornada, valor acima do restante, prazo vencido). Herda direto de `MultiPaymentException`: `catch (UnsupportedOperationException)` não a captura | Ver [Estorno](#estorno) |
 | `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição, inclusive regra de valor que só um gateway impõe (`PlanInterval::DAY` e teto de 599 meses na Iugu, `nextBillingAt` diferente de `trialEndsAt`, `page` e `limit` fora da faixa, plano com `id` em `save()`, valor de estorno zero ou negativo) | Corrigir a chamada |
 | `ConfigurationException` | Gateway não configurado ou classe inválida; driver que declara uma capability sem implementar o contract ou sem o método do despacho por convenção; `IdempotencyStore` sem registro no container ou sobre um cache sem lock | Corrigir a configuração ou o driver |
@@ -895,8 +900,8 @@ o deixava nulo, traz o valor de `declineCode`. Compare com `declineCode`.
 > `GatewayNotAvailableException` deixa de repetir credencial errada; quem capturava
 > `GatewayException` para chave recusada na Iugu precisa capturar `AuthenticationException`.
 >
-> Na mesma versão, operação não suportada ou ainda não implementada (Pix Automático no Stripe;
-> desconto percentual e desativação
+> Na mesma versão, operação não suportada ou ainda não implementada (fatura avulsa com Pix
+> Automático no Stripe; desconto percentual e desativação
 > de plano na Iugu; cartão com dados crus e duplicação fora de Pix pendente no Stripe) deixou de
 > chegar como `GatewayException` (ou `GatewayException::methodNotFound`) e passou a lançar
 > `UnsupportedOperationException`, que herda de `MultiPaymentException`. Um
@@ -1022,11 +1027,61 @@ Stripe. `toArray()` passa a emitir `due_date` e `pix_expires_at`.
 
 #### Pix Automático
 
-O Pix Automático está disponível no gateway Iugu. No Stripe ele ainda **não está implementado
-nesta lib** (planejado para uma versão futura; a conta Stripe da empresa também aguarda a
-liberação do recurso). Até lá, todas as operações de Pix Automático no Stripe, inclusive criar
-fatura com `automatic_pix`, lançam `UnsupportedOperationException` com `capability`
-`AUTOMATIC_PIX` e `reason` `not_implemented`, antes de qualquer requisição.
+O Pix Automático está disponível nos dois gateways, com desenhos opostos (a responsabilidade
+pela agenda está em
+[Pix Automático: quem agenda a cobrança](#pix-automático-quem-agenda-a-cobrança)):
+
+| | Iugu | Stripe |
+|---|---|---|
+| Onde a recorrência nasce | Na fatura: `Invoice` com método `pix` e `automaticPix` preenchido | Na assinatura: `Subscription` com `paymentMethod` `automatic_pix` (mandato) |
+| Quem agenda cada cobrança | A aplicação, pelas operações de `AutomaticPixContract` | O gateway (`MANAGES_RECURRENCE`), com notificação de pré-débito três dias antes |
+| Reagendar e cancelar cobrança | `rescheduleAutomaticPixPayment()`, `cancelAutomaticPixScheduledPayment()` | `UnsupportedOperationException` com `reason` `managed_by_gateway` |
+| Encerrar a recorrência | `cancelAutomaticPixRecurrence()` | Cancelar a assinatura (`cancelSubscription()`); a Stripe encerra o mandato |
+| Consultar cancelamentos | `getAutomaticPixCancellation()`, `listAutomaticPixCancellations()` | As mesmas operações, lendo o Mandate (`mandate_...`): mandato `inactive` devolve um cancelamento `completed` |
+| Estado no model | `Invoice::$automaticPix` | `Subscription::$automaticPix`, com `nextDebitAt` e `preDebitNotificationAt` |
+
+No Stripe, a assinatura com `paymentMethod` `automatic_pix` registra o mandato na criação
+(`payment_method_options.pix.mandate_options`) e nasce com a primeira fatura em aberto: o
+pagador autoriza o mandato ao pagar essa fatura (a página hospedada vem em
+`latestInvoice->url`) e a Stripe cobra os ciclos seguintes sozinha. A lib deriva o mandato do
+plano: o valor é a soma do plano com os itens recorrentes (com desconto na assinatura ele vira
+um teto, `amount_type` `maximum`), a agenda vem do intervalo do plano (semanal, mensal,
+trimestral, semestral ou anual; outro intervalo é recusado antes da requisição) e o primeiro
+débito (`start_date`) do fim do trial ou de `nextBillingAt`, com o mínimo de três dias a
+partir de hoje. O plano precisa de valor fixo (Price com `unit_amount`) e a assinatura com
+mandato não troca de método depois de criada (cancele e crie outra).
+`Subscription::$automaticPix` refina o mandato na escrita (`startsAt`, `endsAt`, `frequency`;
+no builder, `setAutomaticPix()`) e volta preenchido na leitura, com as datas derivadas
+`nextDebitAt` (o débito acontece três dias depois do início do ciclo) e
+`preDebitNotificationAt`. O nome
+exibido no aplicativo do banco vem da configuração
+`multi-payment.gateways.stripe.pix_mandate_reference` (`STRIPE_PIX_MANDATE_REFERENCE`).
+
+```php
+$subscription = (new \Potelo\MultiPayment\MultiPayment('stripe'))
+    ->newSubscription()
+    ->setPlanId('plano_mensal')
+    ->setCustomer($customer)
+    ->setPaymentMethod(\Potelo\MultiPayment\Enums\PaymentMethod::AUTOMATIC_PIX)
+    ->create();
+
+$subscription->latestInvoice->url;                       // página onde o pagador autoriza o mandato
+$subscription->automaticPix->startsAt;                   // primeiro débito (mínimo hoje mais 3 dias)
+$subscription->automaticPix->nextDebitAt;                // próximo débito (ciclo mais 3 dias)
+$subscription->automaticPix->preDebitNotificationAt;     // quando o pagador é notificado
+```
+
+O id e o status do mandato (`AutomaticPix::$mandateId`, `$mandateStatus`) não vêm na leitura
+da assinatura: chegam pelo webhook `mandate.updated` da Stripe ou preenchidos pela consulta de
+cancelamentos (`listAutomaticPixCancellations($mandateId)`). A fatura avulsa com
+`automaticPix` no Stripe é recusada antes de qualquer requisição
+(`UnsupportedOperationException`, `AUTOMATIC_PIX`, `not_implemented`): nesse gateway a
+recorrência vive na assinatura. A conta Stripe da empresa ainda aguarda a liberação do
+recurso; até lá, a criação real responde com a recusa do próprio gateway.
+
+Um `start_date` derivado do relógio muda entre tentativas com a mesma chave de idempotência
+(a Stripe compara o payload); num retry com chave, informe `startsAt` em `automaticPix`, como
+já vale para as outras datas derivadas do instante da chamada.
 
 Na Iugu, ele é configurado como parte da fatura:
 
@@ -1078,7 +1133,14 @@ aplicação agenda), verdadeiro no Stripe (o gateway agenda). A regra é esta:
 - **No Stripe, o gateway agenda.** O mandato vive na Subscription e a Stripe controla o
   calendário: envia ao pagador a notificação de pré-débito obrigatória três dias antes de cada
   débito, cobra e faz as retentativas automáticas. A aplicação não agenda nada; a data de
-  início do mandato precisa respeitar esse prazo de três dias.
+  início do mandato precisa respeitar esse prazo de três dias, e as operações de agendamento
+  da lib respondem `UnsupportedOperationException` com `reason` `managed_by_gateway`.
+
+Por isso a assinatura com `paymentMethod` `automatic_pix` exige `MANAGES_RECURRENCE` além de
+`AUTOMATIC_PIX`: na Iugu ela é recusada antes de qualquer requisição (a recorrência nasce na
+fatura), e no Stripe a fatura avulsa com `automaticPix` é recusada (a recorrência nasce na
+assinatura). As duas restrições são consultáveis em
+`restriction(Capability::AUTOMATIC_PIX, $gateway)`.
 
 **Migrar uma recorrência de um gateway para o outro exige desligar o motor da aplicação para
 aquela recorrência** quando o destino é o Stripe. Se o motor continuar ativo, a aplicação e o
@@ -1442,13 +1504,18 @@ Particularidades do Stripe:
   quitar (`url` é a página hospedada). O método `pix` em assinatura depende de habilitação na
   conta Stripe; sem ela, a criação é recusada pelo gateway com `ValidationException`
   ("The payment method type `pix` is invalid").
+- **Com Pix Automático (`setPaymentMethod(PaymentMethod::AUTOMATIC_PIX)`), a assinatura
+  também nasce com a primeira fatura em aberto** e registra o mandato na criação; a Stripe
+  agenda as cobranças seguintes. Ver [Pix Automático](#pix-automático).
 - **Com boleto, a assinatura nasce ativa em modo de fatura enviada** (`collection_method`
   `send_invoice`, com `days_until_due` de 3 dias, sobrescritível por
   `gateway_options['days_until_due']`): a primeira fatura é finalizada na criação e volta em
   `latestInvoice` aberta, com vencimento e com a página hospedada em `url`, onde o pagador
   gera o voucher; as faturas dos ciclos seguintes são emitidas pela Stripe com o mesmo prazo.
   A troca de método de uma assinatura existente para boleto muda o modo de cobrança para
-  `send_invoice`, e a troca de boleto para cartão ou Pix devolve a cobrança automática.
+  `send_invoice`, e a troca de boleto para cartão ou Pix devolve a cobrança automática. Uma
+  assinatura com mandato de Pix Automático não troca de método (nem uma existente passa a
+  tê-lo): as duas direções são recusadas antes da requisição.
 - **Itens extras criam Prices no Stripe.** Cada `SubscriptionItem` vira um subscription item
   com um Product e um Price próprios, criados na hora (o item precisa de `description` e
   `amount`); item com `recurring` falso vai como item avulso da primeira fatura. No update

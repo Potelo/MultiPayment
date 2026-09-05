@@ -189,7 +189,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      *
      * `INSTALLMENTS`: o número de parcelas vai em `gatewayOptions['months']`, até o máximo da
      * conta (`multi-payment.gateways.iugu.max_installments`, 12 por padrão), e a lib não lê as
-     * parcelas da fatura paga.
+     * parcelas da fatura paga. `AUTOMATIC_PIX`: a recorrência nasce na fatura e a aplicação é
+     * o motor de recorrência; a assinatura não aceita o método.
      */
     public function restrictions(): array
     {
@@ -203,6 +204,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                     . ' (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments);'
                     . ' a lib não lê as parcelas da fatura paga.',
                 maxInstallments: $maxInstallments,
+            ),
+            Capability::AUTOMATIC_PIX->value => new CapabilityRestriction(
+                description: 'A recorrência nasce na fatura (Invoice com automaticPix e método pix) e'
+                    . ' a aplicação é o motor de recorrência; a assinatura não aceita paymentMethod'
+                    . ' automatic_pix.',
             ),
         ];
     }
@@ -2737,6 +2743,16 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
         // lista vazia: a Iugu usa os métodos habilitados na conta
         $payableWith = $subscription->resolvedPaymentMethods();
+        // a mesma recusa do guard de capabilities do model, para a chamada direta ao driver:
+        // a assinatura com o método exige que o gateway agende as cobranças
+        if (in_array(PaymentMethod::AUTOMATIC_PIX, $payableWith, true)) {
+            throw UnsupportedOperationException::forGateway(
+                $this,
+                Capability::MANAGES_RECURRENCE,
+                'Na Iugu a recorrência de Pix Automático nasce na fatura (Invoice com automaticPix'
+                . ' e método pix); a assinatura não aceita paymentMethod automatic_pix.'
+            );
+        }
         if (
             !empty($payableWith)
             && ($creating || !$this->isOriginalPayableWith($subscription, $payableWith))

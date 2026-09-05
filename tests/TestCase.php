@@ -17,6 +17,19 @@ class TestCase extends \Orchestra\Testbench\TestCase
             return;
         }
 
+        // Pix Automático aguarda liberação na conta Stripe; os testes do grupo só rodam com a
+        // flag ligada no ambiente (e dispensam o sleep, porque não tocam na Iugu)
+        if (in_array('pix-automatico-stripe', $this->groups(), true)) {
+            if (!filter_var(env('STRIPE_PIX_AUTOMATICO_ENABLED'), FILTER_VALIDATE_BOOL)) {
+                $this->markTestSkipped(
+                    'A conta Stripe ainda não tem Pix Automático liberado;'
+                    . ' defina STRIPE_PIX_AUTOMATICO_ENABLED=true para rodar.'
+                );
+            }
+
+            return;
+        }
+
         // pausa para respeitar o rate limit da sandbox da Iugu — a da Stripe não tem esse limite;
         // o gateway do teste vem do dataProvider (primeiro argumento, posicional ou chave 'gateway')
         $providedData = $this->providedData();

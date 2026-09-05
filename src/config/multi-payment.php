@@ -76,6 +76,8 @@ return [
             'api_key' => env('STRIPE_APIKEY'),
             'customer_column' => 'stripe_id',
             'class' => \Potelo\MultiPayment\Gateways\StripeGateway::class,
+            // nome exibido no aplicativo do banco do pagador no mandato de Pix Automático
+            'pix_mandate_reference' => env('STRIPE_PIX_MANDATE_REFERENCE'),
         ],
     ],
 ];
