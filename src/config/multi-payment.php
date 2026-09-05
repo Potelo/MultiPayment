@@ -55,6 +55,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Webhooks
+    |--------------------------------------------------------------------------
+    |
+    | Deduplicação de entregas de webhook (WebhookDeduplicator), sobre a IdempotencyStore.
+    |
+    */
+    'webhooks' => [
+        // prazo, em segundos, em que uma entrega com o mesmo id conta como replay
+        'dedup_ttl' => env('MULTIPAYMENT_WEBHOOK_DEDUP_TTL', 259200),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Available gateways
     |--------------------------------------------------------------------------
     |
@@ -78,6 +91,10 @@ return [
             'class' => \Potelo\MultiPayment\Gateways\StripeGateway::class,
             // nome exibido no aplicativo do banco do pagador no mandato de Pix Automático
             'pix_mandate_reference' => env('STRIPE_PIX_MANDATE_REFERENCE'),
+            // secret do endpoint de webhook (whsec_...), usado na verificação do Stripe-Signature
+            'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+            // tolerância, em segundos, entre o timestamp assinado da entrega e o relógio da aplicação
+            'webhook_tolerance' => env('STRIPE_WEBHOOK_TOLERANCE', 300),
         ],
     ],
 ];

@@ -116,6 +116,12 @@ enum Capability: string
     case GATEWAY_DUNNING = 'gateway_dunning';
 
     /**
+     * Leitura de webhooks do gateway: `parseWebhook()` verifica a autenticidade da entrega e a
+     * traduz num `WebhookEvent` normalizado.
+     */
+    case WEBHOOKS = 'webhooks';
+
+    /**
      * Capability que uma fatura precisa para ser paga com o método informado.
      *
      * @param  PaymentMethod  $paymentMethod

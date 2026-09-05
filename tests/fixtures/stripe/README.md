@@ -110,6 +110,7 @@ o recurso for liberado.
 
 Eventos entregues por `stripe listen` (CLI 1.50.10) numa sessão de sandbox em 2026-09-04, um
 arquivo por tipo, com o corpo cru byte a byte como recebido (o `Stripe-Signature` de cada
-entrega e o signing secret do listener ficam em arquivo fora do git, para o teste de
-verificação de assinatura de uma versão futura validar o corpo exato). `mandate.updated` não
-foi gravado: exige Pix Automático, que a conta ainda não tem liberado.
+entrega e o signing secret do listener ficam em arquivo fora do git, como referência do
+formato; `StripeGatewayWebhookTest` recalcula a assinatura com um secret de teste sobre os
+mesmos bytes). `mandate.updated` não foi gravado: exige Pix Automático, que a conta ainda não
+tem liberado.

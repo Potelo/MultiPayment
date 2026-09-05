@@ -17,8 +17,10 @@ use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Models\WebhookEvent;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\WebhookContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Builders\InvoiceBuilder;
 use Potelo\MultiPayment\Builders\CustomerBuilder;
@@ -328,6 +330,40 @@ class MultiPayment
         }
 
         return $this->gateway;
+    }
+
+    /**
+     * Verifica a autenticidade de uma entrega de webhook e a traduz num `WebhookEvent`
+     * normalizado, pelo driver do gateway desta instância. Recebe o corpo cru, byte a byte
+     * como entregue, e os cabeçalhos da requisição; para um `Request` do Laravel, use
+     * `parseWebhookRequest()`.
+     *
+     * @param  string  $rawBody  corpo cru da requisição
+     * @param  array  $headers  cabeçalhos da requisição, como `nome => valor` ou `nome => [valores]`
+     * @return WebhookEvent
+     * @throws \Potelo\MultiPayment\Exceptions\WebhookSignatureException
+     * @throws UnsupportedOperationException|ConfigurationException
+     */
+    public function parseWebhook(string $rawBody, array $headers): WebhookEvent
+    {
+        /** @var WebhookContract $gateway */
+        $gateway = $this->gatewayImplementing(WebhookContract::class, Capability::WEBHOOKS);
+
+        return $gateway->parseWebhook($rawBody, $headers);
+    }
+
+    /**
+     * Adaptador de `parseWebhook()` para um `Request` do Laravel: extrai o corpo cru e os
+     * cabeçalhos da requisição recebida.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return WebhookEvent
+     * @throws \Potelo\MultiPayment\Exceptions\WebhookSignatureException
+     * @throws UnsupportedOperationException|ConfigurationException
+     */
+    public function parseWebhookRequest(\Illuminate\Http\Request $request): WebhookEvent
+    {
+        return $this->parseWebhook((string) $request->getContent(), $request->headers->all());
     }
 
     /**

@@ -13,6 +13,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Particularidades do Stripe](#particularidades-do-stripe)
   - [Opções extras do gateway](#opções-extras-do-gateway)
   - [Idempotência](#idempotência)
+- [Webhooks](#webhooks)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [Criar e cobrar uma fatura (InvoiceBuilder)](#criar-e-cobrar-uma-fatura-invoicebuilder)
@@ -79,10 +80,15 @@ IUGU_MAX_INSTALLMENTS=12   # opcional; máximo de parcelas habilitado na conta (
 #stripe
 STRIPE_APIKEY=
 STRIPE_PIX_MANDATE_REFERENCE=   # opcional; nome exibido no aplicativo do banco no mandato de Pix Automático (ver Pix Automático)
+STRIPE_WEBHOOK_SECRET=          # secret do endpoint de webhook, whsec_... (ver a seção Webhooks)
+STRIPE_WEBHOOK_TOLERANCE=300    # opcional; tolerância do timestamp assinado, em segundos
 
 #idempotência (opcional; ver a seção Idempotência)
 MULTIPAYMENT_IDEMPOTENCY_TTL=86400
 MULTIPAYMENT_IDEMPOTENCY_CACHE_STORE=
+
+#webhooks (opcional; ver a seção Webhooks)
+MULTIPAYMENT_WEBHOOK_DEDUP_TTL=259200
 
 #fill() estrito (opcional, padrão true; ver a seção "fill() estrito")
 MULTIPAYMENT_STRICT_FILL=true
@@ -195,6 +201,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |  |
 | `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | sim |  |
 | `GATEWAY_DUNNING` | O gateway conduz a régua de retentativas da cobrança recusada de uma assinatura de forma adaptativa, dispensando régua da aplicação; sem ela, a retentativa do gateway é fixa ou ausente, e retentar além dela é decisão da aplicação. | limitação do gateway | sim |  |
+| `WEBHOOKS` | Leitura de webhooks do gateway: `parseWebhook()` verifica a autenticidade da entrega e a traduz num `WebhookEvent` normalizado. | não implementado | sim |  |
 
 Sobre as restrições e algumas células:
 
@@ -230,6 +237,8 @@ Sobre as restrições e algumas células:
   [Motivo da recusa na leitura](#motivo-da-recusa-na-leitura)).
 - **`PLAN_CHANGE_PRORATION`** é o que `changePlan()` com `ProrationBehavior::CREDIT` exige; as
   outras duas políticas fazem parte de `SUBSCRIPTIONS` (ver [Troca de plano](#troca-de-plano)).
+- **`WEBHOOKS`** guarda `parseWebhook()`: no Stripe a entrega é verificada e traduzida num
+  `WebhookEvent`; na Iugu está planejada para uma versão futura (ver [Webhooks](#webhooks)).
 
 ### Status da fatura
 
@@ -972,6 +981,104 @@ preenchidos.
 > `RateLimitException` passou a vir preenchido quando o cabeçalho `Retry-After` chega, e todas
 > as chamadas ao gateway passaram a usar o requester injetável do driver (o fork
 > `Potelo/iugu-php` 1.1.0), o que não muda a API pública.
+
+## Webhooks
+
+`parseWebhook()` verifica a autenticidade de uma entrega de webhook e a traduz num
+`WebhookEvent` normalizado (`Potelo\MultiPayment\Models\WebhookEvent`), no vocabulário do
+pacote. A operação é guardada pela capability `WEBHOOKS`: hoje o Stripe a suporta e a Iugu está
+planejada para uma versão futura. A rota pronta do pacote e os eventos do Laravel também estão
+planejados para uma versão futura; por enquanto a aplicação registra a própria rota e chama o
+parser:
+
+```php
+use Illuminate\Http\Request;
+use Potelo\MultiPayment\Enums\WebhookEventType;
+use Potelo\MultiPayment\Facades\MultiPayment;
+use Potelo\MultiPayment\Webhooks\WebhookDeduplicator;
+
+Route::post('/webhooks/{gateway}', function (Request $request, string $gateway) {
+    $event = MultiPayment::setGateway($gateway)->parseWebhookRequest($request);
+
+    if ((new WebhookDeduplicator())->flagReplay($event)->isReplay) {
+        return response()->noContent();          // entrega repetida dentro do prazo de deduplicação
+    }
+
+    match ($event->type) {
+        WebhookEventType::INVOICE_PAYMENT_FAILED => Dunning::start($event->invoice(), $event->declineCode),
+        WebhookEventType::SUBSCRIPTION_CANCELED => Access::revoke($event->subscription()),
+        default => null,
+    };
+
+    return response()->noContent();
+});
+```
+
+Fora do Laravel (ou de um `Request`), `parseWebhook(string $rawBody, array $headers)` recebe o
+corpo cru e os cabeçalhos direto. O corpo precisa chegar byte a byte como entregue: a
+verificação de assinatura é sobre os bytes, então use `$request->getContent()` (ou
+`file_get_contents('php://input')`), sem reserializar o JSON.
+
+**Verificação de autenticidade.** Sempre ligada; entrega recusada lança
+`WebhookSignatureException` com `reason` (`missing_header`, `invalid_signature`,
+`timestamp_out_of_tolerance`, `missing_secret`) antes de qualquer parse. No Stripe a
+verificação é o HMAC-SHA256 do cabeçalho `Stripe-Signature`, comparado em tempo constante, com
+o secret do endpoint em `multi-payment.gateways.stripe.webhook_secret`
+(`STRIPE_WEBHOOK_SECRET`, o `whsec_...` do dashboard ou do `stripe listen`) e tolerância de
+timestamp em `multi-payment.gateways.stripe.webhook_tolerance` (300 segundos por padrão).
+
+**O `WebhookEvent`.** Campos: `id` (estável por entrega, para deduplicação), `type`
+(`WebhookEventType`), `occurredAt`, `gateway`, `resourceType` e `resourceId` (o objeto do
+gateway, no vocabulário dele), `invoiceId` e `subscriptionId` (ids aceitos por `getInvoice()` e
+`getSubscription()`), `disputeId` (id da contestação no gateway), `declineCode` (num evento de
+falha de pagamento) e `raw` (o payload original decodificado). Evento que o driver não mapeia vira `WebhookEventType::UNKNOWN`, sem
+exceção, com tudo preservado em `raw`. Os helpers `concernsInvoice()` e
+`concernsSubscription()` do enum dizem que hidratação faz sentido para cada tipo.
+
+**Hidratação sob demanda.** O payload nunca é fonte de status: decisão de negócio usa
+`$event->invoice()` e `$event->subscription()`, que releem o recurso no gateway na primeira
+chamada (pelos mesmos `getInvoice()` e `getSubscription()`) e guardam o resultado no objeto.
+`refund()` devolve o estorno mais recente da fatura relida, compartilhando a mesma leitura, e
+`dispute()` devolve o id da contestação do payload (um model de contestação está planejado para
+uma versão futura). Num evento de falha, `declineCode` vem do payload quando ele o traz e é
+completado por `invoice()` a partir de `Invoice::$lastPaymentError`.
+
+**Deduplicação.** Os gateways reenviam entregas, então o mesmo evento pode chegar mais de uma
+vez. `WebhookDeduplicator::flagReplay($event)` registra o `id` na `IdempotencyStore` do pacote
+(chave `webhook:{gateway}:{id}`, prazo de `multi-payment.webhooks.dedup_ttl`, 72 horas por
+padrão) e marca `isReplay` quando ele já foi visto; descartar ou processar o replay é decisão
+da aplicação. O parser sozinho não toca na store, para inspecionar um payload em teste ou num
+replay manual sem queimar o id.
+
+Mapeamento dos eventos do Stripe para o tipo comum:
+
+| Evento do Stripe | `WebhookEventType` |
+|---|---|
+| `customer.subscription.created` | `SUBSCRIPTION_CREATED` |
+| `customer.subscription.updated` | `SUBSCRIPTION_UPDATED`; com a assinatura `canceled` ou com `cancel_at_period_end`, `SUBSCRIPTION_CANCELED`; com `pause_collection` preenchido, `SUBSCRIPTION_SUSPENDED` |
+| `customer.subscription.deleted` | `SUBSCRIPTION_CANCELED` |
+| `invoice.created` | `INVOICE_CREATED` |
+| `invoice.paid` | `INVOICE_PAID`; com `billing_reason` `subscription_cycle`, `SUBSCRIPTION_RENEWED` |
+| `invoice.payment_failed` | `INVOICE_PAYMENT_FAILED` |
+| `invoice.voided` | `INVOICE_CANCELED` |
+| `charge.refunded` | `REFUND_CREATED` |
+| `charge.dispute.created` | `DISPUTE_OPENED` |
+| `charge.dispute.closed` | `DISPUTE_CLOSED` |
+| `payment_method.updated`, `setup_intent.succeeded` | `PAYMENT_METHOD_UPDATED` |
+| `mandate.updated` | `PIX_MANDATE_CHANGED` |
+| qualquer outro | `UNKNOWN`, com o payload em `raw` |
+
+Duas notas sobre o mapa:
+
+- **Renovação chega como `SUBSCRIPTION_RENEWED`, sem um `INVOICE_PAID` separado.** O
+  `invoice.paid` de um ciclo de renovação vira o tipo mais específico; quem contabiliza
+  pagamentos de fatura deve tratar os dois tipos (os helpers ajudam: `SUBSCRIPTION_RENEWED`
+  responde verdadeiro a `concernsInvoice()` e a fatura paga fica em `invoice()`).
+- **A venda avulsa no Stripe emite eventos de PaymentIntent** (`payment_intent.succeeded`,
+  `payment_intent.payment_failed`), que ficam fora da tabela comum e chegam como `UNKNOWN`; o
+  evento ainda aponta a fatura (`invoiceId` com o id `pi_`), então `invoice()` hidrata e o
+  status normalizado vem da releitura. Num `payment_intent.payment_failed`, `declineCode` vem
+  preenchido do payload.
 
 ## Utilizando
 

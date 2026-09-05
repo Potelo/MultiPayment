@@ -49,8 +49,11 @@ use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
+use Potelo\MultiPayment\Models\WebhookEvent;
+use Potelo\MultiPayment\Enums\WebhookEventType;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
+use Potelo\MultiPayment\Contracts\WebhookContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
 use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
@@ -68,9 +71,10 @@ use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
+use Potelo\MultiPayment\Exceptions\WebhookSignatureException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class StripeGateway implements GatewayContract, SubscriptionContract, PlanContract
+class StripeGateway implements GatewayContract, SubscriptionContract, PlanContract, WebhookContract
 {
     use ChecksCapabilities;
     use ResolvesIdempotencyKey;
@@ -208,6 +212,31 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         'boleto' => PaymentMethod::BANK_SLIP,
     ];
 
+    /** Cabeçalho de assinatura das entregas de webhook da Stripe. */
+    private const WEBHOOK_SIGNATURE_HEADER = 'Stripe-Signature';
+
+    /** Tolerância padrão, em segundos, entre o timestamp assinado da entrega e o relógio da aplicação. */
+    private const WEBHOOK_DEFAULT_TOLERANCE_SECONDS = 300;
+
+    /**
+     * Eventos da Stripe com tradução direta para o tipo comum. `customer.subscription.updated`
+     * e `invoice.paid` têm regras próprias em `webhookEventType()`; evento fora do mapa vira
+     * `UNKNOWN`.
+     */
+    private const WEBHOOK_EVENT_TYPES = [
+        'customer.subscription.created' => WebhookEventType::SUBSCRIPTION_CREATED,
+        'customer.subscription.deleted' => WebhookEventType::SUBSCRIPTION_CANCELED,
+        'invoice.created' => WebhookEventType::INVOICE_CREATED,
+        'invoice.payment_failed' => WebhookEventType::INVOICE_PAYMENT_FAILED,
+        'invoice.voided' => WebhookEventType::INVOICE_CANCELED,
+        'charge.refunded' => WebhookEventType::REFUND_CREATED,
+        'charge.dispute.created' => WebhookEventType::DISPUTE_OPENED,
+        'charge.dispute.closed' => WebhookEventType::DISPUTE_CLOSED,
+        'payment_method.updated' => WebhookEventType::PAYMENT_METHOD_UPDATED,
+        'setup_intent.succeeded' => WebhookEventType::PAYMENT_METHOD_UPDATED,
+        'mandate.updated' => WebhookEventType::PIX_MANDATE_CHANGED,
+    ];
+
     private StripeClient $client;
 
     /**
@@ -249,6 +278,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::MANAGES_RECURRENCE,
             Capability::AUTOMATIC_PIX,
             Capability::GATEWAY_DUNNING,
+            Capability::WEBHOOKS,
         ];
     }
 
@@ -4731,6 +4761,201 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $cancellation->original = $stripeMandate;
 
         return $cancellation;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Verifica o `Stripe-Signature` (HMAC-SHA256 de `{timestamp}.{corpo}` com o secret de
+     * `multi-payment.gateways.stripe.webhook_secret`, comparado em tempo constante) e recusa a
+     * entrega cujo timestamp assinado está fora da tolerância
+     * (`multi-payment.gateways.stripe.webhook_tolerance`, 300 segundos por padrão). O tipo
+     * comum sai do nome do evento; `customer.subscription.updated` vira `SUBSCRIPTION_CANCELED`
+     * quando a assinatura está cancelada ou com `cancel_at_period_end` e `SUBSCRIPTION_SUSPENDED`
+     * quando `pause_collection` está preenchido, e `invoice.paid` de um ciclo de renovação
+     * (`billing_reason` `subscription_cycle`) vira `SUBSCRIPTION_RENEWED`, com a fatura paga em
+     * `invoice()`. Num evento cujo objeto traz `last_payment_error`, o `declineCode` é
+     * preenchido do payload.
+     */
+    public function parseWebhook(string $rawBody, array $headers): WebhookEvent
+    {
+        $this->verifyWebhookSignature($rawBody, $headers);
+
+        $payload = json_decode($rawBody, true);
+
+        $event = new WebhookEvent();
+        $event->gateway = 'stripe';
+
+        if (!is_array($payload)) {
+            LogHelper::warning('Corpo de webhook da Stripe com assinatura válida e JSON inválido', ['gateway' => 'stripe']);
+            $event->type = WebhookEventType::UNKNOWN;
+            $event->raw = $rawBody;
+
+            return $event;
+        }
+
+        $stripeObject = is_array($payload['data']['object'] ?? null) ? $payload['data']['object'] : [];
+
+        $event->id = $payload['id'] ?? null;
+        $event->type = self::webhookEventType($payload['type'] ?? '', $stripeObject);
+        $event->occurredAt = !empty($payload['created']) ? Carbon::createFromTimestamp($payload['created']) : null;
+        $event->resourceType = $stripeObject['object'] ?? null;
+        $event->resourceId = $stripeObject['id'] ?? null;
+        $event->raw = $payload;
+
+        $this->fillWebhookResourceIds($event, $stripeObject);
+
+        $error = $stripeObject['last_payment_error'] ?? null;
+        $gatewayCode = is_array($error) ? (($error['decline_code'] ?? null) ?: ($error['code'] ?? null)) : null;
+        if (!empty($gatewayCode)) {
+            $event->declineCode = self::declineCodeFromGatewayCode($gatewayCode);
+        }
+
+        return $event;
+    }
+
+    /**
+     * Verifica o cabeçalho `Stripe-Signature` da entrega sobre o corpo cru recebido.
+     *
+     * @param  string  $rawBody
+     * @param  array  $headers
+     * @return void
+     * @throws WebhookSignatureException
+     */
+    private function verifyWebhookSignature(string $rawBody, array $headers): void
+    {
+        $secret = Config::get('multi-payment.gateways.stripe.webhook_secret');
+        if (empty($secret)) {
+            throw WebhookSignatureException::missingSecret('stripe', 'multi-payment.gateways.stripe.webhook_secret');
+        }
+
+        $header = self::webhookHeaderValue($headers, self::WEBHOOK_SIGNATURE_HEADER);
+        if (is_null($header) || trim($header) === '') {
+            throw WebhookSignatureException::missingHeader('stripe', self::WEBHOOK_SIGNATURE_HEADER);
+        }
+
+        $timestamp = null;
+        $signatures = [];
+        foreach (explode(',', $header) as $part) {
+            [$key, $value] = array_pad(explode('=', trim($part), 2), 2, '');
+            if ($key === 't') {
+                $timestamp = $value;
+            } elseif ($key === 'v1') {
+                $signatures[] = $value;
+            }
+        }
+
+        if (!is_numeric($timestamp) || empty($signatures)) {
+            throw WebhookSignatureException::invalidSignature('stripe');
+        }
+
+        $tolerance = (int) (Config::get('multi-payment.gateways.stripe.webhook_tolerance')
+            ?? self::WEBHOOK_DEFAULT_TOLERANCE_SECONDS);
+        if ($tolerance > 0 && abs(Carbon::now()->getTimestamp() - (int) $timestamp) > $tolerance) {
+            throw WebhookSignatureException::timestampOutOfTolerance('stripe', $tolerance);
+        }
+
+        $expected = hash_hmac('sha256', "{$timestamp}.{$rawBody}", $secret);
+        foreach ($signatures as $signature) {
+            if (hash_equals($expected, $signature)) {
+                return;
+            }
+        }
+
+        throw WebhookSignatureException::invalidSignature('stripe');
+    }
+
+    /**
+     * Valor de um cabeçalho da entrega, sem diferenciar maiúsculas no nome; um valor em lista
+     * (como o Laravel entrega) devolve o primeiro item.
+     *
+     * @param  array  $headers
+     * @param  string  $name
+     * @return string|null
+     */
+    private static function webhookHeaderValue(array $headers, string $name): ?string
+    {
+        foreach ($headers as $headerName => $value) {
+            if (strcasecmp((string) $headerName, $name) !== 0) {
+                continue;
+            }
+            $value = is_array($value) ? reset($value) : $value;
+
+            return is_string($value) ? $value : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Traduz o nome do evento da Stripe para o tipo comum, aplicando as regras que dependem do
+     * objeto: `customer.subscription.updated` com status `canceled` ou `cancel_at_period_end`
+     * lê como cancelamento, e com `pause_collection` preenchido como suspensão; `invoice.paid`
+     * com `billing_reason` `subscription_cycle` lê como renovação da assinatura.
+     *
+     * @param  string  $stripeType
+     * @param  array  $stripeObject  o `data.object` do evento
+     * @return WebhookEventType
+     */
+    private static function webhookEventType(string $stripeType, array $stripeObject): WebhookEventType
+    {
+        if ($stripeType === 'customer.subscription.updated') {
+            if (($stripeObject['status'] ?? null) === 'canceled' || !empty($stripeObject['cancel_at_period_end'])) {
+                return WebhookEventType::SUBSCRIPTION_CANCELED;
+            }
+            if (!empty($stripeObject['pause_collection'])) {
+                return WebhookEventType::SUBSCRIPTION_SUSPENDED;
+            }
+
+            return WebhookEventType::SUBSCRIPTION_UPDATED;
+        }
+
+        if ($stripeType === 'invoice.paid') {
+            return ($stripeObject['billing_reason'] ?? null) === 'subscription_cycle'
+                ? WebhookEventType::SUBSCRIPTION_RENEWED
+                : WebhookEventType::INVOICE_PAID;
+        }
+
+        return self::WEBHOOK_EVENT_TYPES[$stripeType] ?? WebhookEventType::UNKNOWN;
+    }
+
+    /**
+     * Preenche `invoiceId`, `subscriptionId` e `disputeId` a partir do objeto do evento, para a
+     * hidratação: Invoice aponta a própria fatura e a assinatura de origem, PaymentIntent é a
+     * fatura de venda avulsa, charge e dispute apontam a fatura pelo PaymentIntent.
+     *
+     * @param  WebhookEvent  $event
+     * @param  array  $stripeObject  o `data.object` do evento
+     * @return void
+     */
+    private function fillWebhookResourceIds(WebhookEvent $event, array $stripeObject): void
+    {
+        $id = $stripeObject['id'] ?? null;
+
+        switch ($stripeObject['object'] ?? null) {
+            case 'invoice':
+                $event->invoiceId = $id;
+                // o caminho por parent existe nas versões de API recentes; endpoint de webhook
+                // configurado numa versão anterior entrega o id no campo subscription da raiz
+                $subscription = $stripeObject['parent']['subscription_details']['subscription']
+                    ?? $stripeObject['subscription']
+                    ?? null;
+                $event->subscriptionId = is_string($subscription) ? $subscription : null;
+                break;
+            case 'subscription':
+                $event->subscriptionId = $id;
+                break;
+            case 'payment_intent':
+                $event->invoiceId = $id;
+                break;
+            case 'charge':
+                $event->invoiceId = $stripeObject['payment_intent'] ?? null;
+                break;
+            case 'dispute':
+                $event->invoiceId = $stripeObject['payment_intent'] ?? null;
+                $event->disputeId = $id;
+                break;
+        }
     }
 
     /**

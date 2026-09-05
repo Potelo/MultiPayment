@@ -70,6 +70,17 @@ class ConfigurationHelper
     }
 
     /**
+     * Prazo, em segundos, em que uma entrega de webhook com o mesmo id conta como replay na
+     * deduplicação (`multi-payment.webhooks.dedup_ttl`, padrão de 72 horas).
+     *
+     * @return int
+     */
+    public static function webhookDedupTtl(): int
+    {
+        return (int) (Config::get('multi-payment.webhooks.dedup_ttl') ?? 259200);
+    }
+
+    /**
      * Diz se `Model::fill()` recusa chave desconhecida (`multi-payment.strict_fill`, padrão
      * verdadeiro). Sem container do Laravel, ou sem a chave na configuração, vale o padrão.
      *

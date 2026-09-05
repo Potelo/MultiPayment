@@ -167,6 +167,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         return [
             Capability::DELAYED_CAPTURE,
             Capability::SUBSCRIPTION_CREDITS,
+            Capability::WEBHOOKS,
         ];
     }
 
