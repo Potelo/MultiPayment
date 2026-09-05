@@ -83,6 +83,23 @@ class WebhookSignatureException extends MultiPaymentException
     }
 
     /**
+     * O token de autorização enviado na entrega não confere com o configurado. Mesmo `reason`
+     * de `invalidSignature()`, com a mensagem do gateway que autentica por token em vez de
+     * assinar o corpo.
+     *
+     * @param  string  $gateway
+     * @return static
+     */
+    public static function invalidToken(string $gateway): static
+    {
+        return new static(
+            "O token de autorização da entrega de webhook do gateway {$gateway} não confere com o configurado.",
+            $gateway,
+            self::REASON_INVALID_SIGNATURE
+        );
+    }
+
+    /**
      * O timestamp assinado da entrega está fora da tolerância configurada.
      *
      * @param  string  $gateway

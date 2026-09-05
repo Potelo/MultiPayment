@@ -84,6 +84,8 @@ return [
             'class' => \Potelo\MultiPayment\Gateways\IuguGateway::class,
             // máximo de parcelas habilitado na conta; a lib o publica em restriction(INSTALLMENTS)
             'max_installments' => env('IUGU_MAX_INSTALLMENTS', 12),
+            // token configurado no registro do webhook na Iugu, conferido com o header authorization
+            'webhook_token' => env('IUGU_WEBHOOK_TOKEN'),
         ],
         'stripe' => [
             'api_key' => env('STRIPE_APIKEY'),

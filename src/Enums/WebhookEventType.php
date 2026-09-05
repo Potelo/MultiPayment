@@ -31,6 +31,13 @@ enum WebhookEventType: string
     /** Fatura criada. */
     case INVOICE_CREATED = 'invoice.created';
 
+    /**
+     * Fatura alterada sem um tipo mais específico. Na Iugu é o resultado da resolução de
+     * `invoice.status_changed` quando o status relido não corresponde a pagamento,
+     * cancelamento, estorno ou contestação.
+     */
+    case INVOICE_UPDATED = 'invoice.updated';
+
     /** Fatura paga. */
     case INVOICE_PAID = 'invoice.paid';
 
@@ -69,6 +76,7 @@ enum WebhookEventType: string
     {
         return match ($this) {
             self::INVOICE_CREATED,
+            self::INVOICE_UPDATED,
             self::INVOICE_PAID,
             self::INVOICE_PAYMENT_FAILED,
             self::INVOICE_CANCELED,

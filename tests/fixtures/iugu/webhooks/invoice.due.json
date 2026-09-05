@@ -1,0 +1,13 @@
+{
+    "method": "POST",
+    "delivered_at": "2026-09-05 14:05:42",
+    "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "208",
+        "user-agent": "Iugu-Webhooks",
+        "authorization": "mp-lote4-token-abc123",
+        "idempotency-key": "7f8e9d0c-1b2a-4c3d-8e5f-6a7b8c9d0e1f",
+        "content-type": "application/x-www-form-urlencoded"
+    },
+    "body": "event=invoice.due&data%5Bid%5D=7DBF6AACBE5643029EBE766E49A8F92F&data%5Bstatus%5D=pending&data%5Baccount_id%5D=9C4EE85587AC4E9BA5DB7F618491FA23&data%5Basync_charged%5D=&data%5Bpayable_with%5D=credit_card%2Cpix"
+}

@@ -76,6 +76,7 @@ MULTIPAYMENT_DEFAULT=iugu
 IUGU_ID=
 IUGU_APIKEY=
 IUGU_MAX_INSTALLMENTS=12   # opcional; máximo de parcelas habilitado na conta (ver Capabilities)
+IUGU_WEBHOOK_TOKEN=        # token configurado no registro do webhook (ver a seção Webhooks)
 
 #stripe
 STRIPE_APIKEY=
@@ -201,7 +202,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `SUBSCRIPTION_CREDITS` | Assinatura com saldo de créditos consumíveis, abatidos a cada uso. | não implementado | limitação do gateway |  |
 | `MANAGES_RECURRENCE` | O gateway agenda as cobranças do Pix Automático por conta própria; sem ela, a aplicação é o motor de recorrência e chama as operações de `AutomaticPixContract` na periodicidade certa. | limitação do gateway | sim |  |
 | `GATEWAY_DUNNING` | O gateway conduz a régua de retentativas da cobrança recusada de uma assinatura de forma adaptativa, dispensando régua da aplicação; sem ela, a retentativa do gateway é fixa ou ausente, e retentar além dela é decisão da aplicação. | limitação do gateway | sim |  |
-| `WEBHOOKS` | Leitura de webhooks do gateway: `parseWebhook()` verifica a autenticidade da entrega e a traduz num `WebhookEvent` normalizado. | não implementado | sim |  |
+| `WEBHOOKS` | Leitura de webhooks do gateway: `parseWebhook()` verifica a autenticidade da entrega e a traduz num `WebhookEvent` normalizado. | sim | sim |  |
 
 Sobre as restrições e algumas células:
 
@@ -237,8 +238,8 @@ Sobre as restrições e algumas células:
   [Motivo da recusa na leitura](#motivo-da-recusa-na-leitura)).
 - **`PLAN_CHANGE_PRORATION`** é o que `changePlan()` com `ProrationBehavior::CREDIT` exige; as
   outras duas políticas fazem parte de `SUBSCRIPTIONS` (ver [Troca de plano](#troca-de-plano)).
-- **`WEBHOOKS`** guarda `parseWebhook()`: no Stripe a entrega é verificada e traduzida num
-  `WebhookEvent`; na Iugu está planejada para uma versão futura (ver [Webhooks](#webhooks)).
+- **`WEBHOOKS`** guarda `parseWebhook()`: a entrega é verificada e traduzida num
+  `WebhookEvent` nos dois gateways (ver [Webhooks](#webhooks)).
 
 ### Status da fatura
 
@@ -986,10 +987,9 @@ preenchidos.
 
 `parseWebhook()` verifica a autenticidade de uma entrega de webhook e a traduz num
 `WebhookEvent` normalizado (`Potelo\MultiPayment\Models\WebhookEvent`), no vocabulário do
-pacote. A operação é guardada pela capability `WEBHOOKS`: hoje o Stripe a suporta e a Iugu está
-planejada para uma versão futura. A rota pronta do pacote e os eventos do Laravel também estão
-planejados para uma versão futura; por enquanto a aplicação registra a própria rota e chama o
-parser:
+pacote, nos dois gateways. A operação é guardada pela capability `WEBHOOKS`. A rota pronta do
+pacote e os eventos do Laravel estão planejados para uma versão futura; por enquanto a
+aplicação registra a própria rota e chama o parser:
 
 ```php
 use Illuminate\Http\Request;
@@ -1025,7 +1025,13 @@ verificação de assinatura é sobre os bytes, então use `$request->getContent(
 verificação é o HMAC-SHA256 do cabeçalho `Stripe-Signature`, comparado em tempo constante, com
 o secret do endpoint em `multi-payment.gateways.stripe.webhook_secret`
 (`STRIPE_WEBHOOK_SECRET`, o `whsec_...` do dashboard ou do `stripe listen`) e tolerância de
-timestamp em `multi-payment.gateways.stripe.webhook_tolerance` (300 segundos por padrão).
+timestamp em `multi-payment.gateways.stripe.webhook_tolerance` (300 segundos por padrão). Na
+Iugu a autenticidade é um token compartilhado: o valor definido no campo `authorization` do
+registro do webhook chega cru no cabeçalho HTTP `authorization` da entrega e é comparado em
+tempo constante com `multi-payment.gateways.iugu.webhook_token` (`IUGU_WEBHOOK_TOKEN`). Essa
+verificação é mais fraca que a do Stripe (um token compartilhado, sem timestamp nem vínculo
+com o corpo), e a regra que a compensa é a hidratação obrigatória: o status vem sempre de
+`invoice()`/`subscription()`, que releem o recurso na API autenticada.
 
 **O `WebhookEvent`.** Campos: `id` (estável por entrega, para deduplicação), `type`
 (`WebhookEventType`), `occurredAt`, `gateway`, `resourceType` e `resourceId` (o objeto do
@@ -1033,7 +1039,11 @@ gateway, no vocabulário dele), `invoiceId` e `subscriptionId` (ids aceitos por 
 `getSubscription()`), `disputeId` (id da contestação no gateway), `declineCode` (num evento de
 falha de pagamento) e `raw` (o payload original decodificado). Evento que o driver não mapeia vira `WebhookEventType::UNKNOWN`, sem
 exceção, com tudo preservado em `raw`. Os helpers `concernsInvoice()` e
-`concernsSubscription()` do enum dizem que hidratação faz sentido para cada tipo.
+`concernsSubscription()` do enum dizem que hidratação faz sentido para cada tipo. No Stripe o
+`id` é o id do evento (`evt_`) e `occurredAt` é o `created` dele; na Iugu o corpo não traz id
+de entrega nem instante do evento, então o `id` é o UUID do cabeçalho `idempotency-key` da
+entrega (sem ele, um id derivado de evento, id do recurso e status, que pode colidir entre duas
+entregas legítimas iguais) e `occurredAt` é o momento do parse.
 
 **Hidratação sob demanda.** O payload nunca é fonte de status: decisão de negócio usa
 `$event->invoice()` e `$event->subscription()`, que releem o recurso no gateway na primeira
@@ -1079,6 +1089,39 @@ Duas notas sobre o mapa:
   evento ainda aponta a fatura (`invoiceId` com o id `pi_`), então `invoice()` hidrata e o
   status normalizado vem da releitura. Num `payment_intent.payment_failed`, `declineCode` vem
   preenchido do payload.
+
+Mapeamento dos eventos da Iugu para o tipo comum:
+
+| Evento da Iugu | `WebhookEventType` |
+|---|---|
+| `invoice.created` | `INVOICE_CREATED` |
+| `invoice.status_changed` | resolvido pela fatura relida (ver a nota abaixo): `INVOICE_PAID` (paga, inclusive fora do gateway), `INVOICE_CANCELED` (cancelada ou expirada), `REFUND_CREATED` (estornada, total ou parcial), `DISPUTE_OPENED` (contestada), `DISPUTE_CLOSED` (chargeback) ou `INVOICE_UPDATED` (qualquer outro status) |
+| `invoice.payment_failed`, `invoice.dunning_action` | `INVOICE_PAYMENT_FAILED`, com `declineCode` traduzido do `data[lr]` quando ele vem |
+| `invoice.refund`, `invoice.partially_refunded` | `REFUND_CREATED` |
+| `subscription.created` | `SUBSCRIPTION_CREATED` |
+| `subscription.renewed` | `SUBSCRIPTION_RENEWED` |
+| `subscription.changed`, `subscription.activated` | `SUBSCRIPTION_UPDATED` |
+| `subscription.suspended` | `SUBSCRIPTION_SUSPENDED` |
+| `subscription.expired` | `SUBSCRIPTION_CANCELED` (a assinatura expirada está encerrada) |
+| `customer_payment_method.new` | `PAYMENT_METHOD_UPDATED` |
+| `automatic_pix.authorization_changed` | `PIX_MANDATE_CHANGED` |
+| qualquer outro (inclusive `invoice.due`) | `UNKNOWN`, com o payload em `raw`; evento `invoice.*` ainda aponta a fatura em `invoiceId` |
+
+Três notas sobre o mapa da Iugu:
+
+- **`invoice.status_changed` sempre custa um GET.** O evento é multiuso (pagamento,
+  cancelamento, estorno e contestação chegam pelo mesmo nome) e o corpo traz só o status novo,
+  sem garantia de ordem de entrega, então o driver relê a fatura durante o parse e resolve o
+  tipo pelo status normalizado dela. A fatura relida fica disponível em `invoice()` sem nova
+  requisição. Se a fatura não existir mais, o evento vira `UNKNOWN` com aviso no log.
+- **O mesmo estorno chega por duas entregas.** A Iugu envia `invoice.refund` (ou
+  `invoice.partially_refunded`) junto com o `invoice.status_changed` da mesma fatura, e os dois
+  resolvem para `REFUND_CREATED`. São entregas distintas, com ids próprios, então a deduplicação
+  não as junta; quem contabiliza estornos deve deduplicar pelo recurso (por exemplo, pelo
+  acumulado de `refundedAmount` da fatura relida).
+- **`invoice.due` fica como `UNKNOWN`** por decisão: é um lembrete de vencimento próximo, sem
+  tipo comum correspondente nos dois gateways; o payload segue em `raw` e a fatura em
+  `invoiceId` para quem quiser tratá-lo.
 
 ## Utilizando
 

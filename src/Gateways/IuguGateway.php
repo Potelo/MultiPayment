@@ -25,6 +25,7 @@ use Potelo\MultiPayment\Models\SubscriptionItem;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Models\WebhookEvent;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
@@ -34,6 +35,7 @@ use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Enums\WebhookEventType;
 use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Helpers\ConfigurationHelper;
@@ -42,7 +44,9 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\IdempotencyStore;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Contracts\SubscriptionSyncContract;
+use Potelo\MultiPayment\Contracts\WebhookContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Gateways\Concerns\ReadsWebhookHeaders;
 use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
 use Potelo\MultiPayment\Gateways\Iugu\DeclineCodes as IuguDeclineCodes;
 use Potelo\MultiPayment\Exceptions\GatewayException;
@@ -56,11 +60,13 @@ use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\IdempotencyConflictException;
+use Potelo\MultiPayment\Exceptions\WebhookSignatureException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 
-class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract, SubscriptionSyncContract
+class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract, SubscriptionSyncContract, WebhookContract
 {
     use ChecksCapabilities;
+    use ReadsWebhookHeaders;
     use ResolvesIdempotencyKey;
 
     private const STATUS_PENDING = 'pending';
@@ -118,6 +124,39 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /** Prefixo das chaves deste driver na `IdempotencyStore`. */
     private const IDEMPOTENCY_STORE_PREFIX = 'iugu:';
 
+    /**
+     * Cabeçalho da entrega de webhook em que o token configurado no registro chega, cru, sem
+     * prefixo.
+     */
+    private const WEBHOOK_TOKEN_HEADER = 'authorization';
+
+    /** Cabeçalho da entrega de webhook com o UUID que identifica a entrega. */
+    private const WEBHOOK_DELIVERY_ID_HEADER = 'idempotency-key';
+
+    /**
+     * Tradução dos eventos da Iugu de significado fixo para o tipo comum.
+     * `invoice.status_changed` fica fora do mapa: o evento é multiuso e o tipo sai do status da
+     * fatura relida (`resolveIuguStatusChangedType()`).
+     */
+    private const WEBHOOK_EVENT_TYPES = [
+        'subscription.created' => WebhookEventType::SUBSCRIPTION_CREATED,
+        'subscription.renewed' => WebhookEventType::SUBSCRIPTION_RENEWED,
+        'subscription.changed' => WebhookEventType::SUBSCRIPTION_UPDATED,
+        // a reativação altera o estado da assinatura; o tipo comum não tem caso próprio para ela
+        'subscription.activated' => WebhookEventType::SUBSCRIPTION_UPDATED,
+        'subscription.suspended' => WebhookEventType::SUBSCRIPTION_SUSPENDED,
+        // a assinatura expirada está encerrada, que é o que o tipo de cancelamento descreve
+        'subscription.expired' => WebhookEventType::SUBSCRIPTION_CANCELED,
+        'invoice.created' => WebhookEventType::INVOICE_CREATED,
+        'invoice.payment_failed' => WebhookEventType::INVOICE_PAYMENT_FAILED,
+        // ação da régua de cobrança da Iugu sobre uma tentativa recusada
+        'invoice.dunning_action' => WebhookEventType::INVOICE_PAYMENT_FAILED,
+        'invoice.refund' => WebhookEventType::REFUND_CREATED,
+        'invoice.partially_refunded' => WebhookEventType::REFUND_CREATED,
+        'customer_payment_method.new' => WebhookEventType::PAYMENT_METHOD_UPDATED,
+        'automatic_pix.authorization_changed' => WebhookEventType::PIX_MANDATE_CHANGED,
+    ];
+
     private Iugu_APIRequest $apiRequest;
 
     private ?IdempotencyStore $idempotencyStore;
@@ -156,6 +195,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             Capability::IDEMPOTENCY,
             Capability::SUBSCRIPTIONS,
             Capability::PLANS,
+            Capability::WEBHOOKS,
         ];
     }
 
@@ -167,7 +207,6 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         return [
             Capability::DELAYED_CAPTURE,
             Capability::SUBSCRIPTION_CREDITS,
-            Capability::WEBHOOKS,
         ];
     }
 
@@ -1398,6 +1437,196 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $cancellation->original = $data;
 
         return $cancellation;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * A autenticidade da entrega é o token configurado no registro do webhook
+     * (`multi-payment.gateways.iugu.webhook_token`), que chega cru no cabeçalho
+     * `authorization` e é comparado em tempo constante. O corpo é
+     * `application/x-www-form-urlencoded` sem instante do evento, então `occurredAt` é o
+     * momento do parse, e o id da entrega vem do cabeçalho `idempotency-key` (sem ele, um id
+     * derivado de evento, recurso e status). `invoice.status_changed` é multiuso: o tipo comum
+     * sai do status da fatura relida, então esse evento custa a leitura da fatura no parse, e
+     * ela fica disponível em `invoice()` sem nova requisição.
+     */
+    public function parseWebhook(string $rawBody, array $headers): WebhookEvent
+    {
+        $this->verifyWebhookToken($headers);
+
+        $event = new WebhookEvent();
+        $event->gateway = 'iugu';
+        $event->occurredAt = Carbon::now();
+        // cabeçalho vazio conta como ausente, para o id derivado assumir e a deduplicação valer
+        $deliveryId = self::webhookHeaderValue($headers, self::WEBHOOK_DELIVERY_ID_HEADER);
+        $event->id = !is_null($deliveryId) && trim($deliveryId) !== '' ? $deliveryId : null;
+
+        parse_str($rawBody, $payload);
+        $eventName = $payload['event'] ?? null;
+
+        if (!is_string($eventName) || $eventName === '') {
+            LogHelper::warning('Corpo de webhook da Iugu com token válido e sem o campo event', ['gateway' => 'iugu']);
+            $event->type = WebhookEventType::UNKNOWN;
+            $event->raw = $rawBody;
+
+            return $event;
+        }
+
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+
+        $event->raw = $payload;
+        $event->resourceType = strstr($eventName, '.', true) ?: $eventName;
+        $event->resourceId = self::iuguWebhookResourceId($eventName, $data);
+        $event->id ??= self::deriveIuguWebhookId($eventName, $data);
+        $this->fillIuguWebhookResourceIds($event, $eventName, $data);
+
+        $lr = IuguDeclineCodes::extractLr((object) $data);
+        if (!is_null($lr)) {
+            $event->declineCode = self::declineCodeFromLr($lr);
+        }
+
+        $event->type = $eventName === 'invoice.status_changed'
+            ? $this->resolveIuguStatusChangedType($event)
+            : (self::WEBHOOK_EVENT_TYPES[$eventName] ?? WebhookEventType::UNKNOWN);
+
+        return $event;
+    }
+
+    /**
+     * Confere o token de autorização da entrega com o configurado em
+     * `multi-payment.gateways.iugu.webhook_token`, em comparação de tempo constante.
+     *
+     * @param  array  $headers
+     * @return void
+     * @throws WebhookSignatureException
+     */
+    private function verifyWebhookToken(array $headers): void
+    {
+        $token = Config::get('multi-payment.gateways.iugu.webhook_token');
+        if (empty($token)) {
+            throw WebhookSignatureException::missingSecret('iugu', 'multi-payment.gateways.iugu.webhook_token');
+        }
+
+        $received = self::webhookHeaderValue($headers, self::WEBHOOK_TOKEN_HEADER);
+        if (is_null($received) || trim($received) === '') {
+            throw WebhookSignatureException::missingHeader('iugu', self::WEBHOOK_TOKEN_HEADER);
+        }
+
+        if (!hash_equals((string) $token, $received)) {
+            throw WebhookSignatureException::invalidToken('iugu');
+        }
+    }
+
+    /**
+     * Id do objeto que o evento referencia, no vocabulário da Iugu: `data[id]` na maior parte
+     * dos eventos; o gatilho de método de pagamento identifica o método em
+     * `data[customer_payment_method_id]`.
+     *
+     * @param  string  $eventName
+     * @param  array  $data
+     * @return string|null
+     */
+    private static function iuguWebhookResourceId(string $eventName, array $data): ?string
+    {
+        $id = str_starts_with($eventName, 'customer_payment_method.')
+            ? ($data['customer_payment_method_id'] ?? null)
+            : ($data['id'] ?? null);
+
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
+     * Id de entrega derivado, usado quando o cabeçalho `idempotency-key` falta: evento, id do
+     * recurso e status concatenados. Duas entregas legítimas do mesmo evento para o mesmo
+     * recurso no mesmo status produzem o mesmo id, então a deduplicação por ele pode marcar a
+     * segunda como replay. Nulo quando nem o id do recurso existe.
+     *
+     * @param  string  $eventName
+     * @param  array  $data
+     * @return string|null
+     */
+    private static function deriveIuguWebhookId(string $eventName, array $data): ?string
+    {
+        $resourceId = self::iuguWebhookResourceId($eventName, $data);
+        if (is_null($resourceId)) {
+            return null;
+        }
+
+        $parts = [$eventName, $resourceId];
+        if (!empty($data['status']) && is_string($data['status'])) {
+            $parts[] = $data['status'];
+        }
+
+        return implode(':', $parts);
+    }
+
+    /**
+     * Preenche `invoiceId` e `subscriptionId` para a hidratação: evento de fatura aponta a
+     * própria fatura e a assinatura de origem quando `data[subscription_id]` vem; evento de
+     * assinatura aponta a assinatura.
+     *
+     * @param  WebhookEvent  $event
+     * @param  string  $eventName
+     * @param  array  $data
+     * @return void
+     */
+    private function fillIuguWebhookResourceIds(WebhookEvent $event, string $eventName, array $data): void
+    {
+        $id = self::iuguWebhookResourceId($eventName, $data);
+
+        if (str_starts_with($eventName, 'invoice.')) {
+            $event->invoiceId = $id;
+            $subscriptionId = $data['subscription_id'] ?? null;
+            $event->subscriptionId = is_string($subscriptionId) && $subscriptionId !== '' ? $subscriptionId : null;
+        } elseif (str_starts_with($eventName, 'subscription.')) {
+            $event->subscriptionId = $id;
+        }
+    }
+
+    /**
+     * Resolve o tipo comum de `invoice.status_changed`, o evento que a Iugu emite para
+     * qualquer mudança de status, pelo status normalizado da fatura relida (o corpo traz só o
+     * status novo, sem garantia de ordem de entrega). A fatura relida fica guardada no evento
+     * para `invoice()` reaproveitar. Fatura que não existe mais lê como `UNKNOWN`, com aviso
+     * no log.
+     *
+     * @param  WebhookEvent  $event
+     * @return WebhookEventType
+     * @throws GatewayException
+     */
+    private function resolveIuguStatusChangedType(WebhookEvent $event): WebhookEventType
+    {
+        if (empty($event->invoiceId)) {
+            LogHelper::warning('Webhook invoice.status_changed da Iugu sem o id da fatura', ['gateway' => 'iugu']);
+
+            return WebhookEventType::UNKNOWN;
+        }
+
+        $invoice = new Invoice();
+        $invoice->id = $event->invoiceId;
+
+        try {
+            $invoice = $this->getInvoice($invoice);
+        } catch (NotFoundException) {
+            LogHelper::warning('Webhook invoice.status_changed da Iugu aponta fatura inexistente', [
+                'gateway' => 'iugu',
+                'invoice_id' => $event->invoiceId,
+            ]);
+
+            return WebhookEventType::UNKNOWN;
+        }
+
+        $event->setHydratedInvoice($invoice);
+
+        return match ($invoice->status) {
+            InvoiceStatus::PAID, InvoiceStatus::EXTERNALLY_PAID => WebhookEventType::INVOICE_PAID,
+            InvoiceStatus::CANCELED, InvoiceStatus::EXPIRED => WebhookEventType::INVOICE_CANCELED,
+            InvoiceStatus::REFUNDED, InvoiceStatus::PARTIALLY_REFUNDED => WebhookEventType::REFUND_CREATED,
+            InvoiceStatus::DISPUTED => WebhookEventType::DISPUTE_OPENED,
+            InvoiceStatus::CHARGEBACK => WebhookEventType::DISPUTE_CLOSED,
+            default => WebhookEventType::INVOICE_UPDATED,
+        };
     }
 
     /**

@@ -1,0 +1,13 @@
+{
+    "method": "POST",
+    "delivered_at": "2026-09-05 14:07:33",
+    "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "141",
+        "user-agent": "Iugu-Webhooks",
+        "authorization": "mp-lote4-token-abc123",
+        "idempotency-key": "0d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a",
+        "content-type": "application/x-www-form-urlencoded"
+    },
+    "body": "event=automatic_pix.authorization_changed&data%5Bid%5D=D3B2A1C0E9F84765B4A3C2D1E0F98765&data%5Baccount_id%5D=9C4EE85587AC4E9BA5DB7F618491FA23"
+}

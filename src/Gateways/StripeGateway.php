@@ -56,6 +56,7 @@ use Potelo\MultiPayment\Contracts\GatewayContract;
 use Potelo\MultiPayment\Contracts\WebhookContract;
 use Potelo\MultiPayment\Contracts\SubscriptionContract;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Gateways\Concerns\ReadsWebhookHeaders;
 use Potelo\MultiPayment\Gateways\Concerns\ResolvesIdempotencyKey;
 use Potelo\MultiPayment\Gateways\Stripe\DeclineCodes as StripeDeclineCodes;
 use Potelo\MultiPayment\Gateways\Stripe\ProrationBehaviors;
@@ -77,6 +78,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 class StripeGateway implements GatewayContract, SubscriptionContract, PlanContract, WebhookContract
 {
     use ChecksCapabilities;
+    use ReadsWebhookHeaders;
     use ResolvesIdempotencyKey;
 
     /**
@@ -4863,28 +4865,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
 
         throw WebhookSignatureException::invalidSignature('stripe');
-    }
-
-    /**
-     * Valor de um cabeçalho da entrega, sem diferenciar maiúsculas no nome; um valor em lista
-     * (como o Laravel entrega) devolve o primeiro item.
-     *
-     * @param  array  $headers
-     * @param  string  $name
-     * @return string|null
-     */
-    private static function webhookHeaderValue(array $headers, string $name): ?string
-    {
-        foreach ($headers as $headerName => $value) {
-            if (strcasecmp((string) $headerName, $name) !== 0) {
-                continue;
-            }
-            $value = is_array($value) ? reset($value) : $value;
-
-            return is_string($value) ? $value : null;
-        }
-
-        return null;
     }
 
     /**

@@ -38,7 +38,8 @@ class WebhookEvent extends Model
     protected ?WebhookEventType $type = null;
 
     /**
-     * Momento do evento no gateway; nulo quando o payload não o informa.
+     * Momento do evento no gateway. Quando a entrega não traz o instante do evento (o corpo da
+     * Iugu não o tem), o driver preenche com o momento do parse.
      *
      * @var Carbon|null
      */
@@ -139,13 +140,26 @@ class WebhookEvent extends Model
         $invoice = new Invoice();
         $invoice->id = $this->invoiceId;
         $invoice->gateway = $this->gateway;
-        $this->hydratedInvoice = $invoice->get($this->gateway);
-
-        if (!empty($this->hydratedInvoice->lastPaymentError?->declineCode)) {
-            $this->declineCode = $this->hydratedInvoice->lastPaymentError->declineCode;
-        }
+        $this->setHydratedInvoice($invoice->get($this->gateway));
 
         return $this->hydratedInvoice;
+    }
+
+    /**
+     * Guarda uma fatura já relida no gateway como a fatura hidratada do evento, para
+     * `invoice()` reaproveitar a leitura; quando ela traz `lastPaymentError`, o `declineCode`
+     * do evento é completado a partir dele.
+     *
+     * @param  Invoice  $invoice
+     * @return void
+     */
+    public function setHydratedInvoice(Invoice $invoice): void
+    {
+        $this->hydratedInvoice = $invoice;
+
+        if (!empty($invoice->lastPaymentError?->declineCode)) {
+            $this->declineCode = $invoice->lastPaymentError->declineCode;
+        }
     }
 
     /**

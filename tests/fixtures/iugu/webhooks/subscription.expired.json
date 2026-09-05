@@ -1,0 +1,13 @@
+{
+    "method": "POST",
+    "delivered_at": "2026-09-05 14:03:27",
+    "headers": {
+        "accept-encoding": "gzip",
+        "content-length": "217",
+        "user-agent": "Iugu-Webhooks",
+        "authorization": "mp-lote4-token-abc123",
+        "idempotency-key": "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b",
+        "content-type": "application/x-www-form-urlencoded"
+    },
+    "body": "event=subscription.expired&data%5Bid%5D=868D8D08415D4C41AEEC907F22A013CF&data%5Baccount_id%5D=9C4EE85587AC4E9BA5DB7F618491FA23&data%5Bcustomer_name%5D=Lote4+Webhook&data%5Bcustomer_email%5D=lote4-webhook%40example.com"
+}

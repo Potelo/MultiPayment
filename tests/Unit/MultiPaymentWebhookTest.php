@@ -18,6 +18,25 @@ use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Tests\Unit\Gateways\RecordingStripeHttpClient;
 
 /**
+ * Gateway que não declara `WEBHOOKS`, para o teste da guarda da fachada.
+ */
+class GatewayWithoutWebhooks extends IuguGateway
+{
+    public function capabilities(): array
+    {
+        return array_values(array_filter(
+            parent::capabilities(),
+            static fn (Capability $capability) => $capability !== Capability::WEBHOOKS
+        ));
+    }
+
+    public function notYetImplemented(): array
+    {
+        return array_merge(parent::notYetImplemented(), [Capability::WEBHOOKS]);
+    }
+}
+
+/**
  * Webhook pela fachada: `parseWebhook()` despacha para o driver do gateway da instância,
  * `parseWebhookRequest()` adapta um `Request` do Laravel, e o gateway sem a capability
  * `WEBHOOKS` é recusado antes de qualquer parse.
@@ -25,6 +44,8 @@ use Potelo\MultiPayment\Tests\Unit\Gateways\RecordingStripeHttpClient;
 class MultiPaymentWebhookTest extends TestCase
 {
     private const SECRET = 'whsec_test_secret';
+
+    private const IUGU_TOKEN = 'mp-lote4-token-abc123';
 
     protected function setUp(): void
     {
@@ -40,7 +61,12 @@ class MultiPaymentWebhookTest extends TestCase
                         'class' => StripeGateway::class,
                         'webhook_secret' => self::SECRET,
                     ],
-                    'iugu' => ['api_key' => 'iugu-key', 'class' => IuguGateway::class],
+                    'iugu' => [
+                        'api_key' => 'iugu-key',
+                        'class' => IuguGateway::class,
+                        'webhook_token' => self::IUGU_TOKEN,
+                    ],
+                    'sem_webhook' => ['api_key' => 'iugu-key', 'class' => GatewayWithoutWebhooks::class],
                 ],
             ],
         ]));
@@ -86,10 +112,23 @@ class MultiPaymentWebhookTest extends TestCase
         $this->assertSame('evt_1UC6upPjx0CusuMr7t76P2p5', $event->id);
     }
 
+    public function testParseWebhookDispatchesToTheIuguDriverToo(): void
+    {
+        $delivery = json_decode(
+            file_get_contents(__DIR__ . '/../fixtures/iugu/webhooks/invoice.created.json'),
+            true
+        );
+
+        $event = (new MultiPayment('iugu'))->parseWebhook($delivery['body'], $delivery['headers']);
+
+        $this->assertSame(WebhookEventType::INVOICE_CREATED, $event->type);
+        $this->assertSame('iugu', $event->gateway);
+    }
+
     public function testAGatewayWithoutTheCapabilityIsRefusedBeforeAnyParse(): void
     {
         try {
-            (new MultiPayment('iugu'))->parseWebhook('{}', []);
+            (new MultiPayment('sem_webhook'))->parseWebhook('{}', []);
             $this->fail('Era esperada UnsupportedOperationException');
         } catch (UnsupportedOperationException $e) {
             $this->assertSame(Capability::WEBHOOKS, $e->capability);

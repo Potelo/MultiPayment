@@ -35,3 +35,20 @@ O que os headers mostram:
 | `invoice.partially_refunded.json` | `POST /v1/invoices/{id}/refund` com `partial_value_refund_cents` 3000 numa fatura paga; o corpo traz `data[amount]` com o valor estornado |
 | `invoice.status_changed.partially_refunded.json` | entregue junto com o `partially_refunded` acima, mesma fatura |
 | `supported_events.json` | resposta de `GET /v1/web_hooks/supported_events` |
+
+## Montadas sobre o formato observado
+
+Eventos que a sessão de captura não conseguiu provocar (dependem do tempo, da régua de
+cobrança ou do Pix Automático, indisponível na sandbox). Cada uma segue o envelope e o formato
+de corpo das entregas reais acima: mesmo `user-agent`, token e header `idempotency-key` (UUID
+inventado), campos de `data[...]` copiados do evento real mais próximo. O formato verdadeiro
+desses eventos segue sem observação.
+
+| Arquivo | Base do formato |
+|---|---|
+| `subscription.renewed.json` | campos de `subscription.created` |
+| `subscription.expired.json` | campos de `subscription.created` |
+| `subscription.activated.json` | campos de `subscription.created` |
+| `invoice.due.json` | campos de `invoice.created`, sem `source` |
+| `invoice.dunning_action.json` | campos de `invoice.created`, sem `source` (se o evento real traz o `lr` da recusa, como `invoice.payment_failed`, segue sem observação) |
+| `automatic_pix.authorization_changed.json` | só `data[id]` e `data[account_id]`; o payload real nunca foi visto |

@@ -35,6 +35,7 @@ class WebhookEventTypeTest extends TestCase
             [WebhookEventType::SUBSCRIPTION_CANCELED, false, true],
             [WebhookEventType::SUBSCRIPTION_SUSPENDED, false, true],
             [WebhookEventType::INVOICE_CREATED, true, false],
+            [WebhookEventType::INVOICE_UPDATED, true, false],
             [WebhookEventType::INVOICE_PAID, true, false],
             [WebhookEventType::INVOICE_PAYMENT_FAILED, true, false],
             [WebhookEventType::INVOICE_CANCELED, true, false],
