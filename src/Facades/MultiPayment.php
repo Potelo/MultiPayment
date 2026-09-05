@@ -44,6 +44,7 @@ use Potelo\MultiPayment\Builders\CreditCardBuilder;
  * @method static array<string, \Potelo\MultiPayment\Capabilities\CapabilityRestriction> restrictions($gateway = null)
  * @method static Invoice chargeInvoiceWithCreditCard($invoice, ?string $creditCardToken = null, ?string $creditCardId = null, ?string $idempotencyKey = null)
  * @method static \Potelo\MultiPayment\Models\Customer setDefaultCard(string $customerId, string $creditCardId, ?string $idempotencyKey = null)
+ * @method static Invoice captureInvoice(Invoice|string $invoice, ?int $amount = null, ?string $idempotencyKey = null)
  * @method static Invoice cancelInvoice(Invoice|string $invoice, ?string $idempotencyKey = null)
  * @method static Invoice rescheduleAutomaticPixPayment(Invoice|string $invoice, ?string $idempotencyKey = null)
  * @method static \Potelo\MultiPayment\Models\AutomaticPixCancellation cancelAutomaticPixRecurrence(\Potelo\MultiPayment\Models\AutomaticPix|string $automaticPix, ?string $idempotencyKey = null)

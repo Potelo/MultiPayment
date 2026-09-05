@@ -40,6 +40,7 @@ use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
@@ -264,6 +265,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::PIX,
             Capability::BANK_SLIP,
             Capability::CARD_SETUP_AUTHENTICATION,
+            Capability::DELAYED_CAPTURE,
             Capability::PARTIAL_REFUND_CARD,
             Capability::PARTIAL_REFUND_PIX,
             Capability::INVOICE_DUPLICATION,
@@ -291,7 +293,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     {
         return [
             Capability::MULTIPLE_PAYMENT_METHODS,
-            Capability::DELAYED_CAPTURE,
         ];
     }
 
@@ -301,6 +302,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * `CREDIT_CARD`: a conta brasileira só aceita crédito Visa e Mastercard, e outra bandeira
      * é recusada na cobrança com `DeclineCode::BRAND_NOT_SUPPORTED`. `BANK_SLIP`: valor entre
      * R$ 5,00 e R$ 49.999,99 e vencimento em até 60 dias, validados antes da requisição.
+     * `DELAYED_CAPTURE`: só cartão de crédito na venda avulsa; a fatura de assinatura é cobrada
+     * pela Stripe com captura imediata.
      * `INVOICE_DUPLICATION`: só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a
      * fatura de assinatura (`in_`) só é anulada depois de finalizada pela Stripe (rascunho é
      * recusado), e o boleto pendente só depois de o voucher vencer.
@@ -328,6 +331,11 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::BANK_SLIP->value => new CapabilityRestriction(
                 description: 'A Stripe aceita boleto de R$ 5,00 a R$ 49.999,99, com vencimento de hoje a'
                     . ' 60 dias; fora dessas janelas a criação é recusada antes da requisição.',
+            ),
+            Capability::DELAYED_CAPTURE->value => new CapabilityRestriction(
+                description: 'Só cartão de crédito na venda avulsa (PaymentIntent); a fatura de'
+                    . ' assinatura é cobrada pela Stripe com captura imediata.',
+                allowedPaymentMethods: [PaymentMethod::CREDIT_CARD],
             ),
             Capability::INVOICE_DUPLICATION->value => new CapabilityRestriction(
                 description: 'Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, boleto,'
@@ -960,6 +968,14 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         $paymentMethod = $this->invoicePaymentMethod($invoice);
+        if ($invoice->captureMethod === CaptureMethod::MANUAL && $paymentMethod !== PaymentMethod::CREDIT_CARD) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::DELAYED_CAPTURE,
+                'A captura em duas etapas vale só para cartão de crédito na Stripe;'
+                . " o método [{$paymentMethod->value}] captura na própria cobrança."
+            );
+        }
 
         return match ($paymentMethod) {
             PaymentMethod::CREDIT_CARD => $this->createCreditCardInvoice($invoice, $idempotencyKey),
@@ -998,7 +1014,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
-     * Cria e confirma um PaymentIntent de cartão (síncrono: succeeded ou recusa na hora). Um
+     * Cria e confirma um PaymentIntent de cartão (síncrono: succeeded ou recusa na hora). Com
+     * `CaptureMethod::MANUAL` o confirm só reserva o valor e a fatura volta em `AUTHORIZED`,
+     * para `captureInvoice()` concluir. Um
      * cartão informado por token é salvo antes por `createCreditCard()`; se o emissor exigir
      * autenticação do pagador para salvá-lo, a cobrança fora de sessão não tem como atendê-la
      * e a fatura não é criada: `ChargingException` com `DeclineCode::AUTHENTICATION_REQUIRED`
@@ -1043,6 +1061,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $stripePaymentIntentData['payment_method'] = $invoice->creditCard->id;
         $stripePaymentIntentData['confirm'] = true;
         $stripePaymentIntentData['off_session'] = true;
+        if ($invoice->captureMethod === CaptureMethod::MANUAL) {
+            $stripePaymentIntentData['capture_method'] = CaptureMethod::MANUAL->value;
+        }
         $stripePaymentIntentData = $this->mergeGatewayOptions($stripePaymentIntentData, $invoice);
 
         $stripePaymentIntent = $this->stripeRequest(function () use ($stripePaymentIntentData, $idempotencyKey) {
@@ -1380,31 +1401,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
-     * Lança `UnsupportedOperationException` (`SUBSCRIPTIONS`, `not_implemented`) quando a fatura
-     * é um Invoice da Stripe (id `in_`): a lib ainda não implementa escrita sobre a fatura de
-     * assinatura.
-     *
-     * @param  Invoice  $invoice
-     * @param  string  $operation  nome da operação, para a mensagem
-     * @return void
-     * @throws UnsupportedOperationException
-     */
-    private function assertPaymentIntentOrigin(Invoice $invoice, string $operation): void
-    {
-        if (self::isStripeInvoiceId($invoice->id)) {
-            // reason fixado em not_implemented: SUBSCRIPTIONS está em capabilities(), mas a
-            // escrita sobre a fatura de assinatura ainda não foi construída nesta lib
-            throw new UnsupportedOperationException(
-                "A operação {$operation} sobre a fatura de assinatura [{$invoice->id}] (objeto Invoice da Stripe)"
-                . ' ainda não está implementada nesta lib; a leitura por getInvoice() está disponível.',
-                (string) $this,
-                Capability::SUBSCRIPTIONS,
-                UnsupportedOperationException::REASON_NOT_IMPLEMENTED
-            );
-        }
-    }
-
-    /**
      * @inheritDoc
      *
      * As guardas de estorno precisam do método de pagamento, do status e, no estorno por valor,
@@ -1427,6 +1423,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * acumulado estornado que ele traz não é confiável (escrito pelo caminho antigo, ou ausente
      * numa fatura fora de `PAID`).
      *
+     * A fatura de assinatura (id `in_`) é estornada pelo PaymentIntent dela
+     * (`refundStripeInvoice()`), com as mesmas guardas e a releitura sempre.
+     *
      * @throws ModelAttributeValidationException|RefundNotSupportedException
      */
     public function refundInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Refund
@@ -1434,9 +1433,12 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
-        $this->assertPaymentIntentOrigin($invoice, 'refundInvoice');
         $requestedAmount = $invoice->resolveRefundAmount($amount);
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
+
+        if (self::isStripeInvoiceId($invoice->id)) {
+            return $this->refundStripeInvoice($invoice, $requestedAmount, $idempotencyKey);
+        }
 
         $current = $invoice;
         if (
@@ -1474,7 +1476,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     /**
      * Tenta repetir, pela chave de idempotência, um estorno que a guarda de estado recusou:
      * a Stripe devolve o refund original quando a chave é a dele. Sem chave, ou quando a recusa
-     * não é de estado (boleto), ou quando a Stripe também recusa, sobe a recusa da guarda.
+     * não é de estado (boleto, fatura sem cobrança pelo gateway), ou quando a Stripe também
+     * recusa, sobe a recusa da guarda.
      *
      * @param  RefundNotSupportedException  $refusal
      * @param  array  $stripeRefundData
@@ -1500,23 +1503,72 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
+     * Estorna uma fatura de assinatura (objeto Invoice da Stripe). O estorno age sobre o
+     * PaymentIntent da fatura, então ela é sempre relida (um GET) para apontar o PaymentIntent
+     * e conferir o estado atual. Valem as guardas da cobrança avulsa, mais a recusa da fatura
+     * quitada sem cobrança pela Stripe (paga fora dela ou sem valor a cobrar), que não tem o
+     * que estornar pela API. Depois do estorno o status da fatura relida vem do charge
+     * (`REFUNDED` ou `PARTIALLY_REFUNDED`); o objeto Invoice da Stripe segue `paid`.
+     *
+     * @param  Invoice  $invoice
+     * @param  int|null  $requestedAmount  valor pedido em centavos; nulo é estorno do restante
+     * @param  string|null  $idempotencyKey
+     * @return Refund
+     * @throws GatewayException|GatewayNotAvailableException|RefundNotSupportedException
+     */
+    private function refundStripeInvoice(Invoice $invoice, ?int $requestedAmount, ?string $idempotencyKey): Refund
+    {
+        $current = $this->getInvoice(clone $invoice);
+        $paymentIntentId = $current->original instanceof StripeInvoice
+            ? self::invoicePaymentIntentId($current->original)
+            : null;
+
+        $stripeRefundData = ['payment_intent' => $paymentIntentId];
+        if (!is_null($requestedAmount)) {
+            $stripeRefundData['amount'] = $requestedAmount;
+        }
+        $stripeRefundData = $this->mergeGatewayOptions($stripeRefundData, $invoice);
+
+        try {
+            if ($current->status === InvoiceStatus::EXTERNALLY_PAID || is_null($paymentIntentId)) {
+                throw RefundNotSupportedException::noGatewayCharge(
+                    'stripe',
+                    $current->paymentMethod?->value,
+                    $current->status === InvoiceStatus::EXTERNALLY_PAID
+                );
+            }
+            $this->assertInvoiceIsRefundable($current, $requestedAmount);
+            $stripeRefund = $this->stripeRequest(function () use ($stripeRefundData, $idempotencyKey) {
+                return $this->client->refunds->create($stripeRefundData, self::stripeOptions($idempotencyKey));
+            });
+        } catch (RefundNotSupportedException $refusal) {
+            $stripeRefund = $this->replayStripeRefund($refusal, $stripeRefundData, $idempotencyKey);
+        }
+
+        $invoice = $this->getInvoice($invoice);
+
+        $refund = $this->parseRefund($stripeRefund, $invoice->id);
+        $refund->invoice = $invoice;
+
+        return $refund;
+    }
+
+    /**
      * @inheritDoc
      *
      * Na Stripe o restante é `amount_captured` menos `amount_refunded` do charge
-     * (`Invoice::$paidAmount` menos `Invoice::$refundedAmount`, porque o valor pago vem bruto);
-     * fatura paga com boleto devolve zero, porque `refundInvoice()` a recusa
-     * (`REFUND_BANK_SLIP` é limitação do gateway). A fatura é lida quando o model não traz o
-     * valor pago, o método de pagamento ou o acumulado estornado confiável. A fatura de
-     * assinatura (`in_`) é recusada como em `refundInvoice()`, antes da leitura.
-     *
-     * @throws UnsupportedOperationException
+     * (`Invoice::$paidAmount` menos `Invoice::$refundedAmount`, porque o valor pago vem bruto),
+     * na cobrança avulsa e na fatura de assinatura (`in_`); fatura paga com boleto devolve
+     * zero, porque `refundInvoice()` a recusa (`REFUND_BANK_SLIP` é limitação do gateway), e a
+     * fatura quitada sem cobrança pela Stripe (paga fora dela ou sem valor a cobrar) também. A
+     * fatura é lida quando o model não traz o valor pago, o método de pagamento ou o acumulado
+     * estornado confiável.
      */
     public function refundableAmount(Invoice $invoice): int
     {
         if (empty($invoice->id)) {
             throw ModelAttributeValidationException::required('Invoice', 'id');
         }
-        $this->assertPaymentIntentOrigin($invoice, 'refundableAmount');
 
         $current = self::hasReliableRefundableAmount($invoice) ? $invoice : $this->getInvoice(clone $invoice);
 
@@ -1525,14 +1577,16 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
     /**
      * Restante estornável de uma fatura já lida: `paidAmount` menos `refundedAmount`; zero
-     * quando nada foi pago e para fatura paga com boleto, que o estorno recusa.
+     * quando nada foi pago, para fatura paga com boleto, que o estorno recusa, e para fatura
+     * paga fora da Stripe, cujo valor não passou por uma cobrança estornável.
      *
      * @param  Invoice  $invoice
      * @return int
      */
     private static function stripeRefundableAmount(Invoice $invoice): int
     {
-        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP) {
+        if ($invoice->paymentMethod === PaymentMethod::BANK_SLIP
+            || $invoice->status === InvoiceStatus::EXTERNALLY_PAID) {
             return 0;
         }
 
@@ -1601,7 +1655,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      *
      * A chave de idempotência vai no cabeçalho `Idempotency-Key` do confirm; o update que
      * antecede o confirm usa `{chave}:update` e a conversão de token legado em PaymentMethod
-     * usa `{chave}:payment_method`.
+     * usa `{chave}:payment_method`. A fatura de assinatura (id `in_`) é paga por
+     * `payStripeInvoice()` (`invoices.pay` com o cartão).
      *
      * @throws ChargingException|ModelAttributeValidationException
      */
@@ -1616,13 +1671,16 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         if (empty($invoice->creditCard->token) && empty($invoice->creditCard->id)) {
             throw new ModelAttributeValidationException('Credit card token or id is required');
         }
-        $this->assertPaymentIntentOrigin($invoice, 'chargeInvoiceWithCreditCard');
         $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
 
         // id = PaymentMethod salvo no customer; token = PaymentMethod criado client-side
         $paymentMethodId = !empty($invoice->creditCard->id)
             ? $invoice->creditCard->id
             : $invoice->creditCard->token;
+
+        if (self::isStripeInvoiceId($invoice->id)) {
+            return $this->payStripeInvoice($invoice, $idempotencyKey);
+        }
 
         $stripePaymentIntent = $this->stripeRequest(function () use ($invoice, $paymentMethodId, $idempotencyKey) {
             $paymentMethodId = $this->resolvePaymentMethodId(
@@ -1673,6 +1731,58 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
+     * Paga uma fatura de assinatura (objeto Invoice da Stripe) com o cartão informado
+     * (`invoices.pay` com `payment_method`). A Stripe exige um PaymentMethod anexado ao
+     * cliente da fatura, então um cartão informado por token é salvo antes por
+     * `createCreditCard()` (a fatura é lida para apontar o cliente quando o cartão não traz
+     * um); se o emissor exigir autenticação do pagador, o pagamento não acontece:
+     * `ChargingException` com `DeclineCode::AUTHENTICATION_REQUIRED`. A fatura precisa estar
+     * `open`; paga, anulada ou em rascunho, a Stripe recusa (`ValidationException`), e a
+     * recusa do cartão chega como `ChargingException`, como na cobrança avulsa. A chave de
+     * idempotência vai no cabeçalho `Idempotency-Key` do pagamento; o cartão salvo antes usa
+     * `{chave}:card`.
+     *
+     * @param  Invoice  $invoice
+     * @param  string|null  $idempotencyKey
+     * @return Invoice
+     * @throws ChargingException|GatewayException|GatewayNotAvailableException
+     */
+    private function payStripeInvoice(Invoice $invoice, ?string $idempotencyKey): Invoice
+    {
+        if (empty($invoice->creditCard->id)) {
+            if (empty($invoice->creditCard->customer?->id)) {
+                $invoice->creditCard->customer = $this->getInvoice(clone $invoice)->customer;
+            }
+            $invoice->creditCard = $this->createCreditCard(
+                $invoice->creditCard,
+                self::derivedIdempotencyKey($idempotencyKey, 'card')
+            );
+            if ($invoice->creditCard->requiresAction) {
+                $exception = ChargingException::declined(
+                    'stripe',
+                    DeclineCode::AUTHENTICATION_REQUIRED,
+                    'authentication_required',
+                    'O emissor exige autenticação do pagador para este cartão; salve-o com createCreditCard(),'
+                    . ' conclua a autenticação com confirmCreditCardSetup() e cobre pelo id do cartão salvo.'
+                );
+                $exception->chargeResponse = $invoice->creditCard->original?->toArray();
+
+                throw $exception;
+            }
+        }
+
+        $stripeInvoice = $this->stripeRequest(function () use ($invoice, $idempotencyKey) {
+            return $this->client->invoices->pay(
+                $invoice->id,
+                ['payment_method' => $invoice->creditCard->id, 'expand' => self::INVOICE_EXPAND],
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseInvoice($stripeInvoice, $invoice);
+    }
+
+    /**
      * Converte o objeto de origem da Stripe em uma Invoice do MultiPayment: PaymentIntent
      * (cobrança avulsa, origem `PAYMENT_INTENT`) ou Invoice da Stripe (fatura de assinatura,
      * origem `INVOICE`). `Invoice::$originType` diz qual foi e `original` guarda o objeto.
@@ -1706,7 +1816,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         // sem expand o latest_charge vem só como id; um charge failed (ex.: pix expirado)
         // não pode alimentar paidAmount/refundedAmount
         $stripeCharge = is_object($stripePaymentIntent->latest_charge) ? $stripePaymentIntent->latest_charge : null;
-        $paidCharge = ($stripeCharge && $stripeCharge->status === 'succeeded') ? $stripeCharge : null;
+        $paidCharge = self::paidCharge($stripeCharge);
 
         $invoice->id = $stripePaymentIntent->id;
         $invoice->gateway = 'stripe';
@@ -1726,6 +1836,12 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $stripePaymentIntent->last_payment_error ?? null,
             $stripeCharge
         );
+        // automatic e automatic_async capturam na própria cobrança; só manual é duas etapas
+        $invoice->captureMethod = match ($stripePaymentIntent->capture_method ?? null) {
+            CaptureMethod::MANUAL->value => CaptureMethod::MANUAL,
+            null => $invoice->captureMethod,
+            default => CaptureMethod::AUTOMATIC,
+        };
         $invoice->original = $stripePaymentIntent;
 
         $this->parseInvoiceCustomer($invoice, $stripePaymentIntent->customer ?? null);
@@ -1776,7 +1892,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
 
         $stripePaymentIntent = $this->invoicePaymentIntent($stripeInvoice);
         $stripeCharge = is_object($stripePaymentIntent?->latest_charge) ? $stripePaymentIntent->latest_charge : null;
-        $paidCharge = ($stripeCharge && $stripeCharge->status === 'succeeded') ? $stripeCharge : null;
+        $paidCharge = self::paidCharge($stripeCharge);
 
         $invoice->id = $stripeInvoice->id;
         $invoice->gateway = 'stripe';
@@ -1838,18 +1954,57 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     }
 
     /**
-     * Escolhe o PaymentIntent da fatura entre os pagamentos do Invoice (`payments.data`): o
-     * que está pago, senão o pagamento padrão (`is_default`), senão o primeiro do tipo
-     * PaymentIntent. Devolve nulo quando a fatura não tem PaymentIntent (rascunho, quitada sem
-     * cobrança, paga fora da Stripe). Um PaymentIntent que já tem charge, ou que veio só como
-     * id, é relido com o expand de PaymentIntent, para o charge trazer valores, estornos e a
-     * flag de contestação.
+     * PaymentIntent da fatura, escolhido por `chosenInvoicePaymentIntent()`. Devolve nulo
+     * quando a fatura não tem PaymentIntent. Um PaymentIntent que já tem charge, ou que veio só
+     * como id, é relido com o expand de PaymentIntent, para o charge trazer valores, estornos e
+     * a flag de contestação.
      *
      * @param  \Stripe\Invoice  $stripeInvoice
      * @return \Stripe\PaymentIntent|null
      * @throws GatewayException|GatewayNotAvailableException
      */
     private function invoicePaymentIntent(StripeInvoice $stripeInvoice): ?StripePaymentIntent
+    {
+        $stripePaymentIntent = self::chosenInvoicePaymentIntent($stripeInvoice);
+        if ($stripePaymentIntent instanceof StripePaymentIntent && empty($stripePaymentIntent->latest_charge)) {
+            return $stripePaymentIntent;
+        }
+
+        $id = is_object($stripePaymentIntent) ? ($stripePaymentIntent->id ?? '') : (string) $stripePaymentIntent;
+        if ($id === '') {
+            return null;
+        }
+
+        return $this->stripeRequest(function () use ($id) {
+            return $this->client->paymentIntents->retrieve($id, ['expand' => self::PAYMENT_INTENT_EXPAND]);
+        });
+    }
+
+    /**
+     * Id do PaymentIntent da fatura, escolhido pelo mesmo critério de `invoicePaymentIntent()`
+     * e sem nenhuma requisição; nulo quando a fatura não tem PaymentIntent.
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @return string|null
+     */
+    private static function invoicePaymentIntentId(StripeInvoice $stripeInvoice): ?string
+    {
+        $stripePaymentIntent = self::chosenInvoicePaymentIntent($stripeInvoice);
+        $id = is_object($stripePaymentIntent) ? ($stripePaymentIntent->id ?? '') : (string) $stripePaymentIntent;
+
+        return $id === '' ? null : $id;
+    }
+
+    /**
+     * PaymentIntent do pagamento escolhido do Invoice (`payments.data`): o que está pago,
+     * senão o pagamento padrão (`is_default`), senão o primeiro do tipo PaymentIntent. Devolve
+     * o objeto expandido ou só o id, como estiver no Invoice; nulo quando a fatura não tem
+     * PaymentIntent (rascunho, quitada sem cobrança, paga fora da Stripe).
+     *
+     * @param  \Stripe\Invoice  $stripeInvoice
+     * @return object|string|null
+     */
+    private static function chosenInvoicePaymentIntent(StripeInvoice $stripeInvoice): object|string|null
     {
         $candidates = [];
         foreach ($stripeInvoice->payments->data ?? [] as $invoicePayment) {
@@ -1874,23 +2029,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             }
         }
         $chosen = $chosen ?? ($candidates[0] ?? null);
-        if (is_null($chosen)) {
-            return null;
-        }
 
-        $stripePaymentIntent = $chosen->payment->payment_intent ?? null;
-        if ($stripePaymentIntent instanceof StripePaymentIntent && empty($stripePaymentIntent->latest_charge)) {
-            return $stripePaymentIntent;
-        }
-
-        $id = is_object($stripePaymentIntent) ? ($stripePaymentIntent->id ?? '') : (string) $stripePaymentIntent;
-        if ($id === '') {
-            return null;
-        }
-
-        return $this->stripeRequest(function () use ($id) {
-            return $this->client->paymentIntents->retrieve($id, ['expand' => self::PAYMENT_INTENT_EXPAND]);
-        });
+        return $chosen?->payment->payment_intent ?? null;
     }
 
     /**
@@ -1931,6 +2071,24 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
 
         return $quantity > 1 ? intdiv((int) $line->amount, $quantity) : (int) $line->amount;
+    }
+
+    /**
+     * Charge que pagou a fatura: em `succeeded` e capturado. A autorização sem captura tem
+     * charge em `succeeded` com `captured` falso e nenhum dinheiro movido, então não alimenta
+     * valor pago, estornos nem `paidAt`. Resposta sem a chave `captured` conta como capturada
+     * (`isset()` passa pelo `__isset` e não registra "Undefined property" no log da Stripe).
+     *
+     * @param  object|null  $stripeCharge
+     * @return object|null
+     */
+    private static function paidCharge(?object $stripeCharge): ?object
+    {
+        if (!$stripeCharge || $stripeCharge->status !== 'succeeded') {
+            return null;
+        }
+
+        return !isset($stripeCharge->captured) || $stripeCharge->captured ? $stripeCharge : null;
     }
 
     /**
@@ -2487,7 +2645,8 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     /**
      * @inheritDoc
      *
-     * Na origem `PAYMENT_INTENT` cancela o PaymentIntent; na origem `INVOICE` (id `in_`) anula o
+     * Na origem `PAYMENT_INTENT` cancela o PaymentIntent (numa fatura autorizada sem captura, o
+     * cancelamento libera a reserva no cartão); na origem `INVOICE` (id `in_`) anula o
      * Invoice da Stripe (`void`), e a Stripe cancela sozinha o PaymentIntent padrão dele. O
      * boleto com voucher em aberto não pode ser cancelado na Stripe: quando o model traz o
      * voucher (`bankSlip` numa fatura pendente), a recusa acontece antes da requisição; sem
@@ -2564,6 +2723,57 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         });
 
         return $this->parseInvoice($stripeInvoice, $invoice);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Captura o PaymentIntent autorizado (`requires_capture`); com `$amount`, a captura é
+     * parcial (`amount_to_capture`) e a Stripe libera o restante da reserva. Fatura fora de
+     * `AUTHORIZED` é recusada pela Stripe (`ValidationException`). A fatura de assinatura
+     * (`in_`) é recusada antes da requisição: a Stripe a cobra com captura imediata. A chave
+     * de idempotência vai no cabeçalho `Idempotency-Key` da captura.
+     *
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     */
+    public function captureInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Invoice
+    {
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+        if (self::isStripeInvoiceId($invoice->id)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::DELAYED_CAPTURE,
+                "A fatura de assinatura [{$invoice->id}] (objeto Invoice da Stripe) é cobrada pela"
+                . ' Stripe com captura imediata; a captura em duas etapas vale só para a venda'
+                . ' avulsa (PaymentIntent).'
+            );
+        }
+        if (!is_null($amount) && $amount <= 0) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'amount',
+                'The capture amount must be a positive number of cents; omit it to capture the full authorized amount.'
+            );
+        }
+        $idempotencyKey = $this->idempotencyKeyFor($idempotencyKey, $invoice);
+
+        $params = [];
+        if (!is_null($amount)) {
+            $params['amount_to_capture'] = $amount;
+        }
+        $params = $this->withExpand($this->mergeGatewayOptions($params, $invoice), self::PAYMENT_INTENT_EXPAND);
+
+        $stripePaymentIntent = $this->stripeRequest(function () use ($invoice, $params, $idempotencyKey) {
+            return $this->client->paymentIntents->capture(
+                $invoice->id,
+                $params,
+                self::stripeOptions($idempotencyKey)
+            );
+        });
+
+        return $this->parseInvoice($stripePaymentIntent, $invoice);
     }
 
     /**

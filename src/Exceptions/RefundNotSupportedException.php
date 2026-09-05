@@ -10,7 +10,8 @@ use Potelo\MultiPayment\Enums\Capability;
  *
  * É lançada quando a regra do gateway já garante que a API recusaria o estorno: boleto não tem
  * estorno via API em nenhum gateway, Pix na Iugu só aceita estorno integral, fatura já estornada
- * não estorna de novo, o valor pedido não pode passar do restante estornável e a Iugu fecha a
+ * não estorna de novo, o valor pedido não pode passar do restante estornável, a fatura quitada
+ * sem cobrança pelo gateway não tem o que estornar e a Iugu fecha a
  * janela de estorno 90 dias após o pagamento. O motivo fica em `$reason`, no vocabulário do
  * pacote, para a aplicação ramificar sem ler a mensagem. `$capability` aponta a capability
  * recusada quando a recusa é limitação do gateway (`REFUND_BANK_SLIP`, `PARTIAL_REFUND_PIX`) e
@@ -34,6 +35,9 @@ class RefundNotSupportedException extends MultiPaymentException
 
     /** O valor pedido passa do que ainda pode ser estornado na fatura. */
     public const REASON_AMOUNT_EXCEEDS_REFUNDABLE = 'amount_exceeds_refundable';
+
+    /** A fatura foi quitada sem cobrança pelo gateway (paga fora dele ou sem valor a cobrar). */
+    public const REASON_NO_GATEWAY_CHARGE = 'no_gateway_charge';
 
     /**
      * Método de pagamento da fatura (`credit_card`, `bank_slip`, `pix`), ou nulo quando o
@@ -210,6 +214,29 @@ class RefundNotSupportedException extends MultiPaymentException
             $paymentMethod,
             self::REASON_REFUND_WINDOW_EXPIRED,
             true,
+            null,
+            $gateway
+        );
+    }
+
+    /**
+     * A fatura foi quitada sem uma cobrança feita pelo gateway (pagamento registrado fora dele,
+     * ou fatura sem valor a cobrar), então a API não tem o que estornar.
+     *
+     * @param  string  $gateway
+     * @param  string|null  $paymentMethod
+     * @param  bool  $manualRefundRequired  verdadeiro quando houve pagamento fora do gateway a devolver
+     * @return static
+     */
+    public static function noGatewayCharge(string $gateway, ?string $paymentMethod, bool $manualRefundRequired): static
+    {
+        return new static(
+            "A fatura foi quitada sem cobrança pelo gateway {$gateway} (pagamento fora dele ou sem valor a cobrar);"
+            . ' a API não tem o que estornar'
+            . ($manualRefundRequired ? '; devolva o pagamento recebido fora do gateway manualmente.' : '.'),
+            $paymentMethod,
+            self::REASON_NO_GATEWAY_CHARGE,
+            $manualRefundRequired,
             null,
             $gateway
         );

@@ -191,6 +191,11 @@ class IuguGatewayIdempotencyTest extends TestCase
                 [$paidCardInvoice, $refundedInvoice],
                 'POST', '/invoices/inv_1/refund',
             ],
+            'captureInvoice (POST /capture)' => [
+                fn (IuguGateway $g, string $key) => $g->captureInvoice(self::invoiceWithId(), null, $key),
+                [$paidCardInvoice],
+                'POST', '/invoices/inv_1/capture',
+            ],
             'duplicateInvoice (POST /duplicate)' => [
                 fn (IuguGateway $g, string $key) => $g->duplicateInvoice(self::invoiceWithId(), Carbon::parse('2026-10-01'), [], $key),
                 [self::pendingInvoiceResponse(['id' => 'inv_2'])],

@@ -25,6 +25,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\IgnoreDeprecations;
 use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
@@ -97,6 +98,122 @@ class StripeGatewayInvoiceTest extends TestCase
         $this->assertSame('Assinatura mensal', $result->items[0]->description);
         $this->assertSame(12345, $result->items[0]->price);
         $this->assertSame('stripe', $result->gateway);
+    }
+
+    /**
+     * Com `CaptureMethod::MANUAL` o payload leva `capture_method: manual` e o confirm só
+     * reserva o valor: a fatura volta em `AUTHORIZED`, com o momento da captura no model.
+     */
+    public function testCreatesCreditCardInvoiceWithManualCapture(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([$this->authorizedCardPaymentIntentResponse()]);
+
+        $invoice = $this->creditCardInvoiceModel();
+        $invoice->captureMethod = CaptureMethod::MANUAL;
+        $result = (new StripeGateway())->createInvoice($invoice);
+
+        $this->assertSame('manual', $httpClient->calls[0][2]['capture_method']);
+        $this->assertSame(InvoiceStatus::AUTHORIZED, $result->status);
+        $this->assertSame(CaptureMethod::MANUAL, $result->captureMethod);
+        // o charge da autorização vem succeeded com captured falso: nada foi pago ainda
+        $this->assertNull($result->paidAmount);
+        $this->assertNull($result->paidAt);
+    }
+
+    /**
+     * A captura em duas etapas na Stripe é restrição de `DELAYED_CAPTURE`: só cartão. Outro
+     * método é recusado antes de qualquer requisição.
+     */
+    public function testManualCaptureWithPixIsRefusedBeforeAnyRequest(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+
+        $invoice = $this->pixInvoiceModel();
+        $invoice->captureMethod = CaptureMethod::MANUAL;
+
+        try {
+            (new StripeGateway())->createInvoice($invoice);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::DELAYED_CAPTURE, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    public function testCapturesTheAuthorizedInvoiceTotally(): void
+    {
+        $captured = $this->paidCardPaymentIntentResponse();
+        $captured['capture_method'] = 'manual';
+        $httpClient = RecordingStripeHttpClient::withResponses([$captured]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $result = (new StripeGateway())->captureInvoice($invoice, null, 'chave-captura');
+
+        $this->assertCount(1, $httpClient->calls);
+        [$method, $url, $params] = $httpClient->calls[0];
+        $this->assertSame('post', $method);
+        $this->assertSame('/v1/payment_intents/pi_fake123/capture', parse_url($url, PHP_URL_PATH));
+        $this->assertSame(['expand' => ['latest_charge.balance_transaction', 'latest_charge.refunds']], $params);
+        $this->assertSame('chave-captura', $httpClient->header(0, 'Idempotency-Key'));
+
+        $this->assertSame($invoice, $result);
+        $this->assertSame(InvoiceStatus::PAID, $result->status);
+        $this->assertSame(CaptureMethod::MANUAL, $result->captureMethod);
+        $this->assertSame(12345, $result->paidAmount);
+    }
+
+    /**
+     * A captura parcial envia `amount_to_capture` e a Stripe libera o restante da reserva.
+     */
+    public function testCapturesTheAuthorizedInvoicePartially(): void
+    {
+        $captured = $this->paidCardPaymentIntentResponse();
+        $captured['latest_charge']['amount_captured'] = 5000;
+        $httpClient = RecordingStripeHttpClient::withResponses([$captured]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+        $result = (new StripeGateway())->captureInvoice($invoice, 5000);
+
+        $this->assertSame(5000, $httpClient->calls[0][2]['amount_to_capture']);
+        $this->assertSame(5000, $result->paidAmount);
+    }
+
+    public function testCaptureAmountMustBePositive(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $invoice = new Invoice();
+        $invoice->id = 'pi_fake123';
+
+        try {
+            (new StripeGateway())->captureInvoice($invoice, 0);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('positive', $e->getMessage());
+        }
+        $this->assertSame([], $httpClient->calls);
+    }
+
+    public function testCaptureInvoiceRequiresId(): void
+    {
+        $this->expectException(ModelAttributeValidationException::class);
+
+        (new StripeGateway())->captureInvoice(new Invoice());
+    }
+
+    /**
+     * `capture_method` do PaymentIntent volta no model: `manual` lê como `MANUAL` e os
+     * automáticos da Stripe (`automatic`, `automatic_async`) leem como `AUTOMATIC`.
+     */
+    public function testCaptureMethodIsReadFromThePaymentIntent(): void
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['capture_method'] = 'automatic_async';
+        RecordingStripeHttpClient::withResponses([$response]);
+
+        $this->assertSame(CaptureMethod::AUTOMATIC, $this->getInvoice()->captureMethod);
     }
 
     /**
@@ -2464,6 +2581,23 @@ class StripeGatewayInvoiceTest extends TestCase
                 ],
             ],
         ];
+    }
+
+    /**
+     * PaymentIntent autorizado sem captura (`requires_capture`): o charge existe em
+     * `succeeded` com `captured` falso e nada capturado.
+     */
+    private function authorizedCardPaymentIntentResponse(): array
+    {
+        $response = $this->paidCardPaymentIntentResponse();
+        $response['status'] = 'requires_capture';
+        $response['capture_method'] = 'manual';
+        $response['latest_charge']['status'] = 'succeeded';
+        $response['latest_charge']['captured'] = false;
+        $response['latest_charge']['amount_captured'] = 0;
+        $response['latest_charge']['balance_transaction'] = null;
+
+        return $response;
     }
 
     private function disputedCardPaymentIntentResponse(): array

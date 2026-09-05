@@ -40,7 +40,8 @@ interface InvoiceContract
      * centavos (zero ou negativo lança `ModelAttributeValidationException`). O driver lança
      * `RefundNotSupportedException` antes de qualquer requisição quando a regra do gateway já
      * garante a recusa (boleto, Pix parcial na Iugu, fatura já estornada, valor acima do
-     * restante, prazo vencido). Devolve o `Refund` criado, com a fatura relida em
+     * restante, prazo vencido, fatura quitada sem cobrança pelo gateway). Devolve o `Refund`
+     * criado, com a fatura relida em
      * `$refund->invoice`; o model recebido é atualizado no lugar.
      *
      * @param  Invoice  $invoice
@@ -62,10 +63,25 @@ interface InvoiceContract
      * @param  Invoice  $invoice
      * @return int
      * @throws GatewayException|GatewayNotAvailableException
-     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException  fatura que o driver não estorna
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException  `id` ausente
      */
     public function refundableAmount(Invoice $invoice): int;
+
+    /**
+     * Captura o valor autorizado de uma fatura criada com `CaptureMethod::MANUAL`: o valor
+     * integral quando `$amount` é nulo, ou o valor informado em centavos onde o gateway aceita
+     * captura parcial. Devolve a fatura capturada; o model recebido é atualizado no lugar.
+     *
+     * @param  Invoice  $invoice
+     * @param  int|null  $amount  valor em centavos; nulo captura o valor autorizado
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     *
+     * @return Invoice
+     * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function captureInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Invoice;
 
     /**
      * Charge an invoice with a credit card

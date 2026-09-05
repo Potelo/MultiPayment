@@ -78,7 +78,7 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::RAW_CARD_DATA->name =>            [self::SUPPORTED,      self::LIMITATION],
             Capability::CARD_SETUP_AUTHENTICATION->name => [self::LIMITATION,    self::SUPPORTED],
             Capability::INSTALLMENTS->name =>             [self::SUPPORTED,      self::LIMITATION],
-            Capability::DELAYED_CAPTURE->name =>          [self::NOT_IMPLEMENTED, self::NOT_IMPLEMENTED],
+            Capability::DELAYED_CAPTURE->name =>          [self::SUPPORTED,      self::SUPPORTED],
             Capability::PARTIAL_REFUND_CARD->name =>      [self::SUPPORTED,      self::SUPPORTED],
             Capability::PARTIAL_REFUND_PIX->name =>       [self::LIMITATION,     self::SUPPORTED],
             Capability::REFUND_BANK_SLIP->name =>         [self::LIMITATION,     self::LIMITATION],
@@ -273,7 +273,7 @@ class GatewayCapabilitiesTest extends TestCase
         $payment = new MultiPayment('stripe');
 
         $this->assertTrue($payment->supportsAll(Capability::CREDIT_CARD, Capability::PIX));
-        $this->assertFalse($payment->supportsAll(Capability::CREDIT_CARD, Capability::DELAYED_CAPTURE));
+        $this->assertFalse($payment->supportsAll(Capability::CREDIT_CARD, Capability::MULTIPLE_PAYMENT_METHODS));
         $this->assertSame(['visa', 'mastercard'], $payment->restriction(Capability::CREDIT_CARD)->allowedBrands);
         $this->assertNull($payment->restriction(Capability::PIX));
         $this->assertSame(12, $payment->restriction(Capability::INSTALLMENTS, 'iugu')->maxInstallments);

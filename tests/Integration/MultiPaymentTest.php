@@ -19,6 +19,20 @@ class MultiPaymentTest extends TestCase
 {
 
     /**
+     * A captura em duas etapas depende do fluxo de pagamento habilitado na conta da Iugu; na
+     * conta de teste a cobrança captura na hora e o endpoint de captura recusa a fatura paga
+     * ("Apenas Faturas em análise podem ser capturadas", observado em 2026-09-05).
+     */
+    #[Group('iugu-sandbox-limitation')]
+    public function testShouldCaptureAnAuthorizedIuguInvoice(): void
+    {
+        $this->markTestSkipped(
+            'A conta de teste da Iugu não tem o fluxo de pagamento em duas etapas habilitado:'
+            . ' a cobrança de cartão captura na hora e nenhuma fatura chega a in_analysis.'
+        );
+    }
+
+    /**
      * A consulta depende de uma fatura com Pix Automático criada no próprio
      * teste, mas a sandbox da Iugu ainda rejeita essa criação.
      */

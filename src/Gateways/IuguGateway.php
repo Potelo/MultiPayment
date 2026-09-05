@@ -27,6 +27,7 @@ use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Models\WebhookEvent;
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Enums\RefundStatus;
@@ -189,6 +190,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             Capability::MULTIPLE_PAYMENT_METHODS,
             Capability::RAW_CARD_DATA,
             Capability::INSTALLMENTS,
+            Capability::DELAYED_CAPTURE,
             Capability::PARTIAL_REFUND_CARD,
             Capability::INVOICE_DUPLICATION,
             Capability::INVOICE_CANCELLATION,
@@ -205,7 +207,6 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     public function notYetImplemented(): array
     {
         return [
-            Capability::DELAYED_CAPTURE,
             Capability::SUBSCRIPTION_CREDITS,
         ];
     }
@@ -230,8 +231,11 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      *
      * `INSTALLMENTS`: o número de parcelas vai em `gatewayOptions['months']`, até o máximo da
      * conta (`multi-payment.gateways.iugu.max_installments`, 12 por padrão), e a lib não lê as
-     * parcelas da fatura paga. `AUTOMATIC_PIX`: a recorrência nasce na fatura e a aplicação é
-     * o motor de recorrência; a assinatura não aceita o método.
+     * parcelas da fatura paga. `DELAYED_CAPTURE`: só cartão de crédito, com o fluxo de
+     * pagamento em duas etapas habilitado na conta; a captura é sempre do valor integral e a
+     * Iugu cancela sozinha a autorização não capturada em 7 dias. `AUTOMATIC_PIX`: a
+     * recorrência nasce na fatura e a aplicação é o motor de recorrência; a assinatura não
+     * aceita o método.
      */
     public function restrictions(): array
     {
@@ -246,6 +250,12 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                     . ' a lib não lê as parcelas da fatura paga.',
                 maxInstallments: $maxInstallments,
             ),
+            Capability::DELAYED_CAPTURE->value => new CapabilityRestriction(
+                description: 'Só cartão de crédito, com o fluxo de pagamento em duas etapas habilitado'
+                    . ' na conta da Iugu; a captura é sempre do valor integral e a Iugu cancela sozinha'
+                    . ' a autorização não capturada em 7 dias.',
+                allowedPaymentMethods: [PaymentMethod::CREDIT_CARD],
+            ),
             Capability::AUTOMATIC_PIX->value => new CapabilityRestriction(
                 description: 'A recorrência nasce na fatura (Invoice com automaticPix e método pix) e'
                     . ' a aplicação é o motor de recorrência; a assinatura não aceita paymentMethod'
@@ -258,7 +268,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @inheritDoc
      *
      * Os métodos da fatura vêm de `Invoice::resolvedPaymentMethods()` (`payable_with`); com
-     * cartão entre eles e `creditCard` preenchido, a fatura é cobrada por `POST /charge`.
+     * cartão entre eles e `creditCard` preenchido, a fatura é cobrada por `POST /charge`. Com
+     * `CaptureMethod::MANUAL` a cobrança é a mesma: a conta com o fluxo de pagamento em duas
+     * etapas habilitado devolve a fatura autorizada (`AUTHORIZED`), para `captureInvoice()`
+     * concluir; sem o fluxo habilitado na conta, a Iugu captura na hora.
      * `dueDate` vai em `due_date` (sem ele, o dia de `pixExpiresAt`, ou hoje) e `pixExpiresAt`
      * em `pix_qr_code_expires_at`. A chave de idempotência vai no cabeçalho `Idempotency-Key` de `POST /invoices` ou de `POST /charge`;
      * o cartão salvo antes da cobrança usa a chave derivada `{chave}:card` pela
@@ -310,6 +323,21 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         }
 
         $payableWith = $invoice->resolvedPaymentMethods();
+
+        if ($invoice->captureMethod === CaptureMethod::MANUAL) {
+            if ($payableWith !== [PaymentMethod::CREDIT_CARD]) {
+                throw UnsupportedOperationException::restricted(
+                    (string) $this,
+                    Capability::DELAYED_CAPTURE,
+                    'A captura em duas etapas na Iugu vale só para fatura de cartão de crédito'
+                    . ' cobrada na criação; informe cartão como único método.'
+                );
+            }
+            // a autorização acontece na cobrança direta, que exige o cartão
+            if (empty($invoice->creditCard)) {
+                throw ModelAttributeValidationException::required('Invoice', 'creditCard');
+            }
+        }
 
         if (!empty($payableWith)) {
             $iuguInvoiceData['payable_with'] = self::paymentMethodsToIuguPayableWith($payableWith);
@@ -952,8 +980,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     /**
      * @inheritDoc
      *
-     * A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o cabeçalho
-     * neste endpoint).
+     * Numa fatura autorizada sem captura (`AUTHORIZED`), o cancelamento libera a reserva no
+     * cartão. A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o
+     * cabeçalho neste endpoint).
      */
     public function cancelInvoice(Invoice $invoice, ?string $idempotencyKey = null): Invoice
     {
@@ -968,6 +997,48 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         );
 
         return $this->parseInvoice($response, $invoice);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Captura o valor autorizado por `POST /v1/invoices/{id}/capture`; a Iugu só captura o
+     * valor integral, então `$amount` é recusado antes da requisição
+     * (`UnsupportedOperationException::restricted()`). Fatura fora de `AUTHORIZED` é recusada
+     * pela Iugu. A chave de idempotência passa pela `IdempotencyStore` (a Iugu não aceita o
+     * cabeçalho neste endpoint).
+     *
+     * @throws ModelAttributeValidationException|UnsupportedOperationException
+     */
+    public function captureInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Invoice
+    {
+        if (empty($invoice->id)) {
+            throw ModelAttributeValidationException::required('Invoice', 'id');
+        }
+        if (!is_null($amount) && $amount <= 0) {
+            throw ModelAttributeValidationException::invalid(
+                'Invoice',
+                'amount',
+                'The capture amount must be a positive number of cents; omit it to capture the full authorized amount.'
+            );
+        }
+        if (!is_null($amount)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::DELAYED_CAPTURE,
+                'A Iugu só captura o valor integral autorizado; repita sem valor.'
+            );
+        }
+
+        $iuguInvoice = $this->iuguIdempotentRequest(
+            'POST',
+            Iugu::getBaseURI() . '/invoices/' . rawurlencode($invoice->id) . '/capture',
+            [],
+            'capturing invoice',
+            $this->idempotencyKeyFor($idempotencyKey, $invoice)
+        );
+
+        return $this->parseInvoice($iuguInvoice, $invoice);
     }
 
     /**

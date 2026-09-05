@@ -510,7 +510,8 @@ class MultiPayment
 
     /**
      * Valor que ainda pode ser estornado na fatura, em centavos; lê a fatura no gateway. Fatura
-     * paga com boleto devolve zero, porque `refundInvoice()` a recusa.
+     * paga com boleto devolve zero, e a fatura quitada sem cobrança pela Stripe também, porque
+     * `refundInvoice()` as recusa.
      *
      * @param  string  $id
      * @return int
@@ -523,6 +524,31 @@ class MultiPayment
         $invoice->gateway = $this->gateway;
 
         return $invoice->refundableAmount();
+    }
+
+    /**
+     * Captura o valor autorizado de uma fatura criada com `CaptureMethod::MANUAL`: o valor
+     * integral quando `$amount` é nulo, ou o valor informado em centavos onde o gateway aceita
+     * captura parcial (a Iugu só captura o valor integral).
+     *
+     * @param  Invoice|string  $invoice
+     * @param  int|null  $amount  valor em centavos; nulo captura o valor autorizado
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function captureInvoice(Invoice|string $invoice, ?int $amount = null, ?string $idempotencyKey = null): Invoice
+    {
+        if (is_string($invoice)) {
+            $invoiceInstance = new Invoice();
+            $invoiceInstance->id = $invoice;
+            $invoice = $invoiceInstance;
+        }
+        $invoice->gateway = $this->gateway;
+
+        return $invoice->capture($amount, $idempotencyKey);
     }
 
     /**

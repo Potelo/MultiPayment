@@ -15,6 +15,7 @@ use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\CardDeclinedException;
 use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\RefundStatus;
@@ -648,5 +649,66 @@ class StripeGatewayTest extends TestCase
         $this->assertSame(\Carbon\Carbon::today()->format('Y-m-d'), $invoice->dueDate->format('Y-m-d'));
 
         MultiPayment::setGateway($gateway)->cancelInvoice($invoice->id);
+    }
+
+    /**
+     * Fatura de cartão com captura manual: o confirm só reserva o valor (`AUTHORIZED`) e a
+     * captura parcial recebe o valor, com a Stripe liberando o restante da reserva.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldAuthorizeAndCaptureAManualCaptureInvoice($gateway)
+    {
+        $invoice = $this->createManualCaptureInvoice($gateway);
+
+        $this->assertSame(InvoiceStatus::AUTHORIZED, $invoice->status);
+        $this->assertSame(CaptureMethod::MANUAL, $invoice->captureMethod);
+        $this->assertNull($invoice->paidAmount);
+        $this->assertNull($invoice->paidAt);
+
+        $fetched = MultiPayment::setGateway($gateway)->getInvoice($invoice->id);
+        $this->assertSame(InvoiceStatus::AUTHORIZED, $fetched->status);
+        $this->assertSame(CaptureMethod::MANUAL, $fetched->captureMethod);
+
+        $captured = MultiPayment::setGateway($gateway)->captureInvoice($invoice->id, 10000);
+
+        $this->assertSame(InvoiceStatus::PAID, $captured->status);
+        $this->assertSame(10000, $captured->paidAmount);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $captured->paymentMethod);
+    }
+
+    /**
+     * O cancelamento de uma fatura autorizada sem captura libera a reserva no cartão.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldReleaseTheReservationWhenCancelingAnAuthorizedInvoice($gateway)
+    {
+        $invoice = $this->createManualCaptureInvoice($gateway);
+
+        $canceled = MultiPayment::setGateway($gateway)->cancelInvoice($invoice->id);
+
+        $this->assertSame(InvoiceStatus::CANCELED, $canceled->status);
+    }
+
+    /**
+     * Cria uma fatura de cartão com `CaptureMethod::MANUAL` no cartão de teste.
+     */
+    private function createManualCaptureInvoice(string $gateway): Invoice
+    {
+        $customerData = self::customerWithoutAddress();
+
+        return MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer(
+                $customerData['name'],
+                $customerData['email'],
+                $customerData['taxDocument'],
+                $customerData['birthDate'],
+                $customerData['phoneArea'],
+                $customerData['phoneNumber']
+            )
+            ->addItem('Captura em duas etapas', 12345, 1)
+            ->setAvailablePaymentMethods([PaymentMethod::CREDIT_CARD])
+            ->addCreditCardToken('pm_card_visa')
+            ->setCaptureMethod(CaptureMethod::MANUAL)
+            ->create();
     }
 }

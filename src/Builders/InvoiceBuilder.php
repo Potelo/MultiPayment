@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\InvoiceItem;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Contracts\GatewayContract;
 
@@ -86,6 +87,21 @@ class InvoiceBuilder extends Builder
     public function setPaymentMethod(PaymentMethod|string $paymentMethod): InvoiceBuilder
     {
         $this->model->paymentMethod = $paymentMethod;
+
+        return $this;
+    }
+
+    /**
+     * Define o momento da captura no cartão (ver `Invoice::$captureMethod`): `MANUAL` cria a
+     * fatura em duas etapas, com o valor reservado até `capture()`.
+     *
+     * @param  CaptureMethod|string  $captureMethod
+     *
+     * @return InvoiceBuilder
+     */
+    public function setCaptureMethod(CaptureMethod|string $captureMethod): InvoiceBuilder
+    {
+        $this->model->captureMethod = $captureMethod;
 
         return $this;
     }

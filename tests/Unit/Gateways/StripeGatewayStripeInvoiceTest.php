@@ -18,14 +18,17 @@ use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
 use Potelo\MultiPayment\Exceptions\GatewayException;
+use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\ValidationException;
+use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 
 /**
  * Fatura de assinatura do Stripe (objeto Invoice, origem `INVOICE`) pelo caminho público:
- * `getInvoice()` com id `in_`, a tabela de precedência de status, o cancelamento por `void`
- * e as recusas de duplicação, estorno e cobrança. As respostas em `tests/fixtures/stripe/`
+ * `getInvoice()` com id `in_`, a tabela de precedência de status, o cancelamento por `void`,
+ * o estorno pelo PaymentIntent da fatura, a cobrança manual por `invoices.pay` e as recusas
+ * de duplicação e de captura. As respostas em `tests/fixtures/stripe/`
  * foram gravadas na sandbox (ver o README da pasta); as variações que a sandbox não produz
  * são montadas sobre elas.
  */
@@ -789,62 +792,254 @@ class StripeGatewayStripeInvoiceTest extends TestCase
         $this->assertSame([], $httpClient->calls);
     }
 
-    public function testRefundInvoiceOnAStripeInvoiceIsNotImplementedYet(): void
+    /**
+     * O estorno de uma fatura de assinatura relê a fatura, aponta o `POST /v1/refunds` para o
+     * PaymentIntent dela e relê a fatura estornada; o status vem do charge (`REFUNDED`),
+     * enquanto o objeto Invoice da Stripe segue `paid`.
+     */
+    public function testRefundInvoiceOnAStripeInvoiceRefundsItsPaymentIntent(): void
     {
-        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+            self::refundResponse('re_fake123', 12345, 'pending'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/refunded'),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+        $result = (new StripeGateway())->refundInvoice($invoice, null, 'chave-estorno');
+
+        $this->assertSame([
+            'get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK',
+            'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi',
+            'post /v1/refunds',
+            'get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK',
+            'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi',
+        ], self::calledPaths($httpClient));
+        $this->assertSame(['payment_intent' => 'pi_3UBHTpPjx0CusuMr1JTEiHGi'], $httpClient->calls[2][2]);
+        $this->assertSame('chave-estorno', $httpClient->header(2, 'Idempotency-Key'));
+
+        $this->assertSame('re_fake123', $result->id);
+        $this->assertSame('in_1UBHTnPjx0CusuMrjxjg8WhK', $result->invoiceId);
+        $this->assertSame(12345, $result->amount);
+        $this->assertSame($invoice, $result->invoice());
+        $this->assertSame(InvoiceStatus::REFUNDED, $invoice->status);
+        $this->assertSame(12345, $invoice->refundedAmount);
+    }
+
+    public function testPartialRefundOnAStripeInvoiceSendsTheAmount(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+            self::refundResponse('re_fake123', 2345, 'pending'),
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/partially_refunded'),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+        $result = (new StripeGateway())->refundInvoice($invoice, 2345);
+
+        $this->assertSame(
+            ['payment_intent' => 'pi_3UBHTpPjx0CusuMr1JTEiHGi', 'amount' => 2345],
+            $httpClient->calls[2][2]
+        );
+        $this->assertSame(2345, $result->amount);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $result->invoice()->status);
+    }
+
+    /**
+     * O valor acima do restante é recusado pela guarda depois da releitura, sem `POST`.
+     */
+    public function testRefundAboveTheRemainderOnAStripeInvoiceIsRefusedWithoutPosting(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/partially_refunded'),
+        ]);
 
         $invoice = new Invoice();
         $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
 
         try {
-            (new StripeGateway())->refundInvoice($invoice);
-            $this->fail('Estorno de fatura de assinatura deveria lançar UnsupportedOperationException');
-        } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
-            $this->assertSame(UnsupportedOperationException::REASON_NOT_IMPLEMENTED, $e->reason);
-            $this->assertStringContainsString('refundInvoice', $e->getMessage());
+            (new StripeGateway())->refundInvoice($invoice, 12345);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_AMOUNT_EXCEEDS_REFUNDABLE, $e->reason);
         }
-        $this->assertSame([], $httpClient->calls);
+        $this->assertCount(2, $httpClient->calls);
     }
 
-    public function testChargeInvoiceWithCreditCardOnAStripeInvoiceIsNotImplementedYet(): void
+    /**
+     * A fatura paga fora da Stripe não tem cobrança estornável pela API: a recusa vem antes do
+     * `POST` e pede a devolução manual do pagamento recebido fora do gateway.
+     */
+    public function testRefundOnAnExternallyPaidStripeInvoiceIsRefused(): void
     {
-        $httpClient = RecordingStripeHttpClient::withResponses([]);
+        $httpClient = RecordingStripeHttpClient::withResponses([self::fixture('invoices/paid_out_of_band')]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHUHPjx0CusuMrD81KgsNd';
+
+        try {
+            (new StripeGateway())->refundInvoice($invoice);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_NO_GATEWAY_CHARGE, $e->reason);
+            $this->assertTrue($e->manualRefundRequired);
+            $this->assertFalse($e->isCapabilityLimitation());
+        }
+        $this->assertSame(['get /v1/invoices/in_1UBHUHPjx0CusuMrD81KgsNd'], self::calledPaths($httpClient));
+    }
+
+    /**
+     * A fatura quitada sem cobrança (`amount_due` zero) não tem o que estornar; nada foi pago
+     * fora do gateway, então a devolução manual não se aplica.
+     */
+    public function testRefundOnAnInvoicePaidWithoutAChargeIsRefused(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([self::fixture('invoices/paid_zero_amount_due')]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHUNPjx0CusuMrEG6etDb8';
+
+        try {
+            (new StripeGateway())->refundInvoice($invoice);
+            $this->fail('Esperava RefundNotSupportedException');
+        } catch (RefundNotSupportedException $e) {
+            $this->assertSame(RefundNotSupportedException::REASON_NO_GATEWAY_CHARGE, $e->reason);
+            $this->assertFalse($e->manualRefundRequired);
+        }
+        $this->assertSame(['get /v1/invoices/in_1UBHUNPjx0CusuMrEG6etDb8'], self::calledPaths($httpClient));
+    }
+
+    public function testChargeInvoiceWithCreditCardOnAStripeInvoicePaysItWithTheCard(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+        ]);
 
         $invoice = new Invoice();
         $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
         $invoice->creditCard = new CreditCard();
         $invoice->creditCard->id = 'pm_fake123';
+        $result = (new StripeGateway())->chargeInvoiceWithCreditCard($invoice, 'chave-pay');
 
-        try {
-            (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
-            $this->fail('Cobrança de fatura de assinatura deveria lançar UnsupportedOperationException');
-        } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
-            $this->assertTrue($e->isNotImplemented());
-            $this->assertStringContainsString('chargeInvoiceWithCreditCard', $e->getMessage());
-        }
-        $this->assertSame([], $httpClient->calls);
+        $this->assertSame([
+            'post /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK/pay',
+            'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi',
+        ], self::calledPaths($httpClient));
+        $this->assertSame(
+            ['payment_method' => 'pm_fake123', 'expand' => self::INVOICE_EXPAND],
+            $httpClient->calls[0][2]
+        );
+        $this->assertSame('chave-pay', $httpClient->header(0, 'Idempotency-Key'));
+
+        $this->assertSame($invoice, $result);
+        $this->assertSame(InvoiceStatus::PAID, $result->status);
+        $this->assertSame(InvoiceOriginType::INVOICE, $result->originType);
     }
 
     /**
-     * `refundableAmount()` segue `refundInvoice()`: a fatura de assinatura é recusada antes de
-     * qualquer leitura, para o restante nunca prometer um estorno que o driver recusa.
+     * O `invoices.pay` exige um PaymentMethod anexado ao cliente da fatura: um cartão por
+     * token é salvo antes, com o cliente resolvido pela releitura da fatura. Um token que
+     * exige autenticação do pagador derruba a operação antes do `pay`, com a orientação do
+     * fluxo em duas etapas.
      */
-    public function testRefundableAmountRefusesAStripeInvoiceBeforeAnyRequest(): void
+    public function testPayAStripeInvoiceWithATokenThatRequiresAuthenticationFailsBeforeThePay(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/paid'),
+            self::fixture('setup_intents/requires_action'),
+        ]);
+
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+        $invoice->creditCard = new CreditCard();
+        $invoice->creditCard->token = 'pm_fake123';
+
+        try {
+            (new StripeGateway())->chargeInvoiceWithCreditCard($invoice);
+            $this->fail('Esperava ChargingException');
+        } catch (ChargingException $e) {
+            $this->assertSame(DeclineCode::AUTHENTICATION_REQUIRED, $e->declineCode);
+            $this->assertStringContainsString('confirmCreditCardSetup', $e->getMessage());
+        }
+
+        $this->assertSame([
+            'get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK',
+            'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi',
+            'post /v1/setup_intents',
+        ], self::calledPaths($httpClient));
+        // o cliente do SetupIntent vem da fatura relida
+        $this->assertSame('cus_VBen1v8T4Qa6XX', $httpClient->calls[2][2]['customer']);
+    }
+
+    /**
+     * `refundableAmount()` de uma fatura de assinatura é o restante do charge dela; a fatura
+     * paga fora da Stripe devolve zero, porque o estorno a recusa.
+     */
+    public function testRefundableAmountOnAStripeInvoiceIsTheRemainderOfItsCharge(): void
+    {
+        RecordingStripeHttpClient::withResponses([
+            self::fixture('invoices/paid'),
+            self::fixture('payment_intents/partially_refunded'),
+        ]);
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+
+        $this->assertSame(10000, (new StripeGateway())->refundableAmount($invoice));
+    }
+
+    public function testRefundableAmountOnAnExternallyPaidStripeInvoiceIsZero(): void
+    {
+        RecordingStripeHttpClient::withResponses([self::fixture('invoices/paid_out_of_band')]);
+        $invoice = new Invoice();
+        $invoice->id = 'in_1UBHUHPjx0CusuMrD81KgsNd';
+
+        $this->assertSame(0, (new StripeGateway())->refundableAmount($invoice));
+    }
+
+    /**
+     * A fatura de assinatura é cobrada pela Stripe com captura imediata; a captura em duas
+     * etapas é restrição consultável de `DELAYED_CAPTURE` e a recusa vem antes de qualquer
+     * requisição.
+     */
+    public function testCaptureInvoiceRefusesAStripeInvoiceBeforeAnyRequest(): void
     {
         $httpClient = RecordingStripeHttpClient::withResponses([]);
         $invoice = new Invoice();
         $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
 
         try {
-            (new StripeGateway())->refundableAmount($invoice);
+            (new StripeGateway())->captureInvoice($invoice);
             $this->fail('Esperava UnsupportedOperationException');
         } catch (UnsupportedOperationException $e) {
-            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
-            $this->assertTrue($e->isNotImplemented());
+            $this->assertSame(Capability::DELAYED_CAPTURE, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
         }
         $this->assertSame([], $httpClient->calls);
+    }
+
+    /**
+     * Resposta de `POST /v1/refunds`, montada com os campos que `parseRefund()` lê.
+     */
+    private static function refundResponse(string $id, int $amount, string $status): array
+    {
+        return [
+            'id' => $id,
+            'object' => 'refund',
+            'amount' => $amount,
+            'status' => $status,
+            'created' => 1786700100,
+            'reason' => 'requested_by_customer',
+            'payment_intent' => 'pi_3UBHTpPjx0CusuMr1JTEiHGi',
+        ];
     }
 
     private function getInvoice(string $id): Invoice

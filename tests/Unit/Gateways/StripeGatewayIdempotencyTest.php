@@ -343,6 +343,72 @@ class StripeGatewayIdempotencyTest extends TestCase
                     ['get /v1/payment_intents/pi_fake123', null],
                 ],
             ],
+            'refundInvoice de fatura de assinatura' => [
+                function (StripeGateway $g, ?string $key) {
+                    $invoice = new Invoice();
+                    $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+
+                    return $g->refundInvoice($invoice, null, $key);
+                },
+                [
+                    self::fixture('invoices/paid'),
+                    self::fixture('payment_intents/paid'),
+                    ['id' => 're_fake123', 'object' => 'refund', 'amount' => 12345, 'status' => 'pending', 'created' => 1786700100, 'reason' => null],
+                    self::fixture('invoices/paid'),
+                    self::fixture('payment_intents/refunded'),
+                ],
+                [
+                    ['get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK', null],
+                    ['get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi', null],
+                    ['post /v1/refunds', 'chave-1'],
+                    ['get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK', null],
+                    ['get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi', null],
+                ],
+            ],
+            'captureInvoice' => [
+                fn (StripeGateway $g, ?string $key) => $g->captureInvoice(self::invoiceWithId(), null, $key),
+                [self::paidCardPaymentIntentResponse()],
+                ['post /v1/payment_intents/pi_fake123/capture' => 'chave-1'],
+            ],
+            'chargeInvoiceWithCreditCard sobre fatura de assinatura' => [
+                function (StripeGateway $g, ?string $key) {
+                    $invoice = new Invoice();
+                    $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+                    $invoice->creditCard = new CreditCard();
+                    $invoice->creditCard->id = 'pm_fake123';
+
+                    return $g->chargeInvoiceWithCreditCard($invoice, $key);
+                },
+                [self::fixture('invoices/paid'), self::fixture('payment_intents/paid')],
+                [
+                    'post /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK/pay' => 'chave-1',
+                    'get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi' => null,
+                ],
+            ],
+            'chargeInvoiceWithCreditCard sobre fatura de assinatura com token' => [
+                function (StripeGateway $g, ?string $key) {
+                    $invoice = new Invoice();
+                    $invoice->id = 'in_1UBHTnPjx0CusuMrjxjg8WhK';
+                    $invoice->creditCard = new CreditCard();
+                    $invoice->creditCard->token = 'pm_fake123';
+
+                    return $g->chargeInvoiceWithCreditCard($invoice, $key);
+                },
+                [
+                    self::fixture('invoices/paid'),
+                    self::fixture('payment_intents/paid'),
+                    self::setupIntentResponse(),
+                    self::fixture('invoices/paid'),
+                    self::fixture('payment_intents/paid'),
+                ],
+                [
+                    ['get /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK', null],
+                    ['get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi', null],
+                    ['post /v1/setup_intents', 'chave-1:card'],
+                    ['post /v1/invoices/in_1UBHTnPjx0CusuMrjxjg8WhK/pay', 'chave-1'],
+                    ['get /v1/payment_intents/pi_3UBHTpPjx0CusuMr1JTEiHGi', null],
+                ],
+            ],
             'chargeInvoiceWithCreditCard com cartão salvo' => [
                 function (StripeGateway $g, ?string $key) {
                     $invoice = self::invoiceWithId();

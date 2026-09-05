@@ -8,9 +8,13 @@ use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Gateways\IuguGateway;
+use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Enums\CaptureMethod;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
+use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use Carbon\Carbon;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -228,6 +232,154 @@ class IuguGatewayInvoiceTest extends TestCase
         }
 
         $this->assertSame([], $api->calls);
+    }
+
+    /**
+     * A cobrança com `CaptureMethod::MANUAL` é o mesmo `POST /charge`; numa conta com o fluxo
+     * de duas etapas habilitado a fatura volta em `in_analysis`, que lê como `AUTHORIZED`. A
+     * resposta da Iugu não traz o momento da captura, então `parseInvoice()` preserva o
+     * `captureMethod` que o model já tinha.
+     */
+    public function testManualCaptureChargesTheCardAndReadsTheAuthorizedInvoice(): void
+    {
+        $authorized = $this->pendingInvoiceResponse();
+        $authorized->status = 'in_analysis';
+        $api = (new QueuedIuguApiRequest([
+            (object) ['success' => true, 'invoice_id' => 'inv_1'],
+            $authorized,
+        ]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'available_payment_methods' => ['credit_card'],
+            'credit_card' => ['id' => 'pm_1'],
+            'capture_method' => 'manual',
+        ]);
+
+        $result = (new IuguGateway($api))->createInvoice($invoice);
+
+        $this->assertCount(2, $api->calls);
+        $this->assertStringEndsWith('/charge', $api->calls[0]['url']);
+        $this->assertSame(InvoiceStatus::AUTHORIZED, $result->status);
+        $this->assertSame(CaptureMethod::MANUAL, $result->captureMethod);
+    }
+
+    /**
+     * A captura em duas etapas na Iugu é restrição de `DELAYED_CAPTURE`: só fatura de cartão
+     * cobrada na criação. Outro método, ou cartão junto de outro método, é recusado antes de
+     * qualquer requisição.
+     */
+    public function testManualCaptureOutsideACardOnlyInvoiceIsRefusedBeforeAnyRequest(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'available_payment_methods' => ['credit_card', 'pix'],
+            'credit_card' => ['id' => 'pm_1'],
+            'capture_method' => 'manual',
+        ]);
+
+        try {
+            (new IuguGateway($api))->createInvoice($invoice);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::DELAYED_CAPTURE, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+        $this->assertSame([], $api->calls);
+    }
+
+    /**
+     * A autorização acontece na cobrança direta, que exige o cartão: `MANUAL` sem `creditCard`
+     * é recusado antes de qualquer requisição.
+     */
+    public function testManualCaptureWithoutACardIsRefusedBeforeAnyRequest(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->fill([
+            'customer' => ['id' => 'cus_1', 'name' => 'Cliente', 'email' => 'cliente@example.com'],
+            'items' => [['description' => 'Item', 'price' => 10000, 'quantity' => 1]],
+            'payment_method' => 'credit_card',
+            'capture_method' => 'manual',
+        ]);
+
+        try {
+            (new IuguGateway($api))->createInvoice($invoice);
+            $this->fail('Esperava ModelAttributeValidationException');
+        } catch (ModelAttributeValidationException $e) {
+            $this->assertStringContainsString('creditCard', $e->getMessage());
+        }
+        $this->assertSame([], $api->calls);
+    }
+
+    public function testCapturesTheAuthorizedInvoiceTotally(): void
+    {
+        $paid = $this->pendingInvoiceResponse();
+        $paid->status = 'paid';
+        $paid->paid_cents = 10000;
+        $api = (new QueuedIuguApiRequest([$paid]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+        $result = (new IuguGateway($api))->captureInvoice($invoice);
+
+        $this->assertCount(1, $api->calls);
+        $this->assertSame('POST', $api->calls[0]['method']);
+        $this->assertStringEndsWith('/invoices/inv_1/capture', $api->calls[0]['url']);
+        $this->assertSame([], $api->calls[0]['data']);
+
+        $this->assertSame($invoice, $result);
+        $this->assertSame(InvoiceStatus::PAID, $result->status);
+        $this->assertSame(10000, $result->paidAmount);
+    }
+
+    /**
+     * A Iugu só captura o valor integral autorizado: um valor é recusado antes de qualquer
+     * requisição, como restrição consultável de `DELAYED_CAPTURE`.
+     */
+    public function testPartialCaptureIsRefusedBeforeAnyRequest(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+
+        try {
+            (new IuguGateway($api))->captureInvoice($invoice, 5000);
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::DELAYED_CAPTURE, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+        $this->assertSame([], $api->calls);
+    }
+
+    public function testCaptureAmountMustBePositive(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        $invoice = new Invoice();
+        $invoice->id = 'inv_1';
+
+        $this->expectException(ModelAttributeValidationException::class);
+
+        (new IuguGateway($api))->captureInvoice($invoice, 0);
+    }
+
+    public function testCaptureInvoiceRequiresId(): void
+    {
+        $api = (new QueuedIuguApiRequest([]))->installAsSdkRequester();
+
+        $this->expectException(ModelAttributeValidationException::class);
+
+        (new IuguGateway($api))->captureInvoice(new Invoice());
     }
 
     private function pendingInvoiceResponse(): object

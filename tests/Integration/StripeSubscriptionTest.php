@@ -12,6 +12,8 @@ use Potelo\MultiPayment\Gateways\StripeGateway;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -306,5 +308,80 @@ class StripeSubscriptionTest extends TestCase
             $latestInvoice->dueDate->getTimestamp(),
             3600
         );
+    }
+
+    /**
+     * A mensalidade paga no cartão é estornável pelo id `in_`: o estorno age sobre o
+     * PaymentIntent da fatura, o status vem do charge estornado e `refundableAmount()` informa
+     * o restante.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldRefundASubscriptionInvoicePartially($gateway)
+    {
+        $mensal = $this->createPlan($gateway, 10000, 'estorno');
+
+        $customerData = self::customerWithoutAddress();
+        $customer = new Customer();
+        $customer->name = $customerData['name'];
+        $customer->email = $customerData['email'];
+        $customer->taxDocument = $customerData['taxDocument'];
+
+        $creditCard = new CreditCard();
+        $creditCard->token = 'pm_card_visa';
+
+        $subscription = MultiPayment::setGateway($gateway)->newSubscription()
+            ->setPlanId($mensal->identifier)
+            ->setCustomer($customer)
+            ->setCreditCard($creditCard)
+            ->create();
+        $this->subscriptionsCriadas[] = $subscription->id;
+
+        $invoiceId = $subscription->latestInvoice->id;
+        $this->assertStringStartsWith('in_', $invoiceId);
+        $this->assertSame(10000, MultiPayment::setGateway($gateway)->refundableAmount($invoiceId));
+
+        $refund = MultiPayment::setGateway($gateway)->refundInvoice($invoiceId, 4000);
+
+        $this->assertSame(4000, $refund->amount);
+        // o estorno de cartão da Stripe pode nascer pendente e liquidar depois
+        $this->assertContains($refund->status, [RefundStatus::PENDING, RefundStatus::SUCCEEDED]);
+        $this->assertStringStartsWith('re_', $refund->id);
+        $this->assertSame(InvoiceStatus::PARTIALLY_REFUNDED, $refund->invoice()->status);
+        $this->assertSame(4000, $refund->invoice()->refundedAmount);
+        $this->assertSame(6000, MultiPayment::setGateway($gateway)->refundableAmount($invoiceId));
+    }
+
+    /**
+     * A fatura de assinatura aberta (boleto em modo de fatura enviada) é paga com um cartão
+     * por `chargeInvoiceWithCreditCard()`: o token vira cartão salvo do cliente da fatura e o
+     * pagamento acontece por `invoices.pay`.
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldPayAnOpenSubscriptionInvoiceWithACard($gateway)
+    {
+        $mensal = $this->createPlan($gateway, 10000, 'pay');
+
+        $customerData = self::customerWithoutAddress();
+        $customer = new Customer();
+        $customer->name = $customerData['name'];
+        $customer->email = $customerData['email'];
+        $customer->taxDocument = $customerData['taxDocument'];
+
+        $subscription = MultiPayment::setGateway($gateway)->newSubscription()
+            ->setPlanId($mensal->identifier)
+            ->setCustomer($customer)
+            ->setAvailablePaymentMethods([PaymentMethod::BANK_SLIP])
+            ->create();
+        $this->subscriptionsCriadas[] = $subscription->id;
+
+        $open = $subscription->latestInvoice;
+        $this->assertSame(InvoiceStatus::PENDING, $open->status);
+
+        $paid = MultiPayment::setGateway($gateway)
+            ->chargeInvoiceWithCreditCard($open->id, 'pm_card_visa');
+
+        $this->assertSame(InvoiceStatus::PAID, $paid->status);
+        $this->assertSame(PaymentMethod::CREDIT_CARD, $paid->paymentMethod);
+        $this->assertSame(10000, $paid->paidAmount);
     }
 }

@@ -4,6 +4,7 @@ namespace Potelo\MultiPayment\Models;
 
 use Carbon\Carbon;
 use Potelo\MultiPayment\Enums\Capability;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\InvoiceOriginType;
@@ -22,6 +23,7 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
  * @property InvoiceStatus|null $status Status genérico; `UNKNOWN` para status que a lib não reconhece.
  * @property PaymentMethod|null $paymentMethod Método com que a fatura foi (ou será) paga.
  * @property PaymentMethod[]|null $availablePaymentMethods Métodos aceitos pela fatura.
+ * @property CaptureMethod|null $captureMethod Momento da captura no cartão; `MANUAL` cria a fatura autorizada, para `capture()` concluir.
  * @property InvoiceOriginType|null $originType Objeto do gateway de onde a fatura foi lida (`PAYMENT_INTENT` ou `INVOICE`); `original` guarda esse objeto.
  * @property-read int|null $refundedAmount Total já estornado, em centavos, preenchido na leitura. Escrever nela é o caminho antigo de pedir um estorno parcial, obsoleto desde 2026-09-02: use `refund(amount:)`.
  * @property Carbon|null $expiresAt Obsoleto desde 2026-09-02, use `$dueDate`. Alias que lê e escreve a mesma data, com aviso de deprecação.
@@ -62,6 +64,7 @@ class Invoice extends Model
         'status' => InvoiceStatus::class,
         'paymentMethod' => PaymentMethod::class,
         'availablePaymentMethods' => [PaymentMethod::class],
+        'captureMethod' => CaptureMethod::class,
         'originType' => InvoiceOriginType::class,
     ];
 
@@ -137,6 +140,17 @@ class Invoice extends Model
      * @var PaymentMethod[]|null
      */
     protected ?array $availablePaymentMethods = null;
+
+    /**
+     * Momento da captura no cartão de crédito. Na escrita, `MANUAL` cria a fatura em duas
+     * etapas: o valor fica reservado (`InvoiceStatus::AUTHORIZED`) até `capture()` ou até o
+     * cancelamento liberar a reserva. No Stripe vai como `capture_method` do PaymentIntent e
+     * volta na leitura; na Iugu a cobrança é a mesma (`POST /v1/charge`) e a autorização sem
+     * captura depende do fluxo de pagamento em duas etapas habilitado na conta.
+     *
+     * @var CaptureMethod|null
+     */
+    protected ?CaptureMethod $captureMethod = null;
 
     /**
      * Preenchido pelo driver na leitura. Na Iugu é sempre `INVOICE`; na Stripe é
@@ -569,9 +583,10 @@ class Invoice extends Model
     /**
      * Na criação, além do que o `Model` exige, a fatura precisa da capability de cada método
      * de `resolvedPaymentMethods()`, de `MULTIPLE_PAYMENT_METHODS` quando há mais de um, de
-     * `AUTOMATIC_PIX` quando `automaticPix` ou `automaticPixCharge` está preenchido e de
-     * `RAW_CARD_DATA` quando o cartão vem com os dados crus (sem `id` nem `token`). Com `id`
-     * preenchido, só o que o `Model` exige.
+     * `AUTOMATIC_PIX` quando `automaticPix` ou `automaticPixCharge` está preenchido, de
+     * `DELAYED_CAPTURE` quando `captureMethod` é `MANUAL` e de `RAW_CARD_DATA` quando o cartão
+     * vem com os dados crus (sem `id` nem `token`). Com `id` preenchido, só o que o `Model`
+     * exige.
      *
      * @return Capability[]
      * @throws ModelAttributeValidationException  método de pagamento fora de `PaymentMethod::selectable()`
@@ -593,6 +608,9 @@ class Invoice extends Model
         }
         if (!empty($this->automaticPix) || !empty($this->automaticPixCharge)) {
             $capabilities[] = Capability::AUTOMATIC_PIX;
+        }
+        if ($this->captureMethod === CaptureMethod::MANUAL) {
+            $capabilities[] = Capability::DELAYED_CAPTURE;
         }
         if (!empty($this->creditCard) && empty($this->creditCard->id) && empty($this->creditCard->token)) {
             $capabilities[] = Capability::RAW_CARD_DATA;
@@ -862,8 +880,9 @@ class Invoice extends Model
 
     /**
      * Valor que ainda pode ser estornado na fatura, em centavos, calculado pelo driver: zero para
-     * fatura não paga, já integralmente estornada ou paga com boleto, cujo estorno `refund()`
-     * recusa (`REFUND_BANK_SLIP` é limitação dos dois gateways). Lê a fatura (um GET) quando o
+     * fatura não paga, já integralmente estornada, paga com boleto, cujo estorno `refund()`
+     * recusa (`REFUND_BANK_SLIP` é limitação dos dois gateways), ou quitada sem cobrança pela
+     * Stripe (paga fora dela), que `refund()` também recusa. Lê a fatura (um GET) quando o
      * model não traz o valor pago ou o método de pagamento. É o teto aritmético de `refund()`;
      * as guardas de Pix parcial e prazo continuam valendo.
      *
@@ -871,13 +890,33 @@ class Invoice extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
-     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException  fatura que o driver não estorna (fatura de assinatura no Stripe)
      * @throws ModelAttributeValidationException  `id` ausente
      */
     public function refundableAmount(): int
     {
         $gateway = ConfigurationHelper::resolveGateway($this->gateway);
         return $gateway->refundableAmount($this);
+    }
+
+    /**
+     * Captura o valor autorizado de uma fatura criada com `CaptureMethod::MANUAL`: o valor
+     * integral quando `$amount` é nulo, ou o valor informado em centavos onde o gateway aceita
+     * captura parcial (a Iugu só captura o valor integral). Devolve esta instância atualizada
+     * com a fatura capturada.
+     *
+     * @param  int|null  $amount  valor em centavos; nulo captura o valor autorizado
+     * @param  string|null  $idempotencyKey  chave de idempotência da operação; nula não deduplica
+     * @return Invoice
+     * @throws \Potelo\MultiPayment\Exceptions\GatewayException
+     * @throws \Potelo\MultiPayment\Exceptions\ConfigurationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException  captura parcial onde o gateway não aceita, ou fatura de assinatura no Stripe
+     * @throws ModelAttributeValidationException  `id` ausente ou valor zero ou negativo
+     */
+    public function capture(?int $amount = null, ?string $idempotencyKey = null): Invoice
+    {
+        $gateway = ConfigurationHelper::resolveGateway($this->gateway);
+
+        return $gateway->captureInvoice($this, $amount, $idempotencyKey);
     }
 
     /**

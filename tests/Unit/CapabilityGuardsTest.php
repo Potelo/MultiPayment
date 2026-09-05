@@ -314,6 +314,14 @@ class CapabilityGuardsTest extends TestCase
         $tokenized->creditCard->token = 'pm_tok';
         $this->assertSame([Capability::CREDIT_CARD], $tokenized->requiredCapabilities());
 
+        $manualCapture = new Invoice();
+        $manualCapture->paymentMethod = PaymentMethod::CREDIT_CARD;
+        $manualCapture->captureMethod = \Potelo\MultiPayment\Enums\CaptureMethod::MANUAL;
+        $this->assertSame(
+            [Capability::CREDIT_CARD, Capability::DELAYED_CAPTURE],
+            $manualCapture->requiredCapabilities()
+        );
+
         $subscription = new Subscription();
         $this->assertSame([Capability::SUBSCRIPTIONS], $subscription->requiredCapabilities());
         $discount = new \Potelo\MultiPayment\Models\SubscriptionDiscount();
@@ -425,7 +433,7 @@ class CapabilityGuardsTest extends TestCase
         $this->assertTrue($multiPayment->supports(Capability::PIX));
         $this->assertTrue($multiPayment->supports(Capability::BANK_SLIP));
         $this->assertTrue($multiPayment->supports(Capability::AUTOMATIC_PIX));
-        $this->assertFalse($multiPayment->supports(Capability::DELAYED_CAPTURE));
+        $this->assertFalse($multiPayment->supports(Capability::MULTIPLE_PAYMENT_METHODS));
         $this->assertTrue($multiPayment->supports(Capability::AUTOMATIC_PIX, 'iugu'));
         $this->assertTrue($multiPayment->gateway('iugu')->supports(Capability::INSTALLMENTS));
         $this->assertSame((new StripeGateway())->capabilities(), $multiPayment->capabilities());
@@ -448,7 +456,7 @@ class CapabilityGuardsTest extends TestCase
         Facade::getFacadeApplication()->bind('multiPayment', fn () => new MultiPayment('stripe'));
 
         $this->assertTrue(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::PIX));
-        $this->assertFalse(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::DELAYED_CAPTURE));
+        $this->assertFalse(\Potelo\MultiPayment\Facades\MultiPayment::supports(Capability::MULTIPLE_PAYMENT_METHODS));
         $this->assertContains(Capability::SUBSCRIPTIONS, \Potelo\MultiPayment\Facades\MultiPayment::capabilities('iugu'));
         $this->assertInstanceOf(StripeGateway::class, \Potelo\MultiPayment\Facades\MultiPayment::gateway());
     }

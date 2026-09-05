@@ -26,6 +26,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
     - [Salvar cartão (CreditCardBuilder)](#salvar-cartão-creditcardbuilder)
     - [getInvoice](#getinvoice)
     - [Outras operações de fatura](#outras-operações-de-fatura)
+    - [Captura em duas etapas](#captura-em-duas-etapas)
     - [Estorno](#estorno)
     - [charge (alternativa por array)](#charge-alternativa-por-array)
   - [Models](#models)
@@ -185,7 +186,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |  |
 | `CARD_SETUP_AUTHENTICATION` | Autenticação do portador com o emissor (3DS) ao salvar o cartão: cartão que exige ação do pagador volta com `CreditCard::$requiresAction` verdadeiro e `id` nulo, e `confirmCreditCardSetup()` conclui o salvamento depois da autenticação. | limitação do gateway | sim |  |
 | `INSTALLMENTS` | Parcelamento da cobrança no cartão de crédito. | sim | limitação do gateway | Iugu: O número de parcelas vai em gatewayOptions['months'], até 12 (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments); a lib não lê as parcelas da fatura paga. |
-| `DELAYED_CAPTURE` | Cobrança em duas etapas no cartão: reserva do valor agora e captura depois. | não implementado | não implementado |  |
+| `DELAYED_CAPTURE` | Cobrança em duas etapas no cartão: reserva do valor agora e captura depois. | sim | sim | Iugu: Só cartão de crédito, com o fluxo de pagamento em duas etapas habilitado na conta da Iugu; a captura é sempre do valor integral e a Iugu cancela sozinha a autorização não capturada em 7 dias.<br>Stripe: Só cartão de crédito na venda avulsa (PaymentIntent); a fatura de assinatura é cobrada pela Stripe com captura imediata. |
 | `PARTIAL_REFUND_CARD` | Estorno de parte do valor numa fatura paga com cartão. | sim | sim |  |
 | `PARTIAL_REFUND_PIX` | Estorno de parte do valor numa fatura paga com Pix. | limitação do gateway | sim |  |
 | `REFUND_BANK_SLIP` | Estorno pela API de uma fatura paga com boleto. | limitação do gateway | limitação do gateway |  |
@@ -562,9 +563,19 @@ O que muda na fatura de origem `INVOICE`:
 - **`duplicateInvoice()`** é recusado com `UnsupportedOperationException` (`INVOICE_DUPLICATION`,
   `gateway_limitation`): a próxima fatura da assinatura é gerada pela Stripe, e um Pix expirado
   se resolve com nova tentativa de pagamento da mesma fatura.
-- **`refundInvoice()`, `refundableAmount()` e `chargeInvoiceWithCreditCard()`** sobre a fatura de
-  assinatura ainda não estão disponíveis (`UnsupportedOperationException`, `SUBSCRIPTIONS`,
-  `not_implemented`, antes de qualquer requisição); estão planejados para uma versão futura.
+- **`refundInvoice()` e `refundableAmount()`** agem sobre o PaymentIntent da fatura: o driver
+  a relê para apontá-lo e conferir o estado, e o restante estornável é o do charge dela. A
+  fatura quitada sem cobrança pela Stripe (paga fora dela, ou sem valor a cobrar) é recusada
+  com `RefundNotSupportedException` (`no_gateway_charge`) e devolve zero em
+  `refundableAmount()`. Depois do estorno, o status da fatura relida vem do charge
+  (`REFUNDED` ou `PARTIALLY_REFUNDED`); o objeto Invoice da Stripe segue `paid`.
+- **`chargeInvoiceWithCreditCard()`** paga a fatura aberta com o cartão (`invoices.pay`). A
+  Stripe exige um PaymentMethod anexado ao cliente da fatura, então um cartão informado por
+  token é salvo antes (SetupIntent, como em `createCreditCard()`); se o emissor exigir
+  autenticação do pagador, a operação lança `ChargingException` com
+  `DeclineCode::AUTHENTICATION_REQUIRED` e a orientação do fluxo em duas etapas.
+- **`captureInvoice()`** é recusado (`UnsupportedOperationException`, restrição de
+  `DELAYED_CAPTURE`): a fatura de assinatura é cobrada pela Stripe com captura imediata.
 
 **Precedência de status.** O status do Invoice da Stripe manda no ciclo de vida da fatura; o
 PaymentIntent e o charge só refinam o detalhe de pagamento. Um PaymentIntent `succeeded` não
@@ -838,7 +849,7 @@ MultiPaymentException
 | `AuthenticationException` | Chave de API inválida, revogada, sem permissão (401 ou 403) ou não configurada | Registrar e alertar. Repetir a chamada ou trocar de gateway não resolve |
 | `GatewayNotAvailableException` | Erro 5xx, falha de conexão ou timeout | Repetir mais tarde ou tentar outro gateway |
 | `UnsupportedOperationException` | Operação fora das capabilities do gateway, ou fora da restrição de uma capability suportada (`restriction()`), antes de qualquer requisição; `capability`, `gateway` e `reason` (`not_implemented`, `gateway_limitation` ou `managed_by_gateway`) dizem qual e por quê | Rotear para um gateway que declare a capability; melhor ainda, consultar `supports()` e `restriction()` antes (ver [Capabilities](#capabilities)). Em `managed_by_gateway`, seguir a orientação da mensagem: a operação é conduzida pelo próprio gateway |
-| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway: limitação do gateway (boleto, Pix parcial; `isCapabilityLimitation()` verdadeiro e `capability` preenchida) ou estado da fatura (já estornada, valor acima do restante, prazo vencido). Herda direto de `MultiPaymentException`: `catch (UnsupportedOperationException)` não a captura | Ver [Estorno](#estorno) |
+| `RefundNotSupportedException` | Estorno recusado pela lib antes de chamar o gateway: limitação do gateway (boleto, Pix parcial; `isCapabilityLimitation()` verdadeiro e `capability` preenchida) ou estado da fatura (já estornada, valor acima do restante, prazo vencido, quitada sem cobrança pelo gateway). Herda direto de `MultiPaymentException`: `catch (UnsupportedOperationException)` não a captura | Ver [Estorno](#estorno) |
 | `ModelAttributeValidationException` | Atributo obrigatório ausente ou inválido, antes de qualquer requisição, inclusive regra de valor que só um gateway impõe (`PlanInterval::DAY` e teto de 599 meses na Iugu, `nextBillingAt` diferente de `trialEndsAt`, `page` e `limit` fora da faixa, plano com `id` em `save()`, valor de estorno zero ou negativo) | Corrigir a chamada |
 | `ConfigurationException` | Gateway não configurado ou classe inválida; driver que declara uma capability sem implementar o contract ou sem o método do despacho por convenção; `IdempotencyStore` sem registro no container ou sobre um cache sem lock | Corrigir a configuração ou o driver |
 | `GatewayException` | Qualquer outra resposta de erro do gateway, e a classe pai das quatro de resposta acima; `httpStatus` e `getErrors()` sempre preenchidos com a resposta. Nenhuma regra local da lib a lança | Depende do caso; `httpStatus` e `getErrors()` dizem o que aconteceu |
@@ -1871,10 +1882,11 @@ Particularidades do Stripe:
   `listSubscriptions()` e `listPlans()` paginam por cursor, então uma página além da primeira
   custa uma requisição por página anterior; `listSubscriptions()` traz assinaturas em
   qualquer status, sem `latestInvoice`.
-- **A escrita sobre a fatura de assinatura (`in_`) ainda não existe nesta lib**: estorno e
-  cobrança manual de uma fatura de assinatura lançam `UnsupportedOperationException`
-  (`SUBSCRIPTIONS`, `not_implemented`); a leitura por `getInvoice()` e o cancelamento por
-  `cancelInvoice()` (`void`) estão disponíveis.
+- **A fatura de assinatura (`in_`) aceita leitura e escrita**: `getInvoice()`,
+  `cancelInvoice()` (`void`), `refundInvoice()`/`refundableAmount()` (o estorno age sobre o
+  PaymentIntent da fatura) e `chargeInvoiceWithCreditCard()` (`invoices.pay` com o cartão).
+  Só a duplicação e a captura em duas etapas continuam de fora, como restrições consultáveis
+  (a próxima fatura é gerada pela Stripe, e a cobrança dela captura na hora).
 
 Confira `src/Builders/SubscriptionBuilder.php` para saber quais métodos estão disponíveis.
 
@@ -2003,6 +2015,58 @@ $payment->refundInvoice($invoiceId, 5000, idempotencyKey: $uuid);
 $payment->cancelInvoice($invoiceId, idempotencyKey: $uuid);
 ```
 
+No Stripe todas as operações acima também valem para a fatura de assinatura (`in_`), com as
+diferenças descritas em [Fatura no Stripe: duas origens](#fatura-no-stripe-duas-origens); a
+única recusada é `duplicateInvoice()`.
+
+#### Captura em duas etapas
+
+Com `CaptureMethod::MANUAL` a fatura de cartão nasce autorizada: o valor fica reservado no
+cartão (`InvoiceStatus::AUTHORIZED`) e a cobrança só se completa quando `captureInvoice()`
+captura, ou é desfeita quando `cancelInvoice()` libera a reserva. A capability é
+`DELAYED_CAPTURE`, com restrição consultável nos dois gateways (só cartão de crédito):
+
+```php
+use Potelo\MultiPayment\Enums\CaptureMethod;
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+
+$payment = new \Potelo\MultiPayment\MultiPayment('stripe');
+
+$invoice = $payment->newInvoice()
+    ->setCustomer($customer)
+    ->addItem('Reserva', 12345, 1)
+    ->setAvailablePaymentMethods([\Potelo\MultiPayment\Enums\PaymentMethod::CREDIT_CARD])
+    ->addCreditCardId($creditCardId)
+    ->setCaptureMethod(CaptureMethod::MANUAL)
+    ->create();
+
+$invoice->status === InvoiceStatus::AUTHORIZED;   // valor reservado, nada capturado
+
+// captura o valor integral, ou parcial no Stripe (a Stripe libera o restante da reserva)
+$captured = $payment->captureInvoice($invoice->id, idempotencyKey: $uuid);
+$captured = $payment->captureInvoice($invoice->id, 10000);
+
+// ou libera a reserva sem cobrar
+$payment->cancelInvoice($invoice->id);
+```
+
+O que muda por gateway:
+
+- **Stripe**: o PaymentIntent vai com `capture_method: manual` e o confirm só reserva; a
+  captura parcial (`amount_to_capture`) é aceita e libera o restante. `Invoice::$captureMethod`
+  volta preenchido na leitura. A fatura de assinatura (`in_`) fica de fora: a Stripe a cobra
+  com captura imediata.
+- **Iugu**: a cobrança é o mesmo `POST /v1/charge` (por isso `MANUAL` exige fatura só de
+  cartão, com o cartão informado na criação) e a autorização sem captura depende do **fluxo de
+  pagamento em duas etapas habilitado na conta** (em Configurações, seção Cartão de Crédito);
+  sem ele,
+  a Iugu captura na hora. A fatura autorizada fica `in_analysis` (`AUTHORIZED`), a captura é
+  sempre do valor integral (um valor em `captureInvoice()` é recusado antes da requisição) e a
+  Iugu cancela sozinha a autorização não capturada em 7 dias.
+
+A fatura fora de `AUTHORIZED` é recusada pelo gateway (`ValidationException`); na Iugu a
+mensagem é "Apenas Faturas em análise podem ser capturadas".
+
 #### Estorno
 
 Sem valor, o estorno é do restante estornável; com valor em centavos, é parcial. A operação
@@ -2111,6 +2175,7 @@ try {
 | `already_refunded` | Fatura já lida como `refunded` | `false` | `false` |
 | `amount_exceeds_refundable` | Valor pedido acima de `refundableAmount()` (o restante vai na mensagem). Repita com valor até o restante | `false` | `false` |
 | `refund_window_expired` | Iugu: depois do fim do 90º dia após `paidAt` | `true` | `false` |
+| `no_gateway_charge` | Stripe: fatura de assinatura quitada sem cobrança pela Stripe (paga fora dela, ou sem valor a cobrar); a API não tem o que estornar | `true` quando houve pagamento fora do gateway a devolver | `false` |
 
 Uma fatura `partially_refunded` aceita novos estornos até zerar o restante; pedir exatamente
 o que resta é estorno integral. Valor zero ou negativo é recusado com
@@ -2273,6 +2338,7 @@ Chaves aceitas por `charge(array)` (e por `Invoice::fill()`), em `snake_case`; v
 | `items.price`                 | **obrigatório**                                                     | int                            | valor do item                             | `10000`                               |
 | `payment_method`              | **obrigatório** no Stripe quando não há `available_payment_methods` nem `credit_card` | `PaymentMethod` ou a string `'credit_card'`, `'bank_slip'`, `'pix'` | método com que a fatura é criada quando `available_payment_methods` está vazia | `'credit_card'`                       |
 | `available_payment_methods`   |                                                                     | array de `PaymentMethod` ou de strings | métodos aceitos pela fatura (mais de um só na Iugu); tem precedência sobre `payment_method` | `['pix']`                             |
+| `capture_method`              |                                                                     | `CaptureMethod` ou a string `'automatic'`, `'manual'` | momento da captura no cartão; `'manual'` cria a fatura autorizada (ver [Captura em duas etapas](#captura-em-duas-etapas)) | `'manual'`                            |
 | `due_date`                    |                                                                     | string em `yyyy-mm-dd` ou ISO 8601 | vencimento (ver [Datas da fatura](#datas-da-fatura)); na Iugu, hoje quando omitido | `'2026-10-10'`                        |
 | `pix_expires_at`              |                                                                     | string em ISO 8601             | expiração do QR Code do Pix (Stripe: entre 10 segundos e 14 dias no futuro) | `'2026-10-10T18:00:00-03:00'`         |
 | `expires_at`                  | obsoleto desde 2026-09-02                                           | string em `yyyy-mm-dd`         | alias de `due_date`, com aviso `E_USER_DEPRECATED` | `'2026-10-10'`                        |

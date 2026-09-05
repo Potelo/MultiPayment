@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Facade;
 use Potelo\MultiPayment\Models\Plan;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
@@ -126,6 +127,25 @@ class ModelEnumCastTest extends TestCase
         $this->assertSame(InvoiceStatus::PARTIALLY_PAID, $invoice->status);
         $this->assertSame(PaymentMethod::PIX, $invoice->paymentMethod);
         $this->assertSame([PaymentMethod::PIX, PaymentMethod::BANK_SLIP], $invoice->availablePaymentMethods);
+    }
+
+    public function testFillConvertsTheCaptureMethod(): void
+    {
+        $invoice = new Invoice();
+        $invoice->fill(['capture_method' => 'manual']);
+
+        $this->assertSame(CaptureMethod::MANUAL, $invoice->captureMethod);
+        $this->assertSame('manual', $invoice->toArray()['capture_method']);
+    }
+
+    public function testUnknownCaptureMethodStringIsRejectedOnWrite(): void
+    {
+        $invoice = new Invoice();
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessage('captureMethod must be one of: automatic, manual');
+
+        $invoice->captureMethod = 'later';
     }
 
     public function testUnknownPaymentMethodStringIsRejectedOnWrite(): void
