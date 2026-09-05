@@ -1,0 +1,13 @@
+{
+  "method": "POST",
+  "delivered_at": "2026-09-05 13:21:50",
+  "headers": {
+    "accept-encoding": "gzip",
+    "content-length": "487",
+    "user-agent": "Iugu-Webhooks",
+    "idempotency-key": "27fa2b0d-3181-464b-9f06-ac1083b8e197",
+    "authorization": "mp-lote4-token-abc123",
+    "content-type": "application/x-www-form-urlencoded"
+  },
+  "body": "event=customer_payment_method.new&data%5Bcustomer_payment_method_id%5D=7C5C81E70AEC4200A0151E700125AA0A&data%5Bcustomer_id%5D=8E61AF7DCC1C4AFFB8F5864AE6D56860&data%5Bdefault_payment_method_id%5D&data%5Bcredit_card%5D%5Btoken%5D=000000000000000000000000000000000000001&data%5Bcredit_card%5D%5Byear%5D=2030&data%5Bcredit_card%5D%5Bmonth%5D=12&data%5Bcredit_card%5D%5Bbrand%5D=Visa&data%5Bcredit_card%5D%5Bholder%5D=Lote4+Webhook&data%5Bcredit_card%5D%5Bmasked_number%5D=XXXX-XXXX-XXXX-1111"
+}

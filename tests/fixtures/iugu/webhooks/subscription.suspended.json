@@ -1,0 +1,13 @@
+{
+  "method": "POST",
+  "delivered_at": "2026-09-05 13:21:06",
+  "headers": {
+    "accept-encoding": "gzip",
+    "content-length": "128",
+    "user-agent": "Iugu-Webhooks",
+    "idempotency-key": "a221e4f8-a015-4d0c-b17d-d3922395cb0e",
+    "authorization": "mp-lote4-token-abc123",
+    "content-type": "application/x-www-form-urlencoded"
+  },
+  "body": "event=subscription.suspended&data%5Bid%5D=868D8D08415D4C41AEEC907F22A013CF&data%5Baccount_id%5D=9C4EE85587AC4E9BA5DB7F618491FA23"
+}
