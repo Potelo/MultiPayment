@@ -6,6 +6,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
+  - [Múltiplas contas do mesmo gateway](#múltiplas-contas-do-mesmo-gateway)
 - [Gateways](#gateways)
   - [Capabilities](#capabilities)
   - [Status da fatura](#status-da-fatura)
@@ -14,6 +15,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Opções extras do gateway](#opções-extras-do-gateway)
   - [Idempotência](#idempotência)
 - [Webhooks](#webhooks)
+- [Testando a sua aplicação](#testando-a-sua-aplicação)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
     - [Criar e cobrar uma fatura (InvoiceBuilder)](#criar-e-cobrar-uma-fatura-invoicebuilder)
@@ -102,7 +104,7 @@ MULTIPAYMENT_STRICT_FILL=true
 Opcionalmente você pode configurar o Trait, para facilitar o uso do método `charge` junto a um usuário.
 
 ```php
-use Potelo\MultiPayment\MultiPaymentTrait;  
+use Potelo\MultiPayment\Traits\MultiPaymentTrait;  
   
 class User extends Authenticatable
 {
@@ -114,10 +116,56 @@ Usando o Trait:
 $usuario = User::find(1);
 $usuario->charge($options, 'iugu', 10000);  
 ```
+
+> **Mudança de comportamento (versão 5.0.0).** `MultiPaymentTrait::setCustomerId()` só escreve
+> a coluna configurada em `customer_column` e não chama mais o `save()` do model; para escrever
+> e salvar na mesma chamada, use o novo `persistCustomerId()`. O `charge()` do trait continua
+> persistindo o id do cliente criado junto com a fatura.
+
 Também é possível utilizar o Facade:
 ```php
 \Potelo\MultiPayment\Facades\MultiPayment::charge($options);  
 ```
+
+### Múltiplas contas do mesmo gateway
+
+Cada chave de `multi-payment.gateways` é resolvida com a própria config: registre duas chaves
+com a mesma `class` e credenciais próprias, e escolha a conta pelo nome da chave em qualquer
+lugar que aceita o nome do gateway.
+
+```php
+// config/multi-payment.php
+'gateways' => [
+    'iugu_matriz' => [
+        'api_key' => env('IUGU_MATRIZ_APIKEY'),
+        'id' => env('IUGU_MATRIZ_ID'),
+        'customer_column' => 'iugu_matriz_id',
+        'class' => \Potelo\MultiPayment\Gateways\IuguGateway::class,
+    ],
+    'iugu_filial' => [
+        'api_key' => env('IUGU_FILIAL_APIKEY'),
+        'id' => env('IUGU_FILIAL_ID'),
+        'customer_column' => 'iugu_filial_id',
+        'class' => \Potelo\MultiPayment\Gateways\IuguGateway::class,
+    ],
+],
+```
+
+```php
+MultiPayment::setGateway('iugu_filial')->getInvoice($id);
+```
+
+Os models devolvidos saem com `gateway` igual ao nome da chave (`iugu_filial`), então uma
+releitura pelo model (`$invoice->refresh()`, hidratação de webhook) volta para a mesma conta.
+As chaves de idempotência valem por conta: na deduplicação feita pela lib (endpoints da Iugu
+fora dos quatro com suporte nativo), a mesma chave usada numa segunda conta do mesmo gateway é
+recusada com `IdempotencyConflictException`; use chaves distintas por conta.
+
+O driver também pode ser substituído pelo container do Laravel: um bind da classe
+(`app()->bind(IuguGateway::class, ...)`) vale para toda chave com aquela `class`, e um bind da
+chave `multi-payment.gateway.{nome}` vale só para aquela conta e prevalece sobre o da classe.
+Esse é o mecanismo de `MultiPayment::fake()` (ver [Testando a sua
+aplicação](#testando-a-sua-aplicação)).
 
 ## Gateways
 
@@ -187,7 +235,7 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `MULTIPLE_PAYMENT_METHODS` | Fatura aberta a mais de um método de pagamento, escolhido pelo pagador na hora de pagar. | sim | não implementado |  |
 | `RAW_CARD_DATA` | Cartão informado com número e CVV pela API; sem ela, o cartão é tokenizado no navegador e só o token chega à lib. | sim | limitação do gateway |  |
 | `CARD_SETUP_AUTHENTICATION` | Autenticação do portador com o emissor (3DS) ao salvar o cartão: cartão que exige ação do pagador volta com `CreditCard::$requiresAction` verdadeiro e `id` nulo, e `confirmCreditCardSetup()` conclui o salvamento depois da autenticação. | limitação do gateway | sim |  |
-| `INSTALLMENTS` | Parcelamento da cobrança no cartão de crédito. | sim | limitação do gateway | Iugu: O número de parcelas vai em gatewayOptions['months'], até 12 (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments); a lib não lê as parcelas da fatura paga. |
+| `INSTALLMENTS` | Parcelamento da cobrança no cartão de crédito. | sim | limitação do gateway | Iugu: O número de parcelas vai em gatewayOptions['months'], até 12 (máximo da conta, configurável em max_installments na config do gateway); a lib não lê as parcelas da fatura paga. |
 | `DELAYED_CAPTURE` | Cobrança em duas etapas no cartão: reserva do valor agora e captura depois. | sim | sim | Iugu: Só cartão de crédito, com o fluxo de pagamento em duas etapas habilitado na conta da Iugu; a captura é sempre do valor integral e a Iugu cancela sozinha a autorização não capturada em 7 dias.<br>Stripe: Só cartão de crédito na venda avulsa (PaymentIntent); a fatura de assinatura é cobrada pela Stripe com captura imediata. |
 | `PARTIAL_REFUND_CARD` | Estorno de parte do valor numa fatura paga com cartão. | sim | sim |  |
 | `PARTIAL_REFUND_PIX` | Estorno de parte do valor numa fatura paga com Pix. | limitação do gateway | sim |  |
@@ -1262,6 +1310,66 @@ CLI de encaminhamento: exponha a aplicação por um túnel público (ngrok, Clou
 registre o webhook na sandbox (`POST /v1/web_hooks`) apontando para
 `https://<túnel>/multipayment/webhooks/iugu`, com o campo `authorization` do registro igual ao
 `IUGU_WEBHOOK_TOKEN` configurado.
+
+## Testando a sua aplicação
+
+`MultiPayment::fake()` substitui os gateways configurados por um
+`Potelo\MultiPayment\Testing\FakeGateway` em memória, sem rede: as operações da lib devolvem
+os mesmos models, status e exceções dos drivers reais, e as asserções da facade dizem o que
+aconteceu. Sem argumento, todos os gateways de `multi-payment.gateways` são substituídos;
+com uma lista de nomes, só os nomeados.
+
+```php
+use Potelo\MultiPayment\Facades\MultiPayment;
+use Potelo\MultiPayment\Models\Invoice;
+
+public function testCheckout(): void
+{
+    MultiPayment::fake();
+
+    $this->post('/checkout', [/* ... */])->assertOk();
+
+    MultiPayment::assertInvoiceCreated(fn (Invoice $invoice) => $invoice->amount === 19900);
+}
+```
+
+Asserções disponíveis na facade depois de `fake()` (todas usam o PHPUnit e valem sobre o
+conjunto dos fakes registrados):
+
+| Asserção | Afirma que |
+|---|---|
+| `assertInvoiceCreated(?callable $callback)` | alguma fatura foi criada; com callback, que alguma das criadas o satisfaz |
+| `assertSubscriptionCreated(?callable $callback)` | alguma assinatura foi criada; com callback, que alguma das criadas o satisfaz |
+| `assertRefunded(string $invoiceId, ?int $amount)` | a fatura foi estornada; com valor, que algum estorno foi daquele valor em centavos |
+| `assertNothingCharged()` | nenhuma fatura criada, nenhuma assinatura criada e nenhuma cobrança ou captura sobre fatura existente |
+| `assertCapabilityChecked(Capability $capability)` | a capability foi consultada por `supports()`, pela aplicação ou pelas guardas dos models |
+
+No caminho feliz, a fatura de cartão nasce paga (autorizada com `CaptureMethod::MANUAL`), Pix
+e boleto nascem pendentes e a assinatura nasce ativa (em trial com `trialDays`). Os desvios
+são programados no fake, cada um consumido pela operação seguinte a que se aplica:
+
+```php
+use Potelo\MultiPayment\Enums\DeclineCode;
+use Potelo\MultiPayment\Enums\WebhookEventType;
+use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
+
+$fakes = MultiPayment::fake();          // fakes por nome: ['iugu' => FakeGateway, ...]
+$fake = $fakes['iugu'];
+
+$fake->willDecline(DeclineCode::INSUFFICIENT_FUNDS);    // próxima cobrança de cartão lança CardDeclinedException
+$fake->willRequireAction();                             // próximo cartão salvo volta com requiresAction
+$fake->willFail(GatewayNotAvailableException::class);   // próxima operação lança a exceção
+$fake->declareCapabilities([/* ... */]);                // recusa por capability como um driver real
+
+// evento de webhook válido do fake; fatura que existe no estado do fake sai hidratada
+$event = $fake->fakeWebhook(WebhookEventType::INVOICE_PAID, ['invoice_id' => $invoice->id]);
+```
+
+O fake declara todas as capabilities por padrão e guarda o estado por instância, então duas
+contas do mesmo gateway substituídas por `fake(['iugu_matriz', 'iugu_filial'])` não misturam
+faturas. Quem prefere um dublê próprio registra qualquer implementação de `GatewayContract` no
+container, no bind da classe do driver ou no da chave `multi-payment.gateway.{nome}` (ver
+[Múltiplas contas do mesmo gateway](#múltiplas-contas-do-mesmo-gateway)).
 
 ## Utilizando
 

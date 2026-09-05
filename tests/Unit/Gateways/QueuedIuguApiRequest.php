@@ -3,6 +3,9 @@
 namespace Potelo\MultiPayment\Tests\Unit\Gateways;
 
 use Iugu_APIRequest;
+use Illuminate\Contracts\Container\Container;
+use Illuminate\Support\Facades\Facade;
+use Potelo\MultiPayment\Gateways\IuguGateway;
 
 /**
  * Devolve uma resposta por chamada, na ordem, e guarda todas as chamadas feitas (método, url,
@@ -55,32 +58,39 @@ class QueuedIuguApiRequest extends Iugu_APIRequest
     }
 
     /**
-     * Instala este fake como requester compartilhado do SDK (`APIResource::API()`), que é o
-     * que `IuguGateway` usa quando é construído sem requester (por exemplo, via
-     * `ConfigurationHelper::resolveGateway()` e `new MultiPayment('iugu')`). Chame
-     * `restoreSdkRequester()` no tearDown.
+     * Instala este fake como o requester do driver da Iugu construído pela config: registra no
+     * container da Facade um bind de `IuguGateway` que constrói o driver com este requester e a
+     * config que `ConfigurationHelper::resolveGateway()` entregar (por exemplo, via
+     * `new MultiPayment('iugu')`). Chame `restoreSdkRequester()` no tearDown.
      *
      * @return $this
      */
     public function installAsSdkRequester(): static
     {
-        self::sdkRequesterProperty()->setValue(null, $this);
+        $app = Facade::getFacadeApplication();
+        if (!$app instanceof Container) {
+            throw new \RuntimeException('Defina o container da Facade antes de instalar o fake');
+        }
+
+        $app->bind(
+            IuguGateway::class,
+            fn ($app, array $parameters = []) => new IuguGateway($this, null, $parameters['config'] ?? null)
+        );
 
         return $this;
     }
 
     /**
-     * Devolve o SDK ao requester real, para o fake não vazar para outros testes.
+     * Remove o bind do driver, para o fake não vazar para outros testes que compartilhem o
+     * container.
      *
      * @return void
      */
     public static function restoreSdkRequester(): void
     {
-        self::sdkRequesterProperty()->setValue(null, null);
-    }
-
-    private static function sdkRequesterProperty(): \ReflectionProperty
-    {
-        return new \ReflectionProperty(\APIResource::class, '_apiRequester');
+        $app = Facade::getFacadeApplication();
+        if ($app instanceof \Illuminate\Container\Container) {
+            unset($app[IuguGateway::class]);
+        }
     }
 }

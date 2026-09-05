@@ -132,7 +132,7 @@ class MultiPaymentWebhookTest extends TestCase
             $this->fail('Era esperada UnsupportedOperationException');
         } catch (UnsupportedOperationException $e) {
             $this->assertSame(Capability::WEBHOOKS, $e->capability);
-            $this->assertSame('iugu', $e->gateway);
+            $this->assertSame('sem_webhook', $e->gateway);
             $this->assertTrue($e->isNotImplemented());
         }
     }

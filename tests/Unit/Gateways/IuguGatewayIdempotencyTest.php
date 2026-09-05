@@ -1033,4 +1033,39 @@ class IuguGatewayIdempotencyTest extends TestCase
             'prices' => [(object) ['value_cents' => 10000, 'currency' => 'BRL']],
         ];
     }
+
+    /**
+     * A conta faz parte da assinatura guardada: a mesma chave numa segunda conta do gateway,
+     * na mesma operação e url, lança o conflito em vez de devolver o resultado guardado da
+     * primeira, e a segunda conta não chega a executar a requisição.
+     */
+    public function testTheSameKeyOnAnotherAccountOfTheGatewayIsAConflict(): void
+    {
+        $store = new InMemoryIdempotencyStore();
+        $apiA = new QueuedIuguApiRequest([self::planResponse()]);
+        $apiB = new QueuedIuguApiRequest([]);
+        $gatewayA = new IuguGateway($apiA, $store, ['api_key' => 'chave-a', 'gateway_name' => 'iugu_a']);
+        $gatewayB = new IuguGateway($apiB, $store, ['api_key' => 'chave-b', 'gateway_name' => 'iugu_b']);
+
+        $plan = new Plan();
+        $plan->name = 'Mensal';
+        $plan->identifier = 'plano_mensal';
+        $plan->amount = 10000;
+        $plan->interval = PlanInterval::MONTH;
+        $gatewayA->createPlan($plan, 'chave-1');
+
+        $planB = new Plan();
+        $planB->name = 'Mensal';
+        $planB->identifier = 'plano_mensal';
+        $planB->amount = 10000;
+        $planB->interval = PlanInterval::MONTH;
+
+        try {
+            $gatewayB->createPlan($planB, 'chave-1');
+            $this->fail('Esperava IdempotencyConflictException');
+        } catch (IdempotencyConflictException $e) {
+            $this->assertStringContainsString('chave-1', $e->getMessage());
+        }
+        $this->assertSame([], $apiB->calls);
+    }
 }

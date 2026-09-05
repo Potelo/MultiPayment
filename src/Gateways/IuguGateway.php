@@ -3,7 +3,6 @@
 namespace Potelo\MultiPayment\Gateways;
 
 use Iugu;
-use APIResource;
 use Carbon\Carbon;
 use Iugu_APIRequest;
 use IuguObjectNotFound;
@@ -193,18 +192,62 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     private ?IdempotencyStore $idempotencyStore;
 
     /**
-     * Configura a chave de API da Iugu e o requester HTTP. Sem requester, usa o compartilhado
-     * do SDK (`APIResource::API()`); sem store, a `IdempotencyStore` registrada no container é
+     * Config da chave registrada do gateway (`api_key`, `id`, `max_installments`,
+     * `webhook_token`...), entregue por `ConfigurationHelper::resolveGateway()`. Nula quando o
+     * driver foi construído sem config; `configValue()` lê a chave convencional.
+     *
+     * @var array|null
+     */
+    private ?array $config;
+
+    /**
+     * Configura o driver. Sem config, cada valor é lido da chave convencional
+     * `multi-payment.gateways.iugu`; sem requester, cria um `Iugu_APIRequest` com a `api_key`
+     * da config, por instância; sem store, a `IdempotencyStore` registrada no container é
      * resolvida na primeira operação que precisar dela.
      *
      * @param  Iugu_APIRequest|null  $apiRequest
      * @param  IdempotencyStore|null  $idempotencyStore
+     * @param  array|null  $config  config da chave registrada do gateway
      */
-    public function __construct(?Iugu_APIRequest $apiRequest = null, ?IdempotencyStore $idempotencyStore = null)
-    {
-        Iugu::setApiKey(Config::get('multi-payment.gateways.iugu.api_key'));
-        $this->apiRequest = $apiRequest ?? APIResource::API();
+    public function __construct(
+        ?Iugu_APIRequest $apiRequest = null,
+        ?IdempotencyStore $idempotencyStore = null,
+        ?array $config = null
+    ) {
+        $this->config = $config;
+        $this->apiRequest = $apiRequest ?? new Iugu_APIRequest($this->configValue('api_key'));
         $this->idempotencyStore = $idempotencyStore;
+    }
+
+    /**
+     * Valor de configuração do gateway: da config da chave registrada quando o driver a
+     * recebeu no construtor, senão de `multi-payment.gateways.iugu.{chave}`.
+     *
+     * @param  string  $key
+     * @param  mixed  $default
+     * @return mixed
+     */
+    private function configValue(string $key, mixed $default = null): mixed
+    {
+        if (!is_null($this->config)) {
+            return $this->config[$key] ?? $default;
+        }
+
+        return Config::get('multi-payment.gateways.iugu.'.$key, $default);
+    }
+
+    /**
+     * Nome da chave registrada que este driver atende (`gateway_name`, preenchido por
+     * `ConfigurationHelper::resolveGateway()`), com `iugu` de padrão para o driver construído
+     * direto. Preenche o `gateway` dos models devolvidos, para a releitura pelo model voltar
+     * para a mesma conta.
+     *
+     * @return string
+     */
+    private function gatewayName(): string
+    {
+        return (string) ($this->configValue('gateway_name') ?? 'iugu');
     }
 
     /**
@@ -271,13 +314,13 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     public function restrictions(): array
     {
         // variável de ambiente vazia chega como string vazia; vale o padrão da Iugu
-        $maxInstallments = (int) Config::get('multi-payment.gateways.iugu.max_installments')
+        $maxInstallments = (int) $this->configValue('max_installments', 0)
             ?: self::DEFAULT_MAX_INSTALLMENTS;
 
         return [
             Capability::INSTALLMENTS->value => new CapabilityRestriction(
                 description: "O número de parcelas vai em gatewayOptions['months'], até {$maxInstallments}"
-                    . ' (máximo da conta, configurável em multi-payment.gateways.iugu.max_installments);'
+                    . ' (máximo da conta, configurável em max_installments na config do gateway);'
                     . ' a lib não lê as parcelas da fatura paga.',
                 maxInstallments: $maxInstallments,
             ),
@@ -444,7 +487,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             'POST',
             Iugu::getBaseURI() . '/payment_token',
             [
-                'account_id' => Config::get('multi-payment.gateways.iugu.id'),
+                'account_id' => $this->configValue('id'),
                 'method' => 'credit_card',
                 'test' => Config::get('multi-payment.environment') != 'production',
                 'data' => [
@@ -655,7 +698,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         );
 
         $customer->id = $iuguCustomer->id ?? null;
-        $customer->gateway = 'iugu';
+        $customer->gateway = $this->gatewayName();
         $customer->createdAt = !empty($iuguCustomer->created_at) ? new Carbon($iuguCustomer->created_at) : null;
         $customer->original = $iuguCustomer;
 
@@ -1017,7 +1060,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $dispute->reason = $data->reason ?? $dispute->reason;
         $dispute->dueBy = !empty($data->expires_at) ? new Carbon($data->expires_at) : $dispute->dueBy;
         $dispute->openedAt = !empty($data->created_at) ? new Carbon($data->created_at) : $dispute->openedAt;
-        $dispute->gateway = 'iugu';
+        $dispute->gateway = $this->gatewayName();
         $dispute->original = $data;
 
         return $dispute;
@@ -1181,7 +1224,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $refund->amount = $requestedAmount ?? $refundableBefore ?? $invoice->refundedAmount;
         $refund->status = RefundStatus::SUCCEEDED;
         $refund->createdAt = Carbon::now();
-        $refund->gateway = 'iugu';
+        $refund->gateway = $this->gatewayName();
         $refund->invoice = $invoice;
 
         return $refund;
@@ -1360,7 +1403,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             return $this->parseInvoice($response, $invoice);
         }
 
-        $invoice->gateway = 'iugu';
+        $invoice->gateway = $this->gatewayName();
         $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->original = $response;
 
@@ -1566,7 +1609,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $automaticPix->retryPolicy = $retryPolicies[$data->retry_policy ?? '']
             ?? $automaticPix->retryPolicy;
         $automaticPix->status = $data->status ?? $automaticPix->status;
-        $automaticPix->gateway = 'iugu';
+        $automaticPix->gateway = $this->gatewayName();
         $automaticPix->original = $data;
 
         return $automaticPix;
@@ -1594,7 +1637,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             ? new Carbon($data->scheduled_payment_at)
             : $charge->scheduledAt;
         $charge->status = $data->status ?? $charge->status;
-        $charge->gateway = 'iugu';
+        $charge->gateway = $this->gatewayName();
         $charge->original = $data;
 
         return $charge;
@@ -1704,6 +1747,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     private function rememberIuguOperation(string $idempotencyKey, string $fingerprint, \Closure $operation): mixed
     {
+        // a conta entra na assinatura para a mesma chave em outra conta do gateway lançar o
+        // conflito em vez de devolver o resultado guardado da primeira
+        $fingerprint = substr(hash('sha256', (string) $this->configValue('api_key')), 0, 12) . ' ' . $fingerprint;
+
         $stored = $this->idempotencyStore()->remember(
             self::IDEMPOTENCY_STORE_PREFIX . $idempotencyKey,
             fn () => ['fingerprint' => $fingerprint, 'result' => $operation()],
@@ -1766,7 +1813,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $cancellation->createdAt = !empty($data->created_at)
             ? new Carbon($data->created_at)
             : $cancellation->createdAt;
-        $cancellation->gateway = 'iugu';
+        $cancellation->gateway = $this->gatewayName();
         $cancellation->original = $data;
 
         return $cancellation;
@@ -1789,7 +1836,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $this->verifyWebhookToken($headers);
 
         $event = new WebhookEvent();
-        $event->gateway = 'iugu';
+        $event->gateway = $this->gatewayName();
         $event->occurredAt = Carbon::now();
         // cabeçalho vazio conta como ausente, para o id derivado assumir e a deduplicação valer
         $deliveryId = self::webhookHeaderValue($headers, self::WEBHOOK_DELIVERY_ID_HEADER);
@@ -1827,8 +1874,8 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
     }
 
     /**
-     * Confere o token de autorização da entrega com o configurado em
-     * `multi-payment.gateways.iugu.webhook_token`, em comparação de tempo constante.
+     * Confere o token de autorização da entrega com o `webhook_token` da config do gateway,
+     * em comparação de tempo constante.
      *
      * @param  array  $headers
      * @return void
@@ -1836,9 +1883,9 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     private function verifyWebhookToken(array $headers): void
     {
-        $token = Config::get('multi-payment.gateways.iugu.webhook_token');
+        $token = $this->configValue('webhook_token');
         if (empty($token)) {
-            throw WebhookSignatureException::missingSecret('iugu', 'multi-payment.gateways.iugu.webhook_token');
+            throw WebhookSignatureException::missingSecret($this->gatewayName(), 'webhook_token na config do gateway');
         }
 
         $received = self::webhookHeaderValue($headers, self::WEBHOOK_TOKEN_HEADER);
@@ -1967,7 +2014,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      */
     public function __toString()
     {
-        return 'iugu';
+        return $this->gatewayName();
     }
 
     /**
@@ -1988,7 +2035,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $refund->invoiceId = $invoice->id;
         $refund->amount = $invoice->refundedAmount;
         $refund->status = RefundStatus::SUCCEEDED;
-        $refund->gateway = 'iugu';
+        $refund->gateway = $this->gatewayName();
 
         return [$refund];
     }
@@ -2009,7 +2056,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         // leituras com `??`: a resposta é stdClass do request cru, que avisa em campo ausente
         $iuguInvoice = (object) $iuguInvoice;
         $invoice->id = $iuguInvoice->id ?? null;
-        $invoice->gateway = 'iugu';
+        $invoice->gateway = $this->gatewayName();
         $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->status = self::iuguStatusToMultiPayment($iuguInvoice->status ?? null);
         $invoice->amount = $iuguInvoice->total_cents ?? null;
@@ -2025,7 +2072,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $invoice->currency = $iuguInvoice->currency ?? 'BRL';
         // a Iugu não documenta o campo do LR na fatura; o driver aceita os formatos dos
         // outros canais (`LR`, `lr` e o trecho `LR: xx` das mensagens)
-        $invoice->lastPaymentError = self::parseIuguPaymentError(IuguDeclineCodes::extractLr($iuguInvoice));
+        $invoice->lastPaymentError = $this->parseIuguPaymentError(IuguDeclineCodes::extractLr($iuguInvoice));
         $invoice->dueDate = !empty($iuguInvoice->due_date) ? new Carbon($iuguInvoice->due_date) : null;
         // a Iugu não documenta a expiração do QR Code na fatura; quando vier, ela vale, senão
         // fica o que o model já tinha
@@ -2139,7 +2186,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 $invoice->creditCard->lastName = $names[array_key_last($names)] ?? null;
             }
 
-            $invoice->creditCard->gateway = 'iugu';
+            $invoice->creditCard->gateway = $this->gatewayName();
         }
 
         return $invoice;
@@ -2286,7 +2333,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * @param  string|null  $lr
      * @return PaymentError|null
      */
-    private static function parseIuguPaymentError(?string $lr): ?PaymentError
+    private function parseIuguPaymentError(?string $lr): ?PaymentError
     {
         if (is_null($lr)) {
             return null;
@@ -2295,7 +2342,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $error = new PaymentError();
         $error->declineCode = self::declineCodeFromLr($lr);
         $error->gatewayCode = $lr;
-        $error->gateway = 'iugu';
+        $error->gateway = $this->gatewayName();
 
         return $error;
     }
@@ -2371,7 +2418,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $customer->birthDate = !empty($valuesInsideCustomVariables['birth_date'])
             ? Carbon::createFromFormat('Y-m-d', $valuesInsideCustomVariables['birth_date'])
             : null;
-        $customer->gateway = 'iugu';
+        $customer->gateway = $this->gatewayName();
         // o recurso de cliente da Iugu devolve `created_at` (a fatura é que tem `created_at_iso`)
         $createdAt = $iuguCustomer->created_at ?? $iuguCustomer->created_at_iso ?? null;
         $customer->createdAt = !empty($createdAt) ? new Carbon($createdAt) : null;
@@ -2534,7 +2581,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $displayNumber = $iuguCreditCard->data->display_number ?? null;
         $creditCard->lastDigits = $iuguCreditCard->data->last_digits
             ?? (is_string($displayNumber) ? substr($displayNumber, -4) : null);
-        $creditCard->gateway = 'iugu';
+        $creditCard->gateway = $this->gatewayName();
         $creditCard->original = $iuguCreditCard;
         $creditCard->createdAt = !empty($iuguCreditCard->created_at_iso) ? new Carbon($iuguCreditCard->created_at_iso) : null;
         return $creditCard;
@@ -3685,7 +3732,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $subscription->cancelAtPeriodEnd = !is_null($flag) && $flag !== '0';
         }
 
-        $subscription->gateway = 'iugu';
+        $subscription->gateway = $this->gatewayName();
         $subscription->original = $iuguSubscription;
 
         return $subscription;
@@ -4296,7 +4343,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             ? new Carbon($iuguInvoice->due_date)
             : null;
         $invoice->url = $iuguInvoice->secure_url ?? null;
-        $invoice->gateway = 'iugu';
+        $invoice->gateway = $this->gatewayName();
         $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->original = $iuguInvoice;
 
@@ -4346,7 +4393,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $planChange->effectiveAt = new Carbon($response->expires_at);
         }
 
-        $planChange->gateway = 'iugu';
+        $planChange->gateway = $this->gatewayName();
         $planChange->original = $response;
 
         return $planChange;
@@ -4517,7 +4564,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             $plan->currency = $price->currency ?? $plan->currency;
         }
 
-        $plan->gateway = 'iugu';
+        $plan->gateway = $this->gatewayName();
         $plan->original = $iuguPlan;
 
         return $plan;

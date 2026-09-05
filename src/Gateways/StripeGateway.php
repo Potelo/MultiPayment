@@ -249,16 +249,59 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     private StripeClient $client;
 
     /**
-     * Configura o client da Stripe.
+     * Config da chave registrada do gateway (`api_key`, `webhook_secret`,
+     * `pix_mandate_reference`...), entregue por `ConfigurationHelper::resolveGateway()`. Nula
+     * quando o driver foi construído sem config; `configValue()` lê a chave convencional.
+     *
+     * @var array|null
+     */
+    private ?array $config;
+
+    /**
+     * Configura o driver. Sem config, cada valor é lido da chave convencional
+     * `multi-payment.gateways.stripe`; sem client, cria um `StripeClient` com a `api_key` da
+     * config.
      *
      * @param  StripeClient|null  $client
+     * @param  array|null  $config  config da chave registrada do gateway
      */
-    public function __construct(?StripeClient $client = null)
+    public function __construct(?StripeClient $client = null, ?array $config = null)
     {
+        $this->config = $config;
         $this->client = $client ?? new StripeClient([
-            'api_key' => Config::get('multi-payment.gateways.stripe.api_key'),
+            'api_key' => $this->configValue('api_key'),
             'stripe_version' => self::STRIPE_API_VERSION,
         ]);
+    }
+
+    /**
+     * Valor de configuração do gateway: da config da chave registrada quando o driver a
+     * recebeu no construtor, senão de `multi-payment.gateways.stripe.{chave}`.
+     *
+     * @param  string  $key
+     * @param  mixed  $default
+     * @return mixed
+     */
+    private function configValue(string $key, mixed $default = null): mixed
+    {
+        if (!is_null($this->config)) {
+            return $this->config[$key] ?? $default;
+        }
+
+        return Config::get('multi-payment.gateways.stripe.'.$key, $default);
+    }
+
+    /**
+     * Nome da chave registrada que este driver atende (`gateway_name`, preenchido por
+     * `ConfigurationHelper::resolveGateway()`), com `stripe` de padrão para o driver
+     * construído direto. Preenche o `gateway` dos models devolvidos, para a releitura pelo
+     * model voltar para a mesma conta.
+     *
+     * @return string
+     */
+    private function gatewayName(): string
+    {
+        return (string) ($this->configValue('gateway_name') ?? 'stripe');
     }
 
     /**
@@ -630,7 +673,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $customer->defaultCard->id = $stripeCustomer->invoice_settings->default_payment_method;
         }
 
-        $customer->gateway = 'stripe';
+        $customer->gateway = $this->gatewayName();
         $customer->createdAt = Carbon::createFromTimestamp($stripeCustomer->created);
         $customer->original = $stripeCustomer;
 
@@ -922,7 +965,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $error->occurredAt = Carbon::createFromTimestamp($stripeCharge->created);
         }
 
-        $error->gateway = 'stripe';
+        $error->gateway = $this->gatewayName();
         $error->original = $stripeError;
 
         return $error;
@@ -1826,7 +1869,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $paidCharge = self::paidCharge($stripeCharge);
 
         $invoice->id = $stripePaymentIntent->id;
-        $invoice->gateway = 'stripe';
+        $invoice->gateway = $this->gatewayName();
         $invoice->originType = InvoiceOriginType::PAYMENT_INTENT;
         $invoice->disputes = $this->chargeDisputes($paidCharge, $stripePaymentIntent->id);
         $invoice->status = $this->deriveStatus(null, $stripePaymentIntent, $paidCharge, $invoice->disputes);
@@ -1903,7 +1946,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $paidCharge = self::paidCharge($stripeCharge);
 
         $invoice->id = $stripeInvoice->id;
-        $invoice->gateway = 'stripe';
+        $invoice->gateway = $this->gatewayName();
         $invoice->originType = InvoiceOriginType::INVOICE;
         $invoice->disputes = $this->chargeDisputes($paidCharge, $stripeInvoice->id);
         $invoice->status = $this->deriveStatus($stripeInvoice, $stripePaymentIntent, $paidCharge, $invoice->disputes);
@@ -2179,7 +2222,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         }
         $invoice->creditCard->brand = $cardDetails->brand ?? null;
         $invoice->creditCard->lastDigits = $cardDetails->last4 ?? null;
-        $invoice->creditCard->gateway = 'stripe';
+        $invoice->creditCard->gateway = $this->gatewayName();
     }
 
     /**
@@ -2272,7 +2315,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $refund->invoiceId = $invoiceId;
             $refund->amount = $paidCharge->amount_refunded;
             $refund->status = RefundStatus::SUCCEEDED;
-            $refund->gateway = 'stripe';
+            $refund->gateway = $this->gatewayName();
 
             return [$refund];
         }
@@ -2303,7 +2346,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $refund->createdAt = !empty($stripeRefund->created)
             ? Carbon::createFromTimestamp($stripeRefund->created)
             : null;
-        $refund->gateway = 'stripe';
+        $refund->gateway = $this->gatewayName();
         $refund->original = $stripeRefund;
 
         return $refund;
@@ -2389,7 +2432,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             ? Carbon::createFromTimestamp($stripeDispute->created)
             : null;
         $dispute->closedAt = null;
-        $dispute->gateway = 'stripe';
+        $dispute->gateway = $this->gatewayName();
         $dispute->original = $stripeDispute;
 
         return $dispute;
@@ -3112,7 +3155,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $creditCard->setupId = $stripeSetupIntent->id;
             $creditCard->clientSecret = $stripeSetupIntent->client_secret;
             $creditCard->actionUrl = $stripeSetupIntent->next_action->redirect_to_url->url ?? null;
-            $creditCard->gateway = 'stripe';
+            $creditCard->gateway = $this->gatewayName();
             $creditCard->original = $stripeSetupIntent;
             $creditCard->createdAt = Carbon::createFromTimestamp($stripeSetupIntent->created);
 
@@ -3261,7 +3304,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $creditCard->lastName = $names[array_key_last($names)] ?? null;
         }
 
-        $creditCard->gateway = 'stripe';
+        $creditCard->gateway = $this->gatewayName();
         $creditCard->original = $stripePaymentMethod;
         $creditCard->createdAt = Carbon::createFromTimestamp($stripePaymentMethod->created);
 
@@ -3442,7 +3485,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $plan->intervalCount = $stripePrice->recurring?->interval_count ?? $plan->intervalCount;
         $plan->currency = isset($stripePrice->currency) ? strtoupper($stripePrice->currency) : $plan->currency;
         $plan->active = $stripePrice->active ?? $plan->active;
-        $plan->gateway = 'stripe';
+        $plan->gateway = $this->gatewayName();
         $plan->original = $stripePrice;
 
         return $plan;
@@ -4044,7 +4087,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $planChange->effectiveAt = Carbon::createFromTimestamp($effectiveAt);
         }
         $planChange->appliesImmediately = true;
-        $planChange->gateway = 'stripe';
+        $planChange->gateway = $this->gatewayName();
         $planChange->original = $preview;
 
         return $planChange;
@@ -4531,7 +4574,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             'start_date' => $startsAt->getTimestamp(),
         ];
 
-        $reference = Config::get('multi-payment.gateways.stripe.pix_mandate_reference');
+        $reference = $this->configValue('pix_mandate_reference');
         if (!empty($reference)) {
             $mandateOptions['reference'] = $reference;
         }
@@ -4872,7 +4915,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $subscription->currency = isset($stripeSubscription->currency)
             ? strtoupper($stripeSubscription->currency)
             : $subscription->currency;
-        $subscription->gateway = 'stripe';
+        $subscription->gateway = $this->gatewayName();
         $subscription->original = $stripeSubscription;
 
         return $subscription;
@@ -4915,7 +4958,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $subscription->creditCard->year = isset($cardDetails->exp_year)
             ? (string) $cardDetails->exp_year
             : $subscription->creditCard->year;
-        $subscription->creditCard->gateway = 'stripe';
+        $subscription->creditCard->gateway = $this->gatewayName();
     }
 
     /**
@@ -4950,7 +4993,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             $automaticPix->nextDebitAt = Carbon::createFromTimestamp($currentPeriodEnd)
                 ->addDays(self::PIX_MANDATE_DEBIT_OFFSET_DAYS);
         }
-        $automaticPix->gateway = 'stripe';
+        $automaticPix->gateway = $this->gatewayName();
         $automaticPix->original = $mandateOptions;
 
         return $automaticPix;
@@ -5110,7 +5153,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $cancellation->id ??= $stripeMandate->id ?? null;
         $cancellation->recurrenceId ??= $stripeMandate->id ?? null;
         $cancellation->status = AutomaticPixCancellation::STATUS_COMPLETED;
-        $cancellation->gateway = 'stripe';
+        $cancellation->gateway = $this->gatewayName();
         $cancellation->original = $stripeMandate;
 
         return $cancellation;
@@ -5137,7 +5180,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
         $payload = json_decode($rawBody, true);
 
         $event = new WebhookEvent();
-        $event->gateway = 'stripe';
+        $event->gateway = $this->gatewayName();
 
         if (!is_array($payload)) {
             LogHelper::warning('Corpo de webhook da Stripe com assinatura válida e JSON inválido', ['gateway' => 'stripe']);
@@ -5177,9 +5220,9 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      */
     private function verifyWebhookSignature(string $rawBody, array $headers): void
     {
-        $secret = Config::get('multi-payment.gateways.stripe.webhook_secret');
+        $secret = $this->configValue('webhook_secret');
         if (empty($secret)) {
-            throw WebhookSignatureException::missingSecret('stripe', 'multi-payment.gateways.stripe.webhook_secret');
+            throw WebhookSignatureException::missingSecret($this->gatewayName(), 'webhook_secret na config do gateway');
         }
 
         $header = self::webhookHeaderValue($headers, self::WEBHOOK_SIGNATURE_HEADER);
@@ -5202,8 +5245,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             throw WebhookSignatureException::invalidSignature('stripe');
         }
 
-        $tolerance = (int) (Config::get('multi-payment.gateways.stripe.webhook_tolerance')
-            ?? self::WEBHOOK_DEFAULT_TOLERANCE_SECONDS);
+        $tolerance = (int) $this->configValue('webhook_tolerance', self::WEBHOOK_DEFAULT_TOLERANCE_SECONDS);
         if ($tolerance > 0 && abs(Carbon::now()->getTimestamp() - (int) $timestamp) > $tolerance) {
             throw WebhookSignatureException::timestampOutOfTolerance('stripe', $tolerance);
         }
@@ -5294,6 +5336,6 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      */
     public function __toString()
     {
-        return 'stripe';
+        return $this->gatewayName();
     }
 }

@@ -25,7 +25,7 @@ trait MultiPaymentTrait
      */
     public function charge(array $options, ?string $gatewayName = null, ?int $amount = null, ?string $idempotencyKey = null): Invoice
     {
-        $payment = new MultiPayment($gatewayName);
+        $payment = new \Potelo\MultiPayment\MultiPayment($gatewayName);
 
         $customerId = $this->getGatewayCustomerId($gatewayName);
         if (!empty($customerId)) {
@@ -36,7 +36,7 @@ trait MultiPaymentTrait
         }
         $invoice = $payment->charge($options, $idempotencyKey);
         if (empty($customerId)) {
-            $this->setCustomerId($gatewayName, $invoice->customer->id);
+            $this->persistCustomerId($gatewayName, $invoice->customer->id);
         }
         return $invoice;
     }
@@ -55,7 +55,22 @@ trait MultiPaymentTrait
     }
 
     /**
-     * Set the customer id of the gateway
+     * Escreve o id do cliente do gateway na coluna configurada, sem salvar o model. Para
+     * gravar no banco na mesma chamada, use `persistCustomerId()`.
+     *
+     * @param $gatewayName
+     * @param $customerId
+     *
+     * @return void
+     */
+    public function setCustomerId($gatewayName, $customerId)
+    {
+        $customerColumn = $this->getGatewayCustomerColumn($gatewayName);
+        $this->{$customerColumn} = $customerId;
+    }
+
+    /**
+     * Escreve o id do cliente do gateway na coluna configurada e salva o model.
      *
      * @param $gatewayName
      * @param $customerId
@@ -63,10 +78,9 @@ trait MultiPaymentTrait
      * @return void
      * @noinspection PhpUndefinedMethodInspection
      */
-    public function setCustomerId($gatewayName, $customerId)
+    public function persistCustomerId($gatewayName, $customerId)
     {
-        $customerColumn = $this->getGatewayCustomerColumn($gatewayName);
-        $this->{$customerColumn} = $customerId;
+        $this->setCustomerId($gatewayName, $customerId);
         $this->save();
     }
 
