@@ -84,6 +84,7 @@ class GatewayCapabilitiesTest extends TestCase
             Capability::REFUND_BANK_SLIP->name =>         [self::LIMITATION,     self::LIMITATION],
             Capability::INVOICE_DUPLICATION->name =>      [self::SUPPORTED,      self::SUPPORTED],
             Capability::INVOICE_CANCELLATION->name =>     [self::SUPPORTED,      self::SUPPORTED],
+            Capability::INVOICE_LISTING->name =>          [self::SUPPORTED,      self::SUPPORTED],
             Capability::IDEMPOTENCY->name =>              [self::SUPPORTED,      self::SUPPORTED],
             Capability::IDEMPOTENCY_ALL_ENDPOINTS->name => [self::LIMITATION,    self::SUPPORTED],
             Capability::SUBSCRIPTIONS->name =>            [self::SUPPORTED,      self::SUPPORTED],
@@ -220,6 +221,9 @@ class GatewayCapabilitiesTest extends TestCase
             'stripe nextBillingAt só na criação' => ['stripe', Capability::SUBSCRIPTIONS, []],
             'stripe cupom dura meses inteiros' => ['stripe', Capability::COUPONS, []],
             'iugu cupom sem restrição' => ['iugu', Capability::COUPONS, null],
+            'iugu listagem de faturas' => ['iugu', Capability::INVOICE_LISTING, []],
+            'stripe listagem de faturas' => ['stripe', Capability::INVOICE_LISTING, []],
+            'iugu filtros da listagem de assinaturas' => ['iugu', Capability::SUBSCRIPTIONS, []],
             'stripe pix sem restrição' => ['stripe', Capability::PIX, null],
         ];
     }

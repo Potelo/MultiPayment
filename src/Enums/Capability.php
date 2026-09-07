@@ -62,6 +62,9 @@ enum Capability: string
     /** Cancelamento de uma fatura ainda não paga (`cancelInvoice`). */
     case INVOICE_CANCELLATION = 'invoice_cancellation';
 
+    /** Listagem de faturas com filtros e paginação (`listInvoices`). */
+    case INVOICE_LISTING = 'invoice_listing';
+
     /**
      * Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo
      * gateway ou pela deduplicação da lib (`IdempotencyStore`).

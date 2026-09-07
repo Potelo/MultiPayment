@@ -3,6 +3,8 @@
 namespace  Potelo\MultiPayment\Contracts;
 
 use Potelo\MultiPayment\Models\Customer;
+use Potelo\MultiPayment\Listing\SubscriptionList;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
@@ -144,14 +146,26 @@ interface SubscriptionContract
     ): SubscriptionPlanChange;
 
     /**
-     * Lista as assinaturas de um cliente.
+     * Lista as assinaturas que casam com o filtro, uma página por chamada. Campo nulo do
+     * filtro não filtra; filtro sem equivalente no gateway lança
+     * `UnsupportedOperationException` antes de qualquer requisição, e a restrição consultável
+     * de `Capability::SUBSCRIPTIONS` descreve o que o gateway aceita. A página seguinte vem
+     * de uma nova chamada com o filtro de `SubscriptionList::nextPageFilter()`.
      *
-     * @param  Customer  $customer
-     * @param  int  $page
-     * @param  int  $limit
+     * A forma antiga, com o `Customer` e a página nos argumentos, está obsoleta: filtra só
+     * por cliente e devolve `Subscription[]`, com aviso `E_USER_DEPRECATED`.
      *
-     * @return Subscription[]
+     * @param  SubscriptionFilter|Customer  $filter  o filtro, ou o cliente na forma antiga
+     * @param  int  $page  só na forma antiga
+     * @param  int  $limit  só na forma antiga
+     *
+     * @return SubscriptionList|Subscription[]  `SubscriptionList` com o filtro; `Subscription[]` na forma antiga
      * @throws GatewayException|GatewayNotAvailableException|ModelAttributeValidationException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
      */
-    public function listSubscriptions(Customer $customer, int $page = 1, int $limit = 100): array;
+    public function listSubscriptions(
+        SubscriptionFilter|Customer $filter,
+        int $page = 1,
+        int $limit = 100
+    ): SubscriptionList|array;
 }

@@ -26,6 +26,10 @@ use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Models\WebhookEvent;
+use Potelo\MultiPayment\Listing\InvoiceList;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
+use Potelo\MultiPayment\Listing\SubscriptionList;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
@@ -267,6 +271,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             Capability::PARTIAL_REFUND_CARD,
             Capability::INVOICE_DUPLICATION,
             Capability::INVOICE_CANCELLATION,
+            Capability::INVOICE_LISTING,
             Capability::IDEMPOTENCY,
             Capability::SUBSCRIPTIONS,
             Capability::PLANS,
@@ -309,7 +314,10 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
      * pagamento em duas etapas habilitado na conta; a captura é sempre do valor integral e a
      * Iugu cancela sozinha a autorização não capturada em 7 dias. `AUTOMATIC_PIX`: a
      * recorrência nasce na fatura e a aplicação é o motor de recorrência; a assinatura não
-     * aceita o método.
+     * aceita o método. `INVOICE_LISTING`: a API da Iugu não filtra fatura por assinatura, e o
+     * filtro por status não cobre `PROCESSING` (a Iugu não tem o estado). `SUBSCRIPTIONS`: a
+     * listagem filtra status só por `ACTIVE` e `SUSPENDED`, e `planIdentifier` usa a busca
+     * textual da Iugu.
      */
     public function restrictions(): array
     {
@@ -334,6 +342,19 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
                 description: 'A recorrência nasce na fatura (Invoice com automaticPix e método pix) e'
                     . ' a aplicação é o motor de recorrência; a assinatura não aceita paymentMethod'
                     . ' automatic_pix.',
+            ),
+            Capability::INVOICE_LISTING->value => new CapabilityRestriction(
+                description: 'A API da Iugu não filtra fatura por assinatura (subscriptionId é recusado);'
+                    . ' o filtro por status não cobre PROCESSING (a Iugu não tem o estado), PENDING não'
+                    . ' traz o rascunho (draft) e AUTHORIZED filtra o estado in_analysis.',
+            ),
+            Capability::SUBSCRIPTIONS->value => new CapabilityRestriction(
+                description: 'Na listagem, o filtro por status cobre só ACTIVE e SUSPENDED, e a Iugu'
+                    . ' descreve a assinatura por flags: ACTIVE traz também as que a lib lê como'
+                    . ' TRIALING e PAST_DUE (as três têm a flag active), e SUSPENDED traz as que a lib'
+                    . ' lê como CANCELED (a emulação do cancelamento suspende a assinatura); os demais'
+                    . ' status não filtram. planIdentifier usa a busca textual da Iugu (query), que'
+                    . ' pode casar correspondência parcial.',
             ),
         ];
     }
@@ -2066,6 +2087,7 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
         $invoice->original = $iuguInvoice;
         $invoice->createdAt = !empty($iuguInvoice->created_at_iso) ? new Carbon($iuguInvoice->created_at_iso) : null;
         $invoice->paidAmount = $iuguInvoice->paid_cents ?? null;
+        $invoice->subscriptionId = $iuguInvoice->subscription_id ?? $invoice->subscriptionId;
         $invoice->setRefundedAmountFromGateway($iuguInvoice->refunded_cents ?? null);
         $invoice->refunds = $this->parseRefunds($invoice);
         // a Iugu só opera BRL
@@ -3249,9 +3271,74 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
 
     /**
      * @inheritDoc
+     *
+     * Filtros no `GET /v1/subscriptions`: `customerId` vai em `customer_id`, `planIdentifier`
+     * em `query` (a busca textual da Iugu, que pode casar correspondência parcial), `status`
+     * em `status_filter` (só `ACTIVE` e `SUSPENDED`; a assinatura cancelada pela emulação da
+     * lib fica suspensa na Iugu e aparece sob `SUSPENDED`, lida como `CANCELED`), e as datas
+     * de criação em `created_at_from`/`created_at_to`. A paginação é por deslocamento
+     * (`start`); o cursor é o deslocamento da página seguinte. `total` vem nulo: o
+     * `totalItems` da Iugu neste endpoint ecoa o tamanho da página, e `hasMore` é deduzido de
+     * uma página cheia (a última página cheia custa uma chamada a mais, vazia).
      */
-    public function listSubscriptions(Customer $customer, int $page = 1, int $limit = 100): array
+    public function listSubscriptions(
+        SubscriptionFilter|Customer $filter,
+        int $page = 1,
+        int $limit = 100
+    ): SubscriptionList|array {
+        if ($filter instanceof Customer) {
+            return $this->listSubscriptionsForCustomer($filter, $page, $limit);
+        }
+
+        $start = $this->iuguListStart($filter->cursor, $filter->page, $filter->limit, 'SubscriptionFilter');
+        $params = [
+            'customer_id' => $filter->customerId,
+            'query' => $filter->planIdentifier,
+            'status_filter' => is_null($filter->status) ? null : $this->subscriptionStatusFilterToIugu($filter->status),
+            'created_at_from' => $filter->createdAfter?->toIso8601String(),
+            'created_at_to' => $filter->createdBefore?->toIso8601String(),
+        ];
+        $params = array_filter($params, static fn ($value) => !is_null($value));
+        $params['limit'] = $filter->limit;
+        $params['start'] = $start;
+
+        $response = $this->iuguRequest(
+            'GET',
+            Iugu::getBaseURI() . '/subscriptions?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986),
+            [],
+            'listing subscriptions'
+        );
+
+        $items = is_array($response) ? $response : ($response->items ?? []);
+        $subscriptions = array_map(fn ($item) => $this->parseIuguSubscription($item), $items);
+        $hasMore = count($subscriptions) === $filter->limit;
+
+        return new SubscriptionList(
+            $subscriptions,
+            null,
+            $hasMore ? (string) ($start + count($subscriptions)) : null,
+            $hasMore,
+            $filter
+        );
+    }
+
+    /**
+     * Forma antiga de `listSubscriptions()`, obsoleta: filtra só por cliente e devolve
+     * `Subscription[]`.
+     *
+     * @param  Customer  $customer
+     * @param  int  $page
+     * @param  int  $limit
+     * @return Subscription[]
+     * @throws GatewayException|ModelAttributeValidationException
+     */
+    private function listSubscriptionsForCustomer(Customer $customer, int $page, int $limit): array
     {
+        trigger_error(
+            'listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter',
+            E_USER_DEPRECATED
+        );
+
         if (empty($customer->id)) {
             throw ModelAttributeValidationException::required('Customer', 'id');
         }
@@ -3264,22 +3351,168 @@ class IuguGateway implements GatewayContract, SubscriptionContract, PlanContract
             throw ModelAttributeValidationException::invalid('Subscription', 'limit', 'Subscription limit must be between 1 and 100');
         }
 
-        $query = http_build_query([
-            'customer_id' => $customer->id,
-            'limit' => $limit,
-            'start' => ($page - 1) * $limit,
-        ], '', '&', PHP_QUERY_RFC3986);
+        $list = $this->listSubscriptions(new SubscriptionFilter(
+            customerId: $customer->id,
+            limit: $limit,
+            page: $page
+        ));
+
+        return $list->items;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Filtros no `GET /v1/invoices`: `customerId` vai em `customer_id`, `status` em
+     * `status_filter` (ver `invoiceStatusFilterToIugu()`), as datas de criação em
+     * `created_at_from`/`created_at_to` e as de vencimento em `due_date_from`/`due_date_to`
+     * (o vencimento da Iugu é um dia; a hora de `dueAfter` e `dueBefore` é descartada).
+     * `subscriptionId` é recusado: a API da Iugu não filtra fatura por assinatura (o
+     * parâmetro é ignorado em silêncio, o que devolveria as faturas de todo mundo). Toda
+     * fatura da Iugu tem origem `INVOICE`, então `originType` `PAYMENT_INTENT` é recusado e
+     * `INVOICE` é aceito sem efeito. A paginação é por deslocamento (`start`); o cursor é o
+     * deslocamento da página seguinte e `total` vem do `totalItems` da resposta.
+     */
+    public function listInvoices(InvoiceFilter $filter): InvoiceList
+    {
+        if (!is_null($filter->subscriptionId)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_LISTING,
+                'A API da Iugu não filtra fatura por assinatura; filtre por customerId.'
+            );
+        }
+
+        if ($filter->originType === InvoiceOriginType::PAYMENT_INTENT) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_LISTING,
+                'Toda fatura da Iugu tem origem INVOICE; deixe originType nulo.'
+            );
+        }
+
+        $start = $this->iuguListStart($filter->cursor, $filter->page, $filter->limit, 'InvoiceFilter');
+        $params = [
+            'customer_id' => $filter->customerId,
+            'status_filter' => is_null($filter->status) ? null : $this->invoiceStatusFilterToIugu($filter->status),
+            'created_at_from' => $filter->createdAfter?->toIso8601String(),
+            'created_at_to' => $filter->createdBefore?->toIso8601String(),
+            'due_date_from' => $filter->dueAfter?->toDateString(),
+            'due_date_to' => $filter->dueBefore?->toDateString(),
+        ];
+        $params = array_filter($params, static fn ($value) => !is_null($value));
+        $params['limit'] = $filter->limit;
+        $params['start'] = $start;
 
         $response = $this->iuguRequest(
             'GET',
-            Iugu::getBaseURI() . '/subscriptions?' . $query,
+            Iugu::getBaseURI() . '/invoices?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986),
             [],
-            'listing subscriptions'
+            'listing invoices'
         );
 
         $items = is_array($response) ? $response : ($response->items ?? []);
+        $invoices = array_map(fn ($item) => $this->parseInvoice($item), $items);
+        $total = is_object($response) && isset($response->totalItems) ? (int) $response->totalItems : null;
+        $hasMore = is_null($total)
+            ? count($invoices) === $filter->limit
+            : $start + count($invoices) < $total;
+        $hasMore = $hasMore && count($invoices) > 0;
 
-        return array_map(fn($item) => $this->parseIuguSubscription($item), $items);
+        return new InvoiceList(
+            $invoices,
+            $total,
+            $hasMore ? (string) ($start + count($invoices)) : null,
+            $hasMore,
+            $filter
+        );
+    }
+
+    /**
+     * Deslocamento inicial da listagem: o cursor, quando preenchido (o deslocamento da página
+     * seguinte, devolvido pela página anterior), senão o calculado de `page` e `limit`.
+     * Cursor que não é um deslocamento é recusado: veio de outro gateway ou foi montado à mão.
+     *
+     * @param  string|null  $cursor
+     * @param  int  $page
+     * @param  int  $limit
+     * @param  string  $filterName  nome do filtro, para a mensagem
+     * @return int
+     * @throws ModelAttributeValidationException
+     */
+    private function iuguListStart(?string $cursor, int $page, int $limit, string $filterName): int
+    {
+        if (is_null($cursor)) {
+            return ($page - 1) * $limit;
+        }
+
+        if (!ctype_digit($cursor)) {
+            throw ModelAttributeValidationException::invalid(
+                $filterName,
+                'cursor',
+                "[{$cursor}] is not a cursor produced by the iugu gateway"
+            );
+        }
+
+        return (int) $cursor;
+    }
+
+    /**
+     * Valor de `status_filter` da listagem de assinaturas para um status genérico. A Iugu só
+     * filtra `active` e `suspended`; os demais casos não têm equivalente (a Iugu descreve a
+     * assinatura por flags) e são recusados antes da rede. O filtro é mais largo que o status
+     * genérico: `active` traz também as assinaturas que a lib lê como `TRIALING` e `PAST_DUE`,
+     * e `suspended` as que ela lê como `CANCELED`, porque as flags convivem.
+     *
+     * @param  SubscriptionStatus  $status
+     * @return string
+     * @throws UnsupportedOperationException
+     */
+    private function subscriptionStatusFilterToIugu(SubscriptionStatus $status): string
+    {
+        return match ($status) {
+            SubscriptionStatus::ACTIVE => 'active',
+            SubscriptionStatus::SUSPENDED => 'suspended',
+            default => throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::SUBSCRIPTIONS,
+                "A Iugu só filtra assinatura por status ACTIVE e SUSPENDED; [{$status->value}] não tem"
+                . ' equivalente na listagem.'
+            ),
+        };
+    }
+
+    /**
+     * Valor de `status_filter` da listagem de faturas para um status genérico. Cada caso
+     * filtra o status homônimo da Iugu, com duas ressalvas: `PENDING` filtra `pending` (o
+     * rascunho `draft`, que a lib também lê como `PENDING`, fica de fora) e `AUTHORIZED`
+     * filtra `in_analysis` (a etapa de autorização da cobrança em duas etapas). `PROCESSING`
+     * não existe na Iugu e é recusado antes da rede.
+     *
+     * @param  InvoiceStatus  $status
+     * @return string
+     * @throws UnsupportedOperationException
+     */
+    private function invoiceStatusFilterToIugu(InvoiceStatus $status): string
+    {
+        return match ($status) {
+            InvoiceStatus::PENDING => self::STATUS_PENDING,
+            InvoiceStatus::AUTHORIZED => self::STATUS_IN_ANALYSIS,
+            InvoiceStatus::PAID => self::STATUS_PAID,
+            InvoiceStatus::PARTIALLY_PAID => self::STATUS_PARTIALLY_PAID,
+            InvoiceStatus::EXTERNALLY_PAID => self::STATUS_EXTERNALLY_PAID,
+            InvoiceStatus::PARTIALLY_REFUNDED => self::STATUS_PARTIALLY_REFUNDED,
+            InvoiceStatus::REFUNDED => self::STATUS_REFUNDED,
+            InvoiceStatus::DISPUTED => self::STATUS_IN_PROTEST,
+            InvoiceStatus::CHARGEBACK => self::STATUS_CHARGEBACK,
+            InvoiceStatus::CANCELED => self::STATUS_CANCELED,
+            InvoiceStatus::EXPIRED => self::STATUS_EXPIRED,
+            default => throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_LISTING,
+                "A Iugu não tem o status [{$status->value}] para filtrar a listagem de faturas."
+            ),
+        };
     }
 
     /**

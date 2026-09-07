@@ -24,6 +24,7 @@ use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Exceptions\ChargingException;
 use Potelo\MultiPayment\Exceptions\UnsupportedOperationException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 
 /**
  * Assinatura no driver Stripe: criação sobre Price e Subscription, leitura com a fatura mais
@@ -1005,6 +1006,8 @@ class StripeGatewaySubscriptionTest extends TestCase
 
     public function testListSubscriptionsValidatesInputBeforeTheNetwork(): void
     {
+        $this->expectUserDeprecationMessage('listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter');
+
         $httpClient = RecordingStripeHttpClient::withResponses([]);
         $gateway = new StripeGateway();
         $customer = new Customer();
@@ -1036,10 +1039,7 @@ class StripeGatewaySubscriptionTest extends TestCase
             ],
         ]);
 
-        $customer = new Customer();
-        $customer->id = 'cus_fake123';
-
-        $subscriptions = (new StripeGateway())->listSubscriptions($customer);
+        $subscriptions = (new StripeGateway())->listSubscriptions(new SubscriptionFilter(customerId: 'cus_fake123'));
 
         $params = $httpClient->calls[0][2];
         $this->assertSame('cus_fake123', $params['customer']);
@@ -1049,6 +1049,145 @@ class StripeGatewaySubscriptionTest extends TestCase
         $this->assertSame(SubscriptionStatus::ACTIVE, $subscriptions[0]->status);
         $this->assertSame(SubscriptionStatus::CANCELED, $subscriptions[1]->status);
         $this->assertNull($subscriptions[0]->latestInvoice);
+    }
+
+    public function testListSubscriptionsMapsTheFilterToTheStripeParams(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            [
+                'object' => 'list',
+                'url' => '/v1/subscriptions',
+                'has_more' => true,
+                'data' => [self::fixture('subscriptions/active')],
+            ],
+        ]);
+
+        $list = (new StripeGateway())->listSubscriptions(new SubscriptionFilter(
+            customerId: 'cus_fake123',
+            planIdentifier: 'price_fake1',
+            status: SubscriptionStatus::TRIALING,
+            createdAfter: Carbon::createFromTimestamp(1756700000),
+            createdBefore: Carbon::createFromTimestamp(1759300000),
+            limit: 50
+        ));
+
+        $params = $httpClient->calls[0][2];
+        $this->assertSame('cus_fake123', $params['customer']);
+        $this->assertSame('price_fake1', $params['price']);
+        $this->assertSame('trialing', $params['status']);
+        $this->assertSame(1756700000, $params['created']['gte']);
+        $this->assertSame(1759300000, $params['created']['lte']);
+        $this->assertSame(50, $params['limit']);
+
+        $this->assertNull($list->total);
+        $this->assertTrue($list->hasMore);
+        $this->assertSame($list[0]->id, $list->nextCursor);
+        $this->assertSame($list->nextCursor, $list->nextPageFilter()->cursor);
+    }
+
+    public function testListSubscriptionsResolvesThePlanLookupKeyBeforeListing(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            [
+                'object' => 'list',
+                'url' => '/v1/prices',
+                'has_more' => false,
+                'data' => [['id' => 'price_fake1', 'object' => 'price', 'lookup_key' => 'plano-mensal']],
+            ],
+            ['object' => 'list', 'url' => '/v1/subscriptions', 'has_more' => false, 'data' => []],
+        ]);
+
+        (new StripeGateway())->listSubscriptions(new SubscriptionFilter(planIdentifier: 'plano-mensal'));
+
+        $this->assertStringContainsString('/v1/prices', $httpClient->calls[0][1]);
+        $this->assertSame('price_fake1', $httpClient->calls[1][2]['price']);
+    }
+
+    public function testListSubscriptionsWithACursorSendsItAsStartingAfter(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['object' => 'list', 'url' => '/v1/subscriptions', 'has_more' => false, 'data' => []],
+        ]);
+
+        $list = (new StripeGateway())->listSubscriptions(new SubscriptionFilter(cursor: 'sub_anterior'));
+
+        $this->assertSame('sub_anterior', $httpClient->calls[0][2]['starting_after']);
+        $this->assertFalse($list->hasMore);
+        $this->assertNull($list->nextPageFilter());
+    }
+
+    public function testListSubscriptionsPageTwoWalksTheCursor(): void
+    {
+        $first = self::fixture('subscriptions/active');
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['object' => 'list', 'url' => '/v1/subscriptions', 'has_more' => true, 'data' => [$first]],
+            ['object' => 'list', 'url' => '/v1/subscriptions', 'has_more' => false, 'data' => [self::fixture('subscriptions/canceled')]],
+        ]);
+
+        $list = (new StripeGateway())->listSubscriptions(new SubscriptionFilter(limit: 1, page: 2));
+
+        $this->assertCount(2, $httpClient->calls);
+        $this->assertSame($first['id'], $httpClient->calls[1][2]['starting_after']);
+        $this->assertCount(1, $list);
+        $this->assertSame(SubscriptionStatus::CANCELED, $list[0]->status);
+    }
+
+    #[DataProvider('subscriptionStatusFilterProvider')]
+    public function testTheSubscriptionStatusFilterMapsToTheStripeValue(SubscriptionStatus $status, string $stripeValue): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            ['object' => 'list', 'url' => '/v1/subscriptions', 'has_more' => false, 'data' => []],
+        ]);
+
+        (new StripeGateway())->listSubscriptions(new SubscriptionFilter(status: $status));
+
+        $this->assertSame($stripeValue, $httpClient->calls[0][2]['status']);
+    }
+
+    public static function subscriptionStatusFilterProvider(): array
+    {
+        return [
+            'pending' => [SubscriptionStatus::PENDING, 'incomplete'],
+            'trialing' => [SubscriptionStatus::TRIALING, 'trialing'],
+            'active' => [SubscriptionStatus::ACTIVE, 'active'],
+            'past_due' => [SubscriptionStatus::PAST_DUE, 'past_due'],
+            'paused' => [SubscriptionStatus::PAUSED, 'paused'],
+            'canceled' => [SubscriptionStatus::CANCELED, 'canceled'],
+            'expired' => [SubscriptionStatus::EXPIRED, 'incomplete_expired'],
+        ];
+    }
+
+    public function testListSubscriptionsPageBeyondTheEndReturnsAnEmptyPage(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([
+            [
+                'object' => 'list',
+                'url' => '/v1/subscriptions',
+                'has_more' => false,
+                'data' => [self::fixture('subscriptions/active')],
+            ],
+        ]);
+
+        $list = (new StripeGateway())->listSubscriptions(new SubscriptionFilter(limit: 1, page: 2));
+
+        $this->assertCount(1, $httpClient->calls);
+        $this->assertTrue($list->isEmpty());
+        $this->assertFalse($list->hasMore);
+        $this->assertNull($list->nextPageFilter());
+    }
+
+    public function testListSubscriptionsRejectsTheSuspendedStatusFilter(): void
+    {
+        $httpClient = RecordingStripeHttpClient::withResponses([]);
+
+        try {
+            (new StripeGateway())->listSubscriptions(new SubscriptionFilter(status: SubscriptionStatus::SUSPENDED));
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+        $this->assertSame([], $httpClient->calls);
     }
 
     private function getSubscription(string $id): Subscription

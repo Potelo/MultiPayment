@@ -40,6 +40,10 @@ use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\SubscriptionPlanChange;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
+use Potelo\MultiPayment\Listing\InvoiceList;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
+use Potelo\MultiPayment\Listing\SubscriptionList;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 use Potelo\MultiPayment\Enums\Capability;
 use Potelo\MultiPayment\Enums\CaptureMethod;
 use Potelo\MultiPayment\Enums\PlanInterval;
@@ -50,6 +54,7 @@ use Potelo\MultiPayment\Enums\DisputeStatus;
 use Potelo\MultiPayment\Enums\PaymentMethod;
 use Potelo\MultiPayment\Enums\DeclineCode;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
+use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Helpers\LogHelper;
 use Potelo\MultiPayment\Capabilities\CapabilityRestriction;
 use Potelo\MultiPayment\Models\WebhookEvent;
@@ -319,6 +324,7 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             Capability::PARTIAL_REFUND_PIX,
             Capability::INVOICE_DUPLICATION,
             Capability::INVOICE_CANCELLATION,
+            Capability::INVOICE_LISTING,
             Capability::IDEMPOTENCY,
             Capability::IDEMPOTENCY_ALL_ENDPOINTS,
             Capability::SUBSCRIPTIONS,
@@ -357,8 +363,13 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
      * `INVOICE_DUPLICATION`: só fatura Pix pendente de venda avulsa. `INVOICE_CANCELLATION`: a
      * fatura de assinatura (`in_`) só é anulada depois de finalizada pela Stripe (rascunho é
      * recusado), e o boleto pendente só depois de o voucher vencer.
+     * `INVOICE_LISTING`: a listagem exige `originType` no filtro (a Stripe tem duas origens de
+     * fatura e não há listagem única sem duplicar); os filtros de status, assinatura e
+     * vencimento valem só na origem `INVOICE`.
      * `SUBSCRIPTIONS`: a Stripe só aceita `nextBillingAt` na criação da assinatura; na troca de
-     * plano e na atualização a data da próxima cobrança segue o ciclo. `COUPONS`: o cupom da
+     * plano e na atualização a data da próxima cobrança segue o ciclo, e a listagem não filtra
+     * por `SUSPENDED` (a suspensão é `pause_collection`, fora do filtro de status da Stripe).
+     * `COUPONS`: o cupom da
      * Stripe dura meses inteiros (`duration_in_months`), então `cycles` maior que 1 exige plano
      * com intervalo mensal ou anual, e `validUntil` vira meses inteiros contados da aplicação,
      * arredondados para cima. `AUTOMATIC_PIX`: a recorrência é o mandato da assinatura,
@@ -397,9 +408,21 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
                     . ' pela Stripe (rascunho é recusado), e o boleto pendente só depois de o voucher'
                     . ' vencer.',
             ),
+            Capability::INVOICE_LISTING->value => new CapabilityRestriction(
+                description: 'A listagem exige originType no filtro: INVOICE lista as faturas de'
+                    . ' assinatura e PAYMENT_INTENT as vendas avulsas (não há listagem única sem'
+                    . ' duplicar a fatura de assinatura e o PaymentIntent dela). Os filtros de status,'
+                    . ' subscriptionId, dueAfter e dueBefore valem só na origem INVOICE, e o status'
+                    . ' filtra o ciclo de vida da fatura (PENDING, PAID, CANCELED, EXPIRED); os'
+                    . ' demais status são refinamento do pagamento e não filtram.',
+            ),
             Capability::SUBSCRIPTIONS->value => new CapabilityRestriction(
                 description: 'nextBillingAt vale só na criação da assinatura; na troca de plano e na'
-                    . ' atualização a Stripe não aceita uma data arbitrária de próxima cobrança.',
+                    . ' atualização a Stripe não aceita uma data arbitrária de próxima cobrança. Na'
+                    . ' listagem, o filtro por SUSPENDED não existe (a suspensão é pause_collection,'
+                    . ' fora do filtro de status da Stripe, e o filtro ACTIVE traz também as'
+                    . ' suspensas), e PAST_DUE filtra past_due (a assinatura unpaid, lida como'
+                    . ' PAST_DUE, fica de fora).',
             ),
             Capability::AUTOMATIC_PIX->value => new CapabilityRestriction(
                 description: 'A recorrência é o mandato de uma assinatura (paymentMethod automatic_pix'
@@ -1966,6 +1989,10 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             ? Carbon::createFromTimestamp($stripeInvoice->due_date)
             : null;
         $invoice->url = $stripeInvoice->hosted_invoice_url ?? null;
+        $subscription = $stripeInvoice->parent->subscription_details->subscription ?? null;
+        $invoice->subscriptionId = is_object($subscription)
+            ? ($subscription->id ?? $invoice->subscriptionId)
+            : ($subscription ?? $invoice->subscriptionId);
         $invoice->currency = isset($stripeInvoice->currency)
             ? strtoupper($stripeInvoice->currency)
             : $invoice->currency;
@@ -4096,12 +4123,70 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
     /**
      * @inheritDoc
      *
-     * Traz assinaturas em qualquer status (`status` `all`), sem `latestInvoice` (use
-     * `getSubscription()` para a fatura). A paginação da Stripe é por cursor, então uma
-     * página além da primeira custa uma requisição por página anterior.
+     * Filtros no `subscriptions.list`: `customerId` vai em `customer`, `planIdentifier` em
+     * `price` (o `lookup_key` é resolvido no Price antes, uma requisição a mais), `status` no
+     * filtro de status da Stripe (ver `subscriptionStatusFilterToStripe()`; sem status, o
+     * driver pede `all`, que traz assinaturas em qualquer estado) e as datas de criação em
+     * `created`. As assinaturas vêm sem `latestInvoice` (use `getSubscription()` para a
+     * fatura) e `total` vem nulo (a Stripe não informa o total). A paginação da Stripe é por
+     * cursor: com `cursor` no filtro é uma requisição; uma `page` além da primeira custa uma
+     * requisição por página anterior.
      */
-    public function listSubscriptions(Customer $customer, int $page = 1, int $limit = 100): array
+    public function listSubscriptions(
+        SubscriptionFilter|Customer $filter,
+        int $page = 1,
+        int $limit = 100
+    ): SubscriptionList|array {
+        if ($filter instanceof Customer) {
+            return $this->listSubscriptionsForCustomer($filter, $page, $limit);
+        }
+
+        $params = [
+            'status' => is_null($filter->status) ? 'all' : $this->subscriptionStatusFilterToStripe($filter->status),
+            'limit' => $filter->limit,
+            'expand' => ['data.default_payment_method', 'data.discounts.source.coupon'],
+        ];
+        if (!is_null($filter->customerId)) {
+            $params['customer'] = $filter->customerId;
+        }
+        if (!is_null($filter->planIdentifier)) {
+            $params['price'] = $this->resolveStripePriceId($filter->planIdentifier);
+        }
+        $params = self::withCreatedRange($params, $filter->createdAfter, $filter->createdBefore);
+
+        [$items, $hasMore, $nextCursor] = $this->stripeFilteredPage(
+            fn (array $params) => $this->client->subscriptions->all($params),
+            $params,
+            $filter->cursor,
+            $filter->page
+        );
+
+        return new SubscriptionList(
+            array_map(fn ($stripeSubscription) => $this->parseStripeSubscription($stripeSubscription), $items),
+            null,
+            $nextCursor,
+            $hasMore,
+            $filter
+        );
+    }
+
+    /**
+     * Forma antiga de `listSubscriptions()`, obsoleta: filtra só por cliente e devolve
+     * `Subscription[]`.
+     *
+     * @param  Customer  $customer
+     * @param  int  $page
+     * @param  int  $limit
+     * @return Subscription[]
+     * @throws GatewayException|ModelAttributeValidationException
+     */
+    private function listSubscriptionsForCustomer(Customer $customer, int $page, int $limit): array
     {
+        trigger_error(
+            'listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter',
+            E_USER_DEPRECATED
+        );
+
         if (empty($customer->id)) {
             throw ModelAttributeValidationException::required('Customer', 'id');
         }
@@ -4114,21 +4199,250 @@ class StripeGateway implements GatewayContract, SubscriptionContract, PlanContra
             throw ModelAttributeValidationException::invalid('Subscription', 'limit', 'Subscription limit must be between 1 and 100');
         }
 
-        $stripeSubscriptions = $this->stripeListPage(
-            fn (array $params) => $this->client->subscriptions->all($params),
-            [
-                'customer' => $customer->id,
-                'status' => 'all',
-                'limit' => $limit,
-                'expand' => ['data.default_payment_method', 'data.discounts.source.coupon'],
-            ],
-            $page
+        $list = $this->listSubscriptions(new SubscriptionFilter(
+            customerId: $customer->id,
+            limit: $limit,
+            page: $page
+        ));
+
+        return $list->items;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * A Stripe tem duas origens de fatura (`Invoice::$originType`) e a listagem exige a
+     * escolha em `InvoiceFilter::$originType`: sem ela a lista combinada duplicaria a fatura
+     * de assinatura e o PaymentIntent que a paga (o PaymentIntent da API atual não aponta a
+     * fatura, então o driver não tem como excluir os repetidos).
+     *
+     * Origem `INVOICE` usa `invoices.list`: `customerId` em `customer`, `subscriptionId` em
+     * `subscription`, `status` no status do Invoice (ver `invoiceStatusFilterToStripe()`),
+     * datas de criação em `created` e de vencimento em `due_date`. Cada fatura da página é
+     * lida como em `getInvoice()`, o que custa um GET a mais por fatura com PaymentIntent
+     * (o charge fica fora do limite de níveis do `expand` na listagem).
+     *
+     * Origem `PAYMENT_INTENT` usa `paymentIntents.list`, que só filtra `customerId` e datas
+     * de criação; `status`, `subscriptionId`, `dueAfter` e `dueBefore` são recusados antes da
+     * rede.
+     *
+     * `total` vem nulo (a Stripe não informa o total). A paginação é por cursor: com `cursor`
+     * no filtro é uma página por requisição; uma `page` além da primeira custa uma requisição
+     * por página anterior.
+     */
+    public function listInvoices(InvoiceFilter $filter): InvoiceList
+    {
+        if (is_null($filter->originType)) {
+            throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_LISTING,
+                'Informe InvoiceFilter::$originType no Stripe: INVOICE lista as faturas de assinatura'
+                . ' e PAYMENT_INTENT as vendas avulsas; uma listagem única duplicaria a fatura de'
+                . ' assinatura e o PaymentIntent dela.'
+            );
+        }
+
+        if ($filter->originType === InvoiceOriginType::PAYMENT_INTENT) {
+            return $this->listPaymentIntentInvoices($filter);
+        }
+
+        $params = ['limit' => $filter->limit, 'expand' => ['data.payments']];
+        if (!is_null($filter->customerId)) {
+            $params['customer'] = $filter->customerId;
+        }
+        if (!is_null($filter->subscriptionId)) {
+            $params['subscription'] = $filter->subscriptionId;
+        }
+        if (!is_null($filter->status)) {
+            $params['status'] = $this->invoiceStatusFilterToStripe($filter->status);
+        }
+        $params = self::withCreatedRange($params, $filter->createdAfter, $filter->createdBefore);
+        // o vencimento do filtro é um dia (a Iugu só aceita dia), então a janela vai do
+        // início do primeiro ao fim do último, e a fatura que vence no dia entra nos dois
+        if (!is_null($filter->dueAfter)) {
+            $params['due_date']['gte'] = $filter->dueAfter->copy()->startOfDay()->getTimestamp();
+        }
+        if (!is_null($filter->dueBefore)) {
+            $params['due_date']['lte'] = $filter->dueBefore->copy()->endOfDay()->getTimestamp();
+        }
+
+        [$items, $hasMore, $nextCursor] = $this->stripeFilteredPage(
+            fn (array $params) => $this->client->invoices->all($params),
+            $params,
+            $filter->cursor,
+            $filter->page
         );
 
-        return array_map(
-            fn ($stripeSubscription) => $this->parseStripeSubscription($stripeSubscription),
-            $stripeSubscriptions
+        return new InvoiceList(
+            array_map(fn ($stripeInvoice) => $this->parseFromStripeInvoice($stripeInvoice), $items),
+            null,
+            $nextCursor,
+            $hasMore,
+            $filter
         );
+    }
+
+    /**
+     * Listagem da origem `PAYMENT_INTENT` (venda avulsa): `paymentIntents.list` com
+     * `customerId` e datas de criação; os demais filtros não existem no endpoint e são
+     * recusados antes da rede.
+     *
+     * @param  InvoiceFilter  $filter
+     * @return InvoiceList
+     * @throws GatewayException|UnsupportedOperationException
+     */
+    private function listPaymentIntentInvoices(InvoiceFilter $filter): InvoiceList
+    {
+        foreach ([
+            'status' => $filter->status,
+            'subscriptionId' => $filter->subscriptionId,
+            'dueAfter' => $filter->dueAfter,
+            'dueBefore' => $filter->dueBefore,
+        ] as $name => $value) {
+            if (!is_null($value)) {
+                throw UnsupportedOperationException::restricted(
+                    (string) $this,
+                    Capability::INVOICE_LISTING,
+                    "A listagem de venda avulsa da Stripe (paymentIntents.list) não filtra [{$name}];"
+                    . ' filtre por customerId e datas de criação, ou liste a origem INVOICE.'
+                );
+            }
+        }
+
+        $params = [
+            'limit' => $filter->limit,
+            'expand' => array_map(static fn (string $path) => "data.{$path}", self::PAYMENT_INTENT_EXPAND),
+        ];
+        if (!is_null($filter->customerId)) {
+            $params['customer'] = $filter->customerId;
+        }
+        $params = self::withCreatedRange($params, $filter->createdAfter, $filter->createdBefore);
+
+        [$items, $hasMore, $nextCursor] = $this->stripeFilteredPage(
+            fn (array $params) => $this->client->paymentIntents->all($params),
+            $params,
+            $filter->cursor,
+            $filter->page
+        );
+
+        return new InvoiceList(
+            array_map(fn ($stripePaymentIntent) => $this->parseFromPaymentIntent($stripePaymentIntent), $items),
+            null,
+            $nextCursor,
+            $hasMore,
+            $filter
+        );
+    }
+
+    /**
+     * Acrescenta aos parâmetros o intervalo de criação (`created` com `gte` e `lte`), quando
+     * informado.
+     *
+     * @param  array  $params
+     * @param  Carbon|null  $createdAfter
+     * @param  Carbon|null  $createdBefore
+     * @return array
+     */
+    private static function withCreatedRange(array $params, ?Carbon $createdAfter, ?Carbon $createdBefore): array
+    {
+        if (!is_null($createdAfter)) {
+            $params['created']['gte'] = $createdAfter->getTimestamp();
+        }
+        if (!is_null($createdBefore)) {
+            $params['created']['lte'] = $createdBefore->getTimestamp();
+        }
+
+        return $params;
+    }
+
+    /**
+     * Filtro de status do `subscriptions.list` para um status genérico. `SUSPENDED` é
+     * recusado: a suspensão da lib é `pause_collection`, que o filtro de status da Stripe não
+     * cobre (e o filtro `active` traz também as assinaturas suspensas). `PAST_DUE` filtra
+     * `past_due`; a assinatura `unpaid`, que a lib também lê como `PAST_DUE`, fica de fora.
+     *
+     * @param  SubscriptionStatus  $status
+     * @return string
+     * @throws UnsupportedOperationException
+     */
+    private function subscriptionStatusFilterToStripe(SubscriptionStatus $status): string
+    {
+        return match ($status) {
+            SubscriptionStatus::PENDING => 'incomplete',
+            SubscriptionStatus::TRIALING => 'trialing',
+            SubscriptionStatus::ACTIVE => 'active',
+            SubscriptionStatus::PAST_DUE => 'past_due',
+            SubscriptionStatus::PAUSED => 'paused',
+            SubscriptionStatus::CANCELED => 'canceled',
+            SubscriptionStatus::EXPIRED => 'incomplete_expired',
+            default => throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::SUBSCRIPTIONS,
+                'A Stripe não filtra assinatura por SUSPENDED: a suspensão é pause_collection, fora'
+                . ' do filtro de status; filtre por ACTIVE e leia o status de cada assinatura.'
+            ),
+        };
+    }
+
+    /**
+     * Filtro de status do `invoices.list` para um status genérico. O filtro da Stripe cobre o
+     * ciclo de vida do Invoice: `PENDING` filtra `open` (o rascunho `draft`, que a lib também
+     * lê como `PENDING`, fica de fora), `PAID` filtra `paid`, `CANCELED` filtra `void` e
+     * `EXPIRED` filtra `uncollectible`. Os demais status da lib são refinamento do pagamento
+     * (charge e PaymentIntent) e não têm filtro na Stripe.
+     *
+     * @param  InvoiceStatus  $status
+     * @return string
+     * @throws UnsupportedOperationException
+     */
+    private function invoiceStatusFilterToStripe(InvoiceStatus $status): string
+    {
+        return match ($status) {
+            InvoiceStatus::PENDING => 'open',
+            InvoiceStatus::PAID => 'paid',
+            InvoiceStatus::CANCELED => 'void',
+            InvoiceStatus::EXPIRED => 'uncollectible',
+            default => throw UnsupportedOperationException::restricted(
+                (string) $this,
+                Capability::INVOICE_LISTING,
+                "A Stripe não filtra fatura por [{$status->value}]: o filtro cobre o ciclo de vida do"
+                . ' Invoice (PENDING, PAID, CANCELED, EXPIRED); o refinamento de pagamento vem na'
+                . ' leitura de cada fatura.'
+            ),
+        };
+    }
+
+    /**
+     * Uma página de uma lista da Stripe pelo filtro, devolvida como
+     * `[itens, hasMore, nextCursor]`. Com cursor, uma única requisição a partir dele; sem
+     * cursor, as páginas anteriores à pedida são percorridas, uma requisição por página, e a
+     * lista que acabar antes devolve a página vazia.
+     *
+     * @param  callable  $fetch  recebe os parâmetros da listagem e devolve a `\Stripe\Collection`
+     * @param  array  $params
+     * @param  string|null  $cursor
+     * @param  int  $page
+     * @return array{0: array, 1: bool, 2: string|null}
+     */
+    private function stripeFilteredPage(callable $fetch, array $params, ?string $cursor, int $page): array
+    {
+        if (!is_null($cursor)) {
+            $params['starting_after'] = $cursor;
+            $page = 1;
+        }
+
+        for ($current = 1; ; $current++) {
+            $collection = $this->stripeRequest(fn () => $fetch($params));
+            $data = $collection->data ?? [];
+            $hasMore = !empty($collection->has_more) && !empty($data);
+            if ($current === $page) {
+                return [$data, $hasMore, $hasMore ? end($data)->id : null];
+            }
+            if (!$hasMore) {
+                return [[], false, null];
+            }
+            $params['starting_after'] = end($data)->id;
+        }
     }
 
     /**

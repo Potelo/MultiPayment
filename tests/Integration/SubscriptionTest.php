@@ -11,6 +11,7 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\CreditCard;
 use Potelo\MultiPayment\Models\Subscription;
 use Potelo\MultiPayment\Models\SubscriptionItem;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 use Potelo\MultiPayment\Facades\MultiPayment;
 use Potelo\MultiPayment\Models\SubscriptionDiscount;
 use Potelo\MultiPayment\Enums\InvoiceStatus;
@@ -215,9 +216,11 @@ class SubscriptionTest extends TestCase
         $this->assertArrayNotHasKey('mp_canceled_at', $descancelada->metadata ?? []);
 
         $doCliente = MultiPayment::setGateway(self::GATEWAY)
-            ->listSubscriptions($subscription->customer->id);
+            ->listSubscriptions(new SubscriptionFilter(customerId: $subscription->customer->id));
         $this->assertCount(1, $doCliente);
         $this->assertSame($subscription->id, $doCliente[0]->id);
+        $this->assertFalse($doCliente->hasMore);
+        $this->assertNull($doCliente->nextPageFilter());
     }
 
     /**

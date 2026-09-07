@@ -22,6 +22,7 @@ use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Enums\DisputeStatus;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
 
 /**
  * Cenários específicos do gateway Stripe na sandbox real. O fluxo de cartão é token-only:
@@ -733,6 +734,73 @@ class StripeGatewayTest extends TestCase
             ->contestDispute($dispute->id, ['uncategorized_text' => 'winning_evidence']);
         $this->assertContains($contested->status, [DisputeStatus::UNDER_REVIEW, DisputeStatus::WON]);
         $this->assertFalse($contested->status->isLost());
+    }
+
+    /**
+     * A listagem de venda avulsa (origem `PAYMENT_INTENT`) filtra por cliente e devolve a
+     * fatura criada; o filtro sem `originType` é recusado antes da rede.
+     *
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldListPaymentIntentInvoicesByCustomer($gateway)
+    {
+        $customerData = self::customerWithoutAddress();
+        $invoice = MultiPayment::setGateway($gateway)->newInvoice()
+            ->addCustomer($customerData['name'], $customerData['email'], $customerData['taxDocument'])
+            ->addItem('Listagem avulsa', 5000, 1)
+            ->setAvailablePaymentMethods([PaymentMethod::PIX])
+            ->create();
+
+        $lista = MultiPayment::setGateway($gateway)->listInvoices(new InvoiceFilter(
+            customerId: $invoice->customer->id,
+            originType: InvoiceOriginType::PAYMENT_INTENT,
+            limit: 10
+        ));
+
+        $this->assertCount(1, $lista);
+        $this->assertSame($invoice->id, $lista[0]->id);
+        $this->assertSame(InvoiceOriginType::PAYMENT_INTENT, $lista[0]->originType);
+        $this->assertSame(InvoiceStatus::PENDING, $lista[0]->status);
+        $this->assertNull($lista->total);
+        $this->assertFalse($lista->hasMore);
+
+        try {
+            MultiPayment::setGateway($gateway)->listInvoices(new InvoiceFilter(customerId: $invoice->customer->id));
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::INVOICE_LISTING, $e->capability);
+        }
+
+        MultiPayment::setGateway($gateway)->cancelInvoice($invoice->id);
+    }
+
+    /**
+     * A listagem da origem `INVOICE` filtra por cliente e devolve a fatura de assinatura com
+     * o mesmo parse de `getInvoice()`: origem, status e vínculo pelo cliente preenchidos.
+     *
+     * @return void
+     */
+    #[DataProvider('stripeGatewayDataProvider')]
+    public function testShouldListStripeInvoicesOfTheCustomer($gateway)
+    {
+        $customer = $this->createCustomer($gateway, self::customerWithoutAddress());
+        $stripeInvoiceId = $this->createOpenStripeInvoice($customer->id);
+
+        $lista = MultiPayment::setGateway($gateway)->listInvoices(new InvoiceFilter(
+            customerId: $customer->id,
+            originType: InvoiceOriginType::INVOICE,
+            limit: 10
+        ));
+
+        $this->assertCount(1, $lista);
+        $this->assertSame($stripeInvoiceId, $lista[0]->id);
+        $this->assertSame(InvoiceOriginType::INVOICE, $lista[0]->originType);
+        $this->assertSame(InvoiceStatus::PENDING, $lista[0]->status);
+        $this->assertSame($customer->id, $lista[0]->customer->id);
+        $this->assertFalse($lista->hasMore);
+
+        MultiPayment::setGateway($gateway)->cancelInvoice($stripeInvoiceId);
     }
 
     /**

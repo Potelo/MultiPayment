@@ -14,6 +14,7 @@ use Potelo\MultiPayment\Enums\InvoiceStatus;
 use Potelo\MultiPayment\Enums\RefundStatus;
 use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Enums\PaymentMethod;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
 
 class MultiPaymentTest extends TestCase
 {
@@ -552,6 +553,46 @@ class MultiPaymentTest extends TestCase
 
         $relida = MultiPayment::setGateway('iugu')->getInvoice($invoice->id);
         $this->assertSame($pixExpiresAt->format('Y-m-d'), $relida->dueDate->format('Y-m-d'));
+
+        MultiPayment::setGateway('iugu')->cancelInvoice($invoice->id);
+    }
+
+    /**
+     * A listagem de faturas da Iugu filtra por cliente e por status, informa o total e a
+     * fatura listada carrega o mesmo id da criada.
+     */
+    public function testShouldListIuguInvoicesFilteredByCustomerAndStatus(): void
+    {
+        $invoice = MultiPayment::setGateway('iugu')->newInvoice()
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->addCustomer('Fake Customer', 'email@exemplo.com', '20176996915')
+            ->addItem('teste listagem', 1000, 1)
+            ->setPixExpiresAt(now()->addDay())
+            ->create();
+
+        // a fatura recém-criada demora alguns segundos para aparecer na listagem da Iugu
+        $lista = null;
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            $lista = MultiPayment::setGateway('iugu')->listInvoices(new InvoiceFilter(
+                customerId: $invoice->customer->id,
+                status: InvoiceStatus::PENDING,
+                limit: 10
+            ));
+            if (count($lista) > 0) {
+                break;
+            }
+            sleep(3);
+        }
+        if (count($lista) === 0) {
+            $this->fail('A fatura criada não apareceu na listagem da Iugu em 30 segundos');
+        }
+
+        $this->assertSame(1, $lista->total);
+        $this->assertCount(1, $lista);
+        $this->assertSame($invoice->id, $lista[0]->id);
+        $this->assertSame(InvoiceStatus::PENDING, $lista[0]->status);
+        $this->assertFalse($lista->hasMore);
+        $this->assertNull($lista->nextPageFilter());
 
         MultiPayment::setGateway('iugu')->cancelInvoice($invoice->id);
     }

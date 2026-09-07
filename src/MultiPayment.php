@@ -19,6 +19,11 @@ use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Models\WebhookEvent;
+use Potelo\MultiPayment\Listing\InvoiceList;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
+use Potelo\MultiPayment\Listing\SubscriptionList;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
+use Potelo\MultiPayment\Contracts\InvoiceContract;
 use Potelo\MultiPayment\Contracts\PlanContract;
 use Potelo\MultiPayment\Contracts\DisputeContract;
 use Potelo\MultiPayment\Contracts\GatewayContract;
@@ -245,25 +250,52 @@ class MultiPayment
     }
 
     /**
-     * List the subscriptions of a customer
+     * Lista as assinaturas que casam com o filtro, uma página por chamada; a página seguinte
+     * vem de uma nova chamada com o filtro de `SubscriptionList::nextPageFilter()`. A forma
+     * antiga, com o cliente (model ou id) e a página nos argumentos, está obsoleta: filtra só
+     * por cliente e devolve `Subscription[]`, com aviso `E_USER_DEPRECATED`.
      *
-     * @param  Customer|string  $customer
-     * @param  int  $page
-     * @param  int  $limit
+     * @param  SubscriptionFilter|Customer|string  $filter  o filtro, ou o cliente na forma antiga
+     * @param  int  $page  só na forma antiga
+     * @param  int  $limit  só na forma antiga
      *
-     * @return Subscription[]
+     * @return SubscriptionList|Subscription[]  `SubscriptionList` com o filtro; `Subscription[]` na forma antiga
      * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     * @throws ConfigurationException|ModelAttributeValidationException
      */
-    public function listSubscriptions(Customer|string $customer, int $page = 1, int $limit = 100): array
-    {
-        if (is_string($customer)) {
+    public function listSubscriptions(
+        SubscriptionFilter|Customer|string $filter,
+        int $page = 1,
+        int $limit = 100
+    ): SubscriptionList|array {
+        if (is_string($filter)) {
             $customerModel = new Customer();
-            $customerModel->id = $customer;
-            $customer = $customerModel;
+            $customerModel->id = $filter;
+            $filter = $customerModel;
         }
 
         return $this->gatewayImplementing(SubscriptionContract::class, Capability::SUBSCRIPTIONS)
-            ->listSubscriptions($customer, $page, $limit);
+            ->listSubscriptions($filter, $page, $limit);
+    }
+
+    /**
+     * Lista as faturas que casam com o filtro, uma página por chamada; a página seguinte vem
+     * de uma nova chamada com o filtro de `InvoiceList::nextPageFilter()`. Filtro sem
+     * equivalente no gateway lança `UnsupportedOperationException` antes de qualquer
+     * requisição; a restrição consultável de `Capability::INVOICE_LISTING` descreve o que
+     * cada gateway aceita.
+     *
+     * @param  InvoiceFilter  $filter
+     * @return InvoiceList
+     * @throws GatewayException|GatewayNotAvailableException|UnsupportedOperationException
+     * @throws ConfigurationException|ModelAttributeValidationException
+     */
+    public function listInvoices(InvoiceFilter $filter): InvoiceList
+    {
+        /** @var InvoiceContract $gateway */
+        $gateway = $this->gatewayImplementing(InvoiceContract::class, Capability::INVOICE_LISTING);
+
+        return $gateway->listInvoices($filter);
     }
 
     /**

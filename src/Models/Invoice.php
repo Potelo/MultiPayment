@@ -241,6 +241,13 @@ class Invoice extends Model
     public ?int $fee = null;
 
     /**
+     * Id da assinatura que gerou a fatura, preenchido na leitura; nulo na venda avulsa.
+     *
+     * @var string|null
+     */
+    public ?string $subscriptionId = null;
+
+    /**
      * @var string|null
      */
     public ?string $gateway = null;

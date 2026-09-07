@@ -24,6 +24,10 @@ use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
 use Potelo\MultiPayment\Exceptions\NotFoundException;
 use Potelo\MultiPayment\Exceptions\RefundNotSupportedException;
 use Potelo\MultiPayment\Gateways\Concerns\ChecksCapabilities;
+use Potelo\MultiPayment\Listing\InvoiceList;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
+use Potelo\MultiPayment\Listing\SubscriptionList;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 use Potelo\MultiPayment\Models\AutomaticPix;
 use Potelo\MultiPayment\Models\AutomaticPixCancellation;
 use Potelo\MultiPayment\Models\AutomaticPixCharge;
@@ -466,6 +470,65 @@ class FakeGateway implements
 
     /**
      * @inheritDoc
+     *
+     * Filtra as faturas do estado em memória, paginando por `page` ou pelo cursor da página
+     * anterior. `originType` é ignorado (o fake tem uma origem só) e `total` vem nulo, como
+     * nas listagens reais que não informam total. O fake não reproduz as restrições de filtro
+     * dos gateways (o `originType` obrigatório do Stripe, o filtro por assinatura recusado na
+     * Iugu): consulte `restriction(Capability::INVOICE_LISTING)` do driver real.
+     */
+    public function listInvoices(InvoiceFilter $filter): InvoiceList
+    {
+        $this->maybeFail();
+
+        $matches = array_values(array_filter(
+            $this->invoices,
+            static fn (Invoice $invoice) => (is_null($filter->customerId) || $invoice->customer?->id === $filter->customerId)
+                && (is_null($filter->subscriptionId) || $invoice->subscriptionId === $filter->subscriptionId)
+                && (is_null($filter->status) || $invoice->status === $filter->status)
+                && (is_null($filter->createdAfter)
+                    || (!is_null($invoice->createdAt) && $invoice->createdAt->greaterThanOrEqualTo($filter->createdAfter)))
+                && (is_null($filter->createdBefore)
+                    || (!is_null($invoice->createdAt) && $invoice->createdAt->lessThanOrEqualTo($filter->createdBefore)))
+                && (is_null($filter->dueAfter)
+                    || (!is_null($invoice->dueDate) && $invoice->dueDate->greaterThanOrEqualTo($filter->dueAfter)))
+                && (is_null($filter->dueBefore)
+                    || (!is_null($invoice->dueDate) && $invoice->dueDate->lessThanOrEqualTo($filter->dueBefore)))
+        ));
+
+        [$items, $total, $nextCursor, $hasMore] = $this->paginateInMemory($matches, $filter->cursor, $filter->page, $filter->limit);
+
+        return new InvoiceList($items, $total, $nextCursor, $hasMore, $filter);
+    }
+
+    /**
+     * Fatia uma lista filtrada em memória na página pedida, devolvendo
+     * `[itens, total, nextCursor, hasMore]`; o cursor é o deslocamento da página seguinte. O
+     * total é sempre nulo, como na maior parte das listagens reais (só a listagem de faturas
+     * da Iugu informa um total), para o teste exercitar o caminho que vale em produção.
+     *
+     * @param  array  $matches
+     * @param  string|null  $cursor
+     * @param  int  $page
+     * @param  int  $limit
+     * @return array{0: array, 1: null, 2: string|null, 3: bool}
+     */
+    private function paginateInMemory(array $matches, ?string $cursor, int $page, int $limit): array
+    {
+        $start = is_null($cursor) ? ($page - 1) * $limit : (int) $cursor;
+        $items = array_slice($matches, $start, $limit);
+        $hasMore = $start + count($items) < count($matches);
+
+        return [
+            $items,
+            null,
+            $hasMore ? (string) ($start + count($items)) : null,
+            $hasMore,
+        ];
+    }
+
+    /**
+     * @inheritDoc
      */
     public function refundInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Refund
     {
@@ -820,15 +883,46 @@ class FakeGateway implements
 
     /**
      * @inheritDoc
+     *
+     * Filtra as assinaturas do estado em memória, paginando por `page` ou pelo cursor da
+     * página anterior; `total` vem nulo, como nas listagens reais de assinatura. O filtro por
+     * `status` casa o status exato, enquanto o gateway real pode ser mais largo (ver a
+     * restrição de `Capability::SUBSCRIPTIONS`). A forma antiga, com o `Customer`, devolve
+     * todas as assinaturas do cliente sem paginar, com aviso `E_USER_DEPRECATED`.
      */
-    public function listSubscriptions(Customer $customer, int $page = 1, int $limit = 100): array
-    {
+    public function listSubscriptions(
+        SubscriptionFilter|Customer $filter,
+        int $page = 1,
+        int $limit = 100
+    ): SubscriptionList|array {
         $this->maybeFail();
 
-        return array_values(array_filter(
+        if ($filter instanceof Customer) {
+            trigger_error(
+                'listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter',
+                E_USER_DEPRECATED
+            );
+
+            return array_values(array_filter(
+                $this->subscriptions,
+                fn (Subscription $subscription) => $subscription->customer?->id === $filter->id
+            ));
+        }
+
+        $matches = array_values(array_filter(
             $this->subscriptions,
-            fn (Subscription $subscription) => $subscription->customer?->id === $customer->id
+            static fn (Subscription $subscription) => (is_null($filter->customerId) || $subscription->customer?->id === $filter->customerId)
+                && (is_null($filter->planIdentifier) || $subscription->planId === $filter->planIdentifier)
+                && (is_null($filter->status) || $subscription->status === $filter->status)
+                && (is_null($filter->createdAfter)
+                    || (!is_null($subscription->createdAt) && $subscription->createdAt->greaterThanOrEqualTo($filter->createdAfter)))
+                && (is_null($filter->createdBefore)
+                    || (!is_null($subscription->createdAt) && $subscription->createdAt->lessThanOrEqualTo($filter->createdBefore)))
         ));
+
+        [$items, $total, $nextCursor, $hasMore] = $this->paginateInMemory($matches, $filter->cursor, $filter->page, $filter->limit);
+
+        return new SubscriptionList($items, $total, $nextCursor, $hasMore, $filter);
     }
 
     /**

@@ -23,6 +23,8 @@ use Potelo\MultiPayment\Enums\SubscriptionStatus;
 use Potelo\MultiPayment\Enums\WebhookEventType;
 use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Subscription;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 use Potelo\MultiPayment\Exceptions\CardDeclinedException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 use Potelo\MultiPayment\Exceptions\ModelAttributeValidationException;
@@ -458,5 +460,109 @@ class FakeGatewayTest extends TestCase
 
         $this->assertCount(1, $fakes['iugu']->createdInvoices());
         $this->assertCount(0, $fakes['iugu_b']->createdInvoices());
+    }
+
+    public function testListInvoicesFiltersTheInMemoryState(): void
+    {
+        MultiPaymentFacade::fake();
+
+        $pendente = MultiPaymentFacade::newInvoice()
+            ->addCustomer('Fulano', 'fulano@exemplo.com', '20176996915')
+            ->addItem('Mensalidade', 10000, 1)
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->create();
+        MultiPaymentFacade::newInvoice()
+            ->addCustomer('Ciclano', 'ciclano@exemplo.com', '20176996915')
+            ->addItem('Avulso', 5000, 1)
+            ->setPaymentMethod(PaymentMethod::BANK_SLIP)
+            ->create();
+
+        $doCliente = MultiPaymentFacade::listInvoices(new InvoiceFilter(customerId: $pendente->customer->id));
+        $this->assertCount(1, $doCliente);
+        // o fake não promete total, como a maior parte das listagens reais
+        $this->assertNull($doCliente->total);
+        $this->assertSame($pendente->id, $doCliente[0]->id);
+
+        $pendentes = MultiPaymentFacade::listInvoices(new InvoiceFilter(status: InvoiceStatus::PENDING));
+        $this->assertCount(2, $pendentes);
+        $this->assertFalse($pendentes->hasMore);
+    }
+
+    public function testListInvoicesFiltersByDateWindowsAndSubscription(): void
+    {
+        MultiPaymentFacade::fake();
+
+        $dentro = MultiPaymentFacade::newInvoice()
+            ->addCustomer('Fulano', 'fulano@exemplo.com', '20176996915')
+            ->addItem('Mensalidade', 10000, 1)
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->create();
+        $dentro->createdAt = \Carbon\Carbon::parse('2026-09-10');
+        $dentro->dueDate = \Carbon\Carbon::parse('2026-09-15');
+        $dentro->subscriptionId = 'fake_sub_1';
+        $fora = MultiPaymentFacade::newInvoice()
+            ->addCustomer('Ciclano', 'ciclano@exemplo.com', '20176996915')
+            ->addItem('Avulso', 5000, 1)
+            ->setPaymentMethod(PaymentMethod::PIX)
+            ->create();
+        $fora->createdAt = \Carbon\Carbon::parse('2026-08-01');
+        $fora->dueDate = \Carbon\Carbon::parse('2026-08-05');
+
+        $porJanela = MultiPaymentFacade::listInvoices(new InvoiceFilter(
+            createdAfter: \Carbon\Carbon::parse('2026-09-01'),
+            createdBefore: \Carbon\Carbon::parse('2026-09-30'),
+            dueAfter: \Carbon\Carbon::parse('2026-09-10'),
+            dueBefore: \Carbon\Carbon::parse('2026-09-20'),
+        ));
+        $this->assertCount(1, $porJanela);
+        $this->assertSame($dentro->id, $porJanela[0]->id);
+
+        $porAssinatura = MultiPaymentFacade::listInvoices(new InvoiceFilter(subscriptionId: 'fake_sub_1'));
+        $this->assertCount(1, $porAssinatura);
+        $this->assertSame($dentro->id, $porAssinatura[0]->id);
+    }
+
+    public function testTheLegacyListSubscriptionsFormIsDeprecatedOnTheFake(): void
+    {
+        $this->expectUserDeprecationMessage('listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter');
+
+        MultiPaymentFacade::fake();
+
+        $subscription = MultiPaymentFacade::newSubscription()
+            ->setPlanId('plano-mensal')
+            ->setCustomerId('fake_cus_1')
+            ->create();
+
+        $doCliente = MultiPaymentFacade::listSubscriptions('fake_cus_1');
+
+        $this->assertIsArray($doCliente);
+        $this->assertCount(1, $doCliente);
+        $this->assertSame($subscription->id, $doCliente[0]->id);
+    }
+
+    public function testListSubscriptionsFiltersAndPaginatesTheInMemoryState(): void
+    {
+        MultiPaymentFacade::fake();
+
+        foreach (['plano-a', 'plano-a', 'plano-b'] as $index => $plano) {
+            MultiPaymentFacade::newSubscription()
+                ->setPlanId($plano)
+                ->setCustomerId("fake_cus_{$index}")
+                ->create();
+        }
+
+        $primeira = MultiPaymentFacade::listSubscriptions(new SubscriptionFilter(planIdentifier: 'plano-a', limit: 1));
+        $this->assertCount(1, $primeira);
+        $this->assertNull($primeira->total);
+        $this->assertTrue($primeira->hasMore);
+
+        $segunda = MultiPaymentFacade::listSubscriptions($primeira->nextPageFilter());
+        $this->assertCount(1, $segunda);
+        $this->assertFalse($segunda->hasMore);
+        $this->assertNull($segunda->nextPageFilter());
+        $this->assertNotSame($primeira[0]->id, $segunda[0]->id);
+
+        $porStatus = MultiPaymentFacade::listSubscriptions(new SubscriptionFilter(status: SubscriptionStatus::ACTIVE));
+        $this->assertCount(3, $porStatus);
     }
 }

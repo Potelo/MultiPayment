@@ -31,6 +31,7 @@ use Potelo\MultiPayment\Enums\PlanInterval;
 use Potelo\MultiPayment\Enums\ProrationBehavior;
 use Potelo\MultiPayment\Tests\Unit\RecordingLogger;
 use Potelo\MultiPayment\Enums\SubscriptionStatus;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
 
 class IuguGatewaySubscriptionTest extends TestCase
 {
@@ -1251,6 +1252,8 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     public function testListSubscriptionsPaginatesByCustomer(): void
     {
+        $this->expectUserDeprecationMessage('listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter');
+
         $api = new QueuedIuguApiRequest([
             (object) ['items' => [$this->subscriptionResponse(), $this->subscriptionResponse(['id' => 'sub_2'])]],
         ]);
@@ -2001,6 +2004,7 @@ class IuguGatewaySubscriptionTest extends TestCase
 
     public function testListSubscriptionsRequiresTheCustomerId(): void
     {
+        $this->expectUserDeprecationMessage('listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter');
         $this->expectException(ModelAttributeValidationException::class);
 
         (new IuguGateway(new QueuedIuguApiRequest([])))->listSubscriptions(new Customer());
@@ -2013,6 +2017,7 @@ class IuguGatewaySubscriptionTest extends TestCase
         $customer->id = 'cus_1';
         $gateway = new IuguGateway(new QueuedIuguApiRequest([]));
 
+        $this->expectUserDeprecationMessage('listSubscriptions() com Customer está obsoleto desde 2026-09-07; use um SubscriptionFilter');
         $this->expectException(ModelAttributeValidationException::class);
         $this->expectExceptionMessageMatches($mensagem);
 
@@ -2074,10 +2079,94 @@ class IuguGatewaySubscriptionTest extends TestCase
     {
         $api = new QueuedIuguApiRequest([[$this->subscriptionResponse()]]);
 
-        $customer = new Customer();
-        $customer->id = 'cus_1';
+        $list = (new IuguGateway($api))->listSubscriptions(new SubscriptionFilter(customerId: 'cus_1'));
 
-        $this->assertCount(1, (new IuguGateway($api))->listSubscriptions($customer));
+        $this->assertCount(1, $list);
+        $this->assertNull($list->total);
+        $this->assertFalse($list->hasMore);
+    }
+
+    public function testListSubscriptionsMapsTheFilterToTheIuguQuery(): void
+    {
+        $api = new QueuedIuguApiRequest([
+            (object) ['totalItems' => 2, 'items' => [
+                $this->subscriptionResponse(),
+                $this->subscriptionResponse(['id' => 'sub_2']),
+            ]],
+        ]);
+
+        $list = (new IuguGateway($api))->listSubscriptions(new SubscriptionFilter(
+            customerId: 'cus_1',
+            planIdentifier: 'plano_mensal',
+            status: SubscriptionStatus::ACTIVE,
+            createdAfter: Carbon::parse('2026-09-01T00:00:00-03:00'),
+            createdBefore: Carbon::parse('2026-09-30T23:59:59-03:00'),
+            limit: 2,
+            page: 2
+        ));
+
+        parse_str((string) parse_url($api->calls[0]['url'], PHP_URL_QUERY), $query);
+        $this->assertSame([
+            'customer_id' => 'cus_1',
+            'query' => 'plano_mensal',
+            'status_filter' => 'active',
+            'created_at_from' => '2026-09-01T00:00:00-03:00',
+            'created_at_to' => '2026-09-30T23:59:59-03:00',
+            'limit' => '2',
+            'start' => '2',
+        ], $query);
+
+        // página cheia: o totalItems da Iugu não é confiável neste endpoint, então o total
+        // fica nulo e a existência de página seguinte é deduzida do tamanho da página
+        $this->assertNull($list->total);
+        $this->assertTrue($list->hasMore);
+        $this->assertSame('4', $list->nextCursor);
+        $this->assertSame('4', $list->nextPageFilter()->cursor);
+        $this->assertSame('sub_2', $list[1]->id);
+    }
+
+    public function testTheSuspendedStatusFilterMapsToTheIuguValue(): void
+    {
+        $api = new QueuedIuguApiRequest([(object) ['items' => []]]);
+
+        (new IuguGateway($api))->listSubscriptions(new SubscriptionFilter(status: SubscriptionStatus::SUSPENDED));
+
+        $this->assertStringContainsString('status_filter=suspended', $api->calls[0]['url']);
+    }
+
+    public function testListSubscriptionsWithACursorStartsFromIt(): void
+    {
+        $api = new QueuedIuguApiRequest([(object) ['items' => [$this->subscriptionResponse()]]]);
+
+        $list = (new IuguGateway($api))->listSubscriptions(new SubscriptionFilter(limit: 5, page: 3, cursor: '40'));
+
+        $this->assertStringContainsString('start=40', $api->calls[0]['url']);
+        $this->assertFalse($list->hasMore);
+        $this->assertNull($list->nextPageFilter());
+    }
+
+    public function testListSubscriptionsRejectsAStatusTheIuguCannotFilter(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+
+        try {
+            (new IuguGateway($api))->listSubscriptions(new SubscriptionFilter(status: SubscriptionStatus::PAST_DUE));
+            $this->fail('Esperava UnsupportedOperationException');
+        } catch (UnsupportedOperationException $e) {
+            $this->assertSame(Capability::SUBSCRIPTIONS, $e->capability);
+            $this->assertSame(UnsupportedOperationException::REASON_GATEWAY_LIMITATION, $e->reason);
+        }
+        $this->assertCount(0, $api->calls);
+    }
+
+    public function testListSubscriptionsRejectsACursorFromAnotherGateway(): void
+    {
+        $api = new QueuedIuguApiRequest([]);
+
+        $this->expectException(ModelAttributeValidationException::class);
+        $this->expectExceptionMessageMatches('/not a cursor produced by the iugu gateway/');
+
+        (new IuguGateway($api))->listSubscriptions(new SubscriptionFilter(cursor: 'sub_abc'));
     }
 
     /**

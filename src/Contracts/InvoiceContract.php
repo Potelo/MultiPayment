@@ -7,6 +7,8 @@ use Potelo\MultiPayment\Models\Invoice;
 use Potelo\MultiPayment\Models\Refund;
 use Potelo\MultiPayment\Models\Customer;
 use Potelo\MultiPayment\Models\CreditCard;
+use Potelo\MultiPayment\Listing\InvoiceList;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
 use Potelo\MultiPayment\Exceptions\GatewayException;
 use Potelo\MultiPayment\Exceptions\GatewayNotAvailableException;
 
@@ -82,6 +84,21 @@ interface InvoiceContract
      * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
      */
     public function captureInvoice(Invoice $invoice, ?int $amount = null, ?string $idempotencyKey = null): Invoice;
+
+    /**
+     * Lista as faturas que casam com o filtro, uma página por chamada. Campo nulo do filtro
+     * não filtra; filtro sem equivalente no gateway lança `UnsupportedOperationException`
+     * antes de qualquer requisição, e a restrição consultável de `Capability::INVOICE_LISTING`
+     * descreve o que o gateway aceita. A página seguinte vem de uma nova chamada com o filtro
+     * de `InvoiceList::nextPageFilter()`.
+     *
+     * @param  InvoiceFilter  $filter
+     * @return InvoiceList
+     * @throws GatewayException|GatewayNotAvailableException
+     * @throws \Potelo\MultiPayment\Exceptions\UnsupportedOperationException
+     * @throws \Potelo\MultiPayment\Exceptions\ModelAttributeValidationException
+     */
+    public function listInvoices(InvoiceFilter $filter): InvoiceList;
 
     /**
      * Charge an invoice with a credit card

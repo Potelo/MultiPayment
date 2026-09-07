@@ -15,6 +15,7 @@ MultiPayment permite gerenciar pagamentos de diversos gateways de pagamento. Atu
   - [Opções extras do gateway](#opções-extras-do-gateway)
   - [Idempotência](#idempotência)
 - [Webhooks](#webhooks)
+- [Listagem](#listagem)
 - [Testando a sua aplicação](#testando-a-sua-aplicação)
 - [Utilizando](#utilizando)
   - [MultiPayment](#multipayment)
@@ -242,9 +243,10 @@ coluna "Restrições" é o que `restriction()` devolve para cada gateway.
 | `REFUND_BANK_SLIP` | Estorno pela API de uma fatura paga com boleto. | limitação do gateway | limitação do gateway |  |
 | `INVOICE_DUPLICATION` | Segunda via de uma fatura pendente com nova data de vencimento (`duplicateInvoice`). | sim | sim | Stripe: Só fatura Pix pendente de venda avulsa (PaymentIntent); cartão, boleto, outro estado ou fatura de assinatura são recusados. |
 | `INVOICE_CANCELLATION` | Cancelamento de uma fatura ainda não paga (`cancelInvoice`). | sim | sim | Stripe: A fatura de assinatura (objeto Invoice) só é anulada depois de finalizada pela Stripe (rascunho é recusado), e o boleto pendente só depois de o voucher vencer. |
+| `INVOICE_LISTING` | Listagem de faturas com filtros e paginação (`listInvoices`). | sim | sim | Iugu: A API da Iugu não filtra fatura por assinatura (subscriptionId é recusado); o filtro por status não cobre PROCESSING (a Iugu não tem o estado), PENDING não traz o rascunho (draft) e AUTHORIZED filtra o estado in_analysis.<br>Stripe: A listagem exige originType no filtro: INVOICE lista as faturas de assinatura e PAYMENT_INTENT as vendas avulsas (não há listagem única sem duplicar a fatura de assinatura e o PaymentIntent dela). Os filtros de status, subscriptionId, dueAfter e dueBefore valem só na origem INVOICE, e o status filtra o ciclo de vida da fatura (PENDING, PAID, CANCELED, EXPIRED); os demais status são refinamento do pagamento e não filtram. |
 | `IDEMPOTENCY` | Chave de idempotência (`idempotencyKey`) honrada em toda operação de escrita, pelo gateway ou pela deduplicação da lib (`IdempotencyStore`). | sim | sim |  |
 | `IDEMPOTENCY_ALL_ENDPOINTS` | Chave de idempotência honrada pelo próprio gateway em toda operação de escrita, sem depender da deduplicação da lib. | limitação do gateway | sim |  |
-| `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | sim | Stripe: nextBillingAt vale só na criação da assinatura; na troca de plano e na atualização a Stripe não aceita uma data arbitrária de próxima cobrança. |
+| `SUBSCRIPTIONS` | Assinatura recorrente: criar, buscar, atualizar, suspender, retomar, cancelar, trocar de plano e listar. | sim | sim | Iugu: Na listagem, o filtro por status cobre só ACTIVE e SUSPENDED, e a Iugu descreve a assinatura por flags: ACTIVE traz também as que a lib lê como TRIALING e PAST_DUE (as três têm a flag active), e SUSPENDED traz as que a lib lê como CANCELED (a emulação do cancelamento suspende a assinatura); os demais status não filtram. planIdentifier usa a busca textual da Iugu (query), que pode casar correspondência parcial.<br>Stripe: nextBillingAt vale só na criação da assinatura; na troca de plano e na atualização a Stripe não aceita uma data arbitrária de próxima cobrança. Na listagem, o filtro por SUSPENDED não existe (a suspensão é pause_collection, fora do filtro de status da Stripe, e o filtro ACTIVE traz também as suspensas), e PAST_DUE filtra past_due (a assinatura unpaid, lida como PAST_DUE, fica de fora). |
 | `PLANS` | Plano de assinatura: criar, buscar e listar. | sim | sim |  |
 | `PLAN_DEACTIVATION` | Desativar um plano sem apagá-lo (`deactivatePlan`). | limitação do gateway | sim |  |
 | `CANCEL_AT_PERIOD_END` | Cancelar a assinatura só no fim do período já pago (`cancel(atPeriodEnd: true)`). | emulado | sim |  |
@@ -1311,6 +1313,94 @@ registre o webhook na sandbox (`POST /v1/web_hooks`) apontando para
 `https://<túnel>/multipayment/webhooks/iugu`, com o campo `authorization` do registro igual ao
 `IUGU_WEBHOOK_TOKEN` configurado.
 
+## Listagem
+
+`listInvoices()` e `listSubscriptions()` listam faturas e assinaturas por filtro, uma página
+por chamada. O filtro é um objeto de `Potelo\MultiPayment\Listing\` (`InvoiceFilter` ou
+`SubscriptionFilter`), com todo campo opcional: campo nulo não filtra.
+
+```php
+use Potelo\MultiPayment\Enums\InvoiceStatus;
+use Potelo\MultiPayment\Listing\InvoiceFilter;
+use Potelo\MultiPayment\Listing\SubscriptionFilter;
+
+$payment = new \Potelo\MultiPayment\MultiPayment('iugu');
+
+$faturas = $payment->listInvoices(new InvoiceFilter(
+    customerId: $customer->id,
+    status: InvoiceStatus::PENDING,          // ou a string 'pending'
+    createdAfter: now()->subDays(30),
+    limit: 50,
+));
+
+foreach ($faturas as $fatura) {              // a lista itera, conta e indexa como um array
+    echo $fatura->id;
+}
+$faturas->total;                             // total que casa com o filtro, quando o gateway informa
+while ($filtroSeguinte = $faturas->nextPageFilter()) {   // nulo na última página
+    $faturas = $payment->listInvoices($filtroSeguinte);
+}
+
+$assinaturas = $payment->listSubscriptions(new SubscriptionFilter(
+    customerId: $customer->id,
+    planIdentifier: 'plano_mensal',
+));
+```
+
+O retorno é um `InvoiceList`/`SubscriptionList` com `items` (os models da página), `total`
+(o total de registros que casam com o filtro, quando o gateway informa), `hasMore` e
+`nextCursor`; `nextPageFilter()` devolve o mesmo filtro apontando para a página seguinte, ou
+nulo na última. O cursor é opaco e varia por gateway; não o monte à mão. `cursor` preenchido
+no filtro tem precedência sobre `page`.
+
+Filtro sem equivalente no gateway é recusado antes de qualquer requisição, com
+`UnsupportedOperationException`; as restrições consultáveis de `INVOICE_LISTING` e de
+`SUBSCRIPTIONS` (tabela de [Capabilities](#capabilities)) descrevem o que cada gateway
+aceita. O que muda por gateway:
+
+**Iugu**
+
+- A paginação é por deslocamento: `page` com `limit`, ou o cursor devolvido pela página
+  anterior. `listInvoices()` traz `total`; em `listSubscriptions()` o `total` vem nulo (o
+  endpoint da Iugu não informa um total confiável) e `hasMore` é deduzido de uma página
+  cheia, então a última página cheia custa uma chamada a mais, vazia.
+- `InvoiceFilter`: `subscriptionId` é recusado (a API da Iugu não filtra fatura por
+  assinatura); `status` filtra o status homônimo da Iugu (`PROCESSING` não existe, `PENDING`
+  não traz o rascunho `draft` e `AUTHORIZED` filtra `in_analysis`); `dueAfter`/`dueBefore`
+  filtram por dia de vencimento.
+- `SubscriptionFilter`: `status` filtra só `ACTIVE` e `SUSPENDED`, e o filtro é mais largo que
+  o status genérico, porque a Iugu descreve a assinatura por flags: `ACTIVE` traz também as
+  que a lib lê como `TRIALING` e `PAST_DUE`, e `SUSPENDED` traz as que ela lê como `CANCELED`
+  (a [emulação](#emulações-na-iugu) do cancelamento suspende a assinatura). Confira
+  `$assinatura->status` de cada item quando precisar do estado exato; não há filtro de trial.
+  `planIdentifier` usa a busca textual da Iugu (`query`), que pode casar correspondência
+  parcial.
+
+**Stripe**
+
+- A paginação é por cursor; `page` além da primeira custa uma requisição por página anterior.
+  `total` vem sempre nulo (a Stripe não informa totais).
+- `InvoiceFilter::$originType` é obrigatório: `INVOICE` lista as faturas de assinatura e
+  `PAYMENT_INTENT` as vendas avulsas (ver [Fatura no Stripe: duas
+  origens](#fatura-no-stripe-duas-origens)). Não há listagem única: o PaymentIntent da API
+  atual não aponta a fatura a que pertence, então uma lista combinada duplicaria a fatura de
+  assinatura e o PaymentIntent que a paga.
+- Na origem `INVOICE`, `status` filtra o ciclo de vida do Invoice (`PENDING` filtra `open`,
+  `PAID` filtra `paid`, `CANCELED` filtra `void`, `EXPIRED` filtra `uncollectible`); os
+  demais status da lib são refinamento do pagamento e não filtram. Cada fatura da página é lida como em
+  `getInvoice()`, o que custa um GET a mais por fatura com PaymentIntent.
+- Na origem `PAYMENT_INTENT` só filtram `customerId`, `createdAfter` e `createdBefore`.
+- `SubscriptionFilter`: sem `status`, a listagem traz assinaturas em qualquer estado;
+  `SUSPENDED` não filtra (a suspensão é `pause_collection`, fora do filtro de status da
+  Stripe, e o filtro `ACTIVE` traz também as suspensas); `PAST_DUE` filtra `past_due` (a
+  assinatura `unpaid`, que a lib também lê como `PAST_DUE`, fica de fora); `planIdentifier`
+  aceita o `lookup_key` ou o id do Price (o `lookup_key` custa uma requisição a mais para
+  resolver o Price).
+
+A forma antiga `listSubscriptions($customerId, $page, $limit)` continua funcionando, filtra
+só por cliente e devolve `Subscription[]`, com aviso `E_USER_DEPRECATED`; migre para o
+filtro.
+
 ## Testando a sua aplicação
 
 `MultiPayment::fake()` substitui os gateways configurados por um
@@ -1367,7 +1457,11 @@ $event = $fake->fakeWebhook(WebhookEventType::INVOICE_PAID, ['invoice_id' => $in
 
 O fake declara todas as capabilities por padrão e guarda o estado por instância, então duas
 contas do mesmo gateway substituídas por `fake(['iugu_matriz', 'iugu_filial'])` não misturam
-faturas. Quem prefere um dublê próprio registra qualquer implementação de `GatewayContract` no
+faturas. Ele reproduz a recusa por capability (com `declareCapabilities()`), e não as
+`CapabilityRestriction` de cada gateway: uma listagem sem `originType`, que o Stripe recusa,
+passa no fake, e o mesmo vale para as demais restrições (limites de valor do boleto, bandeira
+do cartão, duplicação só de Pix). Consulte `restriction()` do driver real, e cubra o que
+depende de restrição com um teste de integração. Quem prefere um dublê próprio registra qualquer implementação de `GatewayContract` no
 container, no bind da classe do driver ou no da chave `multi-payment.gateway.{nome}` (ver
 [Múltiplas contas do mesmo gateway](#múltiplas-contas-do-mesmo-gateway)).
 
@@ -1699,7 +1793,7 @@ $subscription->save();
 $payment = new \Potelo\MultiPayment\MultiPayment('iugu');
 $subscription = $payment->getSubscription($subscriptionId);   // mesma forma de getInvoice()
 $plan = $payment->getPlan('plano_mensal');                   // identificador ou id do gateway
-$assinaturas = $payment->listSubscriptions($customer->id);
+$assinaturas = $payment->listSubscriptions(new SubscriptionFilter(customerId: $customer->id));   // ver "Listagem"
 $planos = $payment->listPlans();
 ```
 
@@ -1995,9 +2089,10 @@ Particularidades do Stripe:
   o fim do período corrente do item do plano.
 - **Leituras custam requisições a mais.** `getSubscription()` (e a criação e a troca com
   cobrança) relê a fatura mais recente para preencher `latestInvoice` por inteiro;
-  `listSubscriptions()` e `listPlans()` paginam por cursor, então uma página além da primeira
-  custa uma requisição por página anterior; `listSubscriptions()` traz assinaturas em
-  qualquer status, sem `latestInvoice`.
+  `listSubscriptions()` e `listPlans()` paginam por cursor, então uma `page` além da primeira
+  custa uma requisição por página anterior (com o `cursor` do filtro é uma requisição por
+  página, ver [Listagem](#listagem)); sem filtro de status, `listSubscriptions()` traz
+  assinaturas em qualquer status, sempre sem `latestInvoice`.
 - **A fatura de assinatura (`in_`) aceita leitura e escrita**: `getInvoice()`,
   `cancelInvoice()` (`void`), `refundInvoice()`/`refundableAmount()` (o estorno age sobre o
   PaymentIntent da fatura) e `chargeInvoiceWithCreditCard()` (`invoices.pay` com o cartão).
@@ -2453,6 +2548,7 @@ echo $invoice->id; // CB1FA9B5BD1C42B287F4AC7F6259E45D
 $invoice->originType; // InvoiceOriginType::INVOICE (na Iugu sempre; no Stripe, PAYMENT_INTENT ou INVOICE)
 $invoice->dueDate;    // vencimento; $invoice->pixExpiresAt é a expiração do QR Code do Pix
 $invoice->currency;   // 'BRL', preenchida na leitura
+$invoice->subscriptionId;     // id da assinatura que gerou a fatura, na leitura; null na venda avulsa
 $invoice->lastPaymentError;   // PaymentError ou null (ver "Motivo da recusa na leitura")
 ```
 #### Refund

@@ -859,6 +859,16 @@ class SubscriptionTest extends TestCase
     {
         return [
             'assinaturas' => ['listSubscriptions', ['cus_1'], Capability::SUBSCRIPTIONS],
+            'assinaturas por filtro' => [
+                'listSubscriptions',
+                [new \Potelo\MultiPayment\Listing\SubscriptionFilter()],
+                Capability::SUBSCRIPTIONS,
+            ],
+            'faturas' => [
+                'listInvoices',
+                [new \Potelo\MultiPayment\Listing\InvoiceFilter()],
+                Capability::INVOICE_LISTING,
+            ],
             'planos' => ['listPlans', [], Capability::PLANS],
         ];
     }
