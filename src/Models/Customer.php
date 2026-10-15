@@ -187,7 +187,7 @@ class Customer extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
-    public function getCreditCard(string $creditCardId, GatewayContract|string $gateway = null): CreditCard
+    public function getCreditCard(string $creditCardId, GatewayContract|string|null $gateway = null): CreditCard
     {
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         $creditCard = new CreditCard();
@@ -207,7 +207,7 @@ class Customer extends Model
      * @throws \Potelo\MultiPayment\Exceptions\GatewayException
      * @throws \Potelo\MultiPayment\Exceptions\GatewayNotAvailableException
      */
-    public function deleteCreditCard(string $creditCardId, GatewayContract|string $gateway = null): void
+    public function deleteCreditCard(string $creditCardId, GatewayContract|string|null $gateway = null): void
     {
         $gateway = ConfigurationHelper::resolveGateway($gateway);
         $creditCard = new CreditCard();
